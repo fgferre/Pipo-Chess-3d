@@ -1,0 +1,34 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <defs>
+    <linearGradient id="bg" x1="0" x2="1" y1="0" y2="1">
+      <stop offset="0%" stop-color="#0d1522" />
+      <stop offset="100%" stop-color="#1b3550" />
+    </linearGradient>
+    <linearGradient id="accent" x1="0" x2="1" y1="0" y2="1">
+      <stop offset="0%" stop-color="#f6c344" />
+      <stop offset="100%" stop-color="#3cc7ab" />
+    </linearGradient>
+  </defs>
+  <rect width="512" height="512" rx="96" fill="url(#bg)" />
+  <rect x="86" y="106" width="340" height="300" rx="30" fill="#122337" stroke="#f7ead5" stroke-opacity=".18" stroke-width="12" />
+  <g fill="#dcbf95">
+    <rect x="122" y="142" width="68" height="68" rx="10" />
+    <rect x="258" y="142" width="68" height="68" rx="10" />
+    <rect x="190" y="210" width="68" height="68" rx="10" />
+    <rect x="326" y="210" width="68" height="68" rx="10" />
+    <rect x="122" y="278" width="68" height="68" rx="10" />
+    <rect x="258" y="278" width="68" height="68" rx="10" />
+  </g>
+  <g fill="#6f4d38">
+    <rect x="190" y="142" width="68" height="68" rx="10" />
+    <rect x="326" y="142" width="68" height="68" rx="10" />
+    <rect x="122" y="210" width="68" height="68" rx="10" />
+    <rect x="258" y="210" width="68" height="68" rx="10" />
+    <rect x="190" y="278" width="68" height="68" rx="10" />
+    <rect x="326" y="278" width="68" height="68" rx="10" />
+  </g>
+  <g fill="url(#accent)">
+    <path d="M228 128h56v46h24v44h-24v112h-56V218h-24v-44h24z" />
+    <path d="M160 360h192v24H160z" />
+  </g>
+</svg>

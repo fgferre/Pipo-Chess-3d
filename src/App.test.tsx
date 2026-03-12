@@ -1,0 +1,128 @@
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+
+const subscribers = new Set<(event: unknown) => void>();
+
+const engineClientMock = {
+  init: vi.fn().mockResolvedValue(undefined),
+  newGame: vi.fn().mockResolvedValue(undefined),
+  setPosition: vi.fn().mockResolvedValue(undefined),
+  search: vi.fn().mockResolvedValue({
+    bestMove: "e7e5",
+    pv: ["e7e5"],
+    scoreCp: 12,
+    mate: null,
+    depth: 12,
+  }),
+  hint: vi.fn().mockResolvedValue({
+    bestMove: "g1f3",
+    pv: ["g1f3", "d7d5"],
+    scoreCp: 24,
+    mate: null,
+    depth: 12,
+  }),
+  analyzeGame: vi.fn().mockResolvedValue({
+    result: "active",
+    centipawnLossBySide: { w: 22, b: 13 },
+    tagsByPly: { 1: "best" },
+    criticalMoments: [
+      {
+        ply: 1,
+        moveUci: "e2e4",
+        san: "e4",
+        tag: "best",
+        swingCp: 12,
+        bestLine: ["e2e4", "e7e5"],
+        scoreCp: 24,
+        scoreMate: null,
+      },
+    ],
+  }),
+  subscribe: vi.fn((listener: (event: unknown) => void) => {
+    subscribers.add(listener);
+    return () => subscribers.delete(listener);
+  }),
+  stop: vi.fn().mockResolvedValue(undefined),
+  terminate: vi.fn(),
+};
+
+vi.mock("./engine/EngineClient", () => ({
+  engineClient: engineClientMock,
+}));
+
+vi.mock("./components/ChessScene", () => ({
+  ChessScene: ({
+    onSquareSelect,
+  }: {
+    onSquareSelect: (square: "e2" | "e4") => void;
+  }) => (
+    <div>
+      <button onClick={() => onSquareSelect("e2")}>Square e2</button>
+      <button onClick={() => onSquareSelect("e4")}>Square e4</button>
+    </div>
+  ),
+}));
+
+describe("App integration", () => {
+  beforeEach(async () => {
+    cleanup();
+    vi.clearAllMocks();
+    subscribers.clear();
+    vi.resetModules();
+
+    const { db } = await import("./persistence/db");
+    db.close();
+    await db.delete();
+    await db.open();
+  });
+
+  it("boots and requests a hint on the player's turn", async () => {
+    const { default: App } = await import("./App");
+    render(<App />);
+
+    await screen.findByText("Pipo Chess 3D");
+    fireEvent.click(screen.getByRole("button", { name: "Dica" }));
+
+    await waitFor(() => {
+      expect(engineClientMock.hint).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  it("persists theme, locale, and autosave state", async () => {
+    const { default: App } = await import("./App");
+    const { loadBootstrapData } = await import("./persistence/db");
+    render(<App />);
+
+    await screen.findByText("Pipo Chess 3D");
+    fireEvent.click(screen.getByRole("button", { name: "Tema" }));
+    fireEvent.click(screen.getByRole("button", { name: "Emerald" }));
+    fireEvent.click(screen.getByRole("button", { name: "Idioma" }));
+    fireEvent.click(screen.getByRole("button", { name: "English" }));
+    fireEvent.click(screen.getByText("Square e2"));
+    fireEvent.click(screen.getByText("Square e4"));
+
+    await waitFor(() => {
+      expect(engineClientMock.search).toHaveBeenCalledTimes(1);
+    });
+
+    await waitFor(async () => {
+      const bootstrapData = await loadBootstrapData();
+      expect(bootstrapData.settings?.themeId).toBe("emerald");
+      expect(bootstrapData.settings?.locale).toBe("en");
+      expect(bootstrapData.autosave?.snapshot.moveList).toHaveLength(2);
+    });
+  });
+
+  it("renders an analysis summary from the mocked engine", async () => {
+    const { default: App } = await import("./App");
+    render(<App />);
+
+    await screen.findByText("Pipo Chess 3D");
+    fireEvent.click(screen.getByRole("button", { name: "Análise" }));
+    fireEvent.click(screen.getByRole("button", { name: "Gerar análise" }));
+
+    await waitFor(() => {
+      expect(engineClientMock.analyzeGame).toHaveBeenCalledTimes(1);
+    });
+  });
+});
