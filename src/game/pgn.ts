@@ -50,6 +50,7 @@ export function extractSettingsFromHeaders(
   };
 
   return {
+    ...fallback,
     difficultyId: headers.PipoDifficulty || fallback.difficultyId,
     themeId: headers.PipoTheme || fallback.themeId,
     locale: headers.PipoLocale === "en" ? "en" : fallback.locale,

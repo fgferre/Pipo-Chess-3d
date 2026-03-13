@@ -18,6 +18,9 @@ export const themes: ThemeDefinition[] = [
     backdrop:
       "radial-gradient(circle at top, rgba(244,189,103,0.22), transparent 32%), linear-gradient(180deg, #0d1522 0%, #15273b 44%, #0b1320 100%)",
     backdropGlow: "rgba(244, 189, 103, 0.2)",
+    canvasAccent: '#d4af37',
+    canvasFelt: '#081c0c',
+    canvasFog: '#050508',
   },
   {
     id: "emerald",
@@ -36,6 +39,9 @@ export const themes: ThemeDefinition[] = [
     backdrop:
       "radial-gradient(circle at top right, rgba(96,242,207,0.22), transparent 32%), linear-gradient(180deg, #05181d 0%, #0b352d 52%, #061116 100%)",
     backdropGlow: "rgba(96, 242, 207, 0.18)",
+    canvasAccent: '#50c878',
+    canvasFelt: '#0a1f1a',
+    canvasFog: '#030a08',
   },
   {
     id: "slate",
@@ -54,6 +60,9 @@ export const themes: ThemeDefinition[] = [
     backdrop:
       "radial-gradient(circle at top left, rgba(111,213,255,0.16), transparent 34%), linear-gradient(180deg, #09111d 0%, #172233 48%, #090f19 100%)",
     backdropGlow: "rgba(111, 213, 255, 0.18)",
+    canvasAccent: '#8899aa',
+    canvasFelt: '#0c1018',
+    canvasFog: '#05080e',
   },
 ];
 

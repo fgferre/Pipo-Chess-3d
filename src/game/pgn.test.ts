@@ -25,6 +25,8 @@ describe("PGN headers", () => {
     expect(restored.settings.orientation).toBe("black");
     expect(restored.settings.clockConfig.baseMs).toBe(900_000);
     expect(restored.settings.clockConfig.incrementMs).toBe(10_000);
+    expect(restored.settings.animationMode).toBe(createNewSession().settings.animationMode);
+    expect(restored.settings.defaultViewMode).toBe(createNewSession().settings.defaultViewMode);
   });
 
   it("falls back to the current clock config when custom clock headers are missing", () => {
@@ -45,5 +47,20 @@ describe("PGN headers", () => {
     expect(restored.settings.clockConfig.enabled).toBe(true);
     expect(restored.settings.clockConfig.baseMs).toBe(300_000);
     expect(restored.snapshot.moveList).toHaveLength(4);
+    expect(restored.settings.animationMode).toBe(fallback.animationMode);
+    expect(restored.settings.defaultViewMode).toBe(fallback.defaultViewMode);
+  });
+
+  it("retains fallback animationMode and defaultViewMode when PGN headers do not define them", () => {
+    const fallback = {
+      ...createNewSession().settings,
+      animationMode: "reduced" as const,
+      defaultViewMode: "2d" as const,
+    };
+
+    const restored = sessionFromPgn("1. d4 d5", fallback);
+
+    expect(restored.settings.animationMode).toBe("reduced");
+    expect(restored.settings.defaultViewMode).toBe("2d");
   });
 });

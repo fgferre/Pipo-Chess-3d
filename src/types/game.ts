@@ -45,6 +45,9 @@ export interface ThemeDefinition {
   textMuted: string;
   backdrop: string;
   backdropGlow: string;
+  canvasAccent: string;
+  canvasFelt: string;
+  canvasFog: string;
 }
 
 export interface SerializableMove {
@@ -111,6 +114,8 @@ export interface AppSettings {
   locale: Locale;
   orientation: Orientation;
   clockConfig: ClockConfig;
+  animationMode: 'normal' | 'reduced' | 'off';
+  defaultViewMode: '3d' | '2d';
 }
 
 export interface GameSession {
@@ -170,4 +175,14 @@ export interface EngineInfoSnapshot {
   scoreCp: number | null;
   mate: number | null;
   depth: number | null;
+}
+
+export interface PendingPromotion {
+  from: Square;
+  to: Square;
+}
+
+export interface AnalysisCursorState {
+  cursor: number | null;
+  autoplay: boolean;
 }

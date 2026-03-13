@@ -23,6 +23,8 @@ export function createDefaultSettings(): AppSettings {
     locale: "pt-BR",
     orientation: "white",
     clockConfig: defaultClockConfig,
+    animationMode: 'normal',
+    defaultViewMode: '3d',
   };
 }
 
@@ -435,6 +437,8 @@ function normalizeSettings(settings: AppSettings): AppSettings {
     locale: settings.locale === "en" ? "en" : "pt-BR",
     orientation,
     clockConfig: normalizeClockConfig(settings.clockConfig),
+    animationMode: settings.animationMode ?? 'normal',
+    defaultViewMode: settings.defaultViewMode ?? '3d',
   };
 }
 
