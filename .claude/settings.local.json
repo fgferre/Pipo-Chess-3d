@@ -1,8 +1,0 @@
-{
-  "permissions": {
-    "allow": [
-      "Bash(mkdir -p ~/.traycer/yolo_artifacts && echo '{}' > ~/.traycer/yolo_artifacts/16cdb97e-ee94-4470-99c8-f8a13aa18693.json)",
-      "Bash(mkdir -p ~/.traycer/yolo_artifacts && echo '{}' > ~/.traycer/yolo_artifacts/d4c15673-4ffe-4506-81e6-64c57f12956e.json)"
-    ]
-  }
-}

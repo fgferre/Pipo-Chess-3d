@@ -19,6 +19,8 @@ tmp-sample-game.pgn
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json
+.claude/settings.local.json
+.claude/skills/
 .idea
 .DS_Store
 *.suo
