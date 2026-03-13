@@ -1,6 +1,8 @@
 import { writeFile } from "node:fs/promises";
 import { expect, test, type Page } from "@playwright/test";
 
+test.use({ viewport: { width: 390, height: 844 } });
+
 test("boots offline, imports a PGN, switches language, and exports PGN", async ({ page, context }, testInfo) => {
   await page.goto("/");
   await expect(page.getByText("Pipo Chess 3D")).toBeVisible();
@@ -30,6 +32,11 @@ test("boots offline, imports a PGN, switches language, and exports PGN", async (
   await context.setOffline(true);
   await page.reload();
   await expect(page.getByText("Pipo Chess 3D")).toBeVisible();
+  await expect(page.locator(".move-list")).toContainText("e4");
+
+  await page.getByRole("button", { name: "Save" }).click();
+  await expect(page.getByText("Recover autosave")).toBeVisible();
+  await page.getByRole("button", { name: "Resume autosave" }).click();
   await expect(page.locator(".move-list")).toContainText("e4");
 });
 

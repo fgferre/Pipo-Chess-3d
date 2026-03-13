@@ -1,5 +1,11 @@
 import Dexie, { type Table } from "dexie";
-import type { AnalysisRecord, AppSettings, GameSession, SaveSlotRecord } from "../types/game";
+import type {
+  AnalysisRecord,
+  AppSettings,
+  AutosaveRecord,
+  GameSession,
+  SaveSlotRecord,
+} from "../types/game";
 
 interface SettingsRow {
   key: "app";
@@ -8,6 +14,7 @@ interface SettingsRow {
 
 interface AutosaveRow {
   key: "autosave";
+  updatedAt: string;
   value: GameSession;
 }
 
@@ -32,7 +39,7 @@ export const db = new PipoChessDb();
 
 export async function loadBootstrapData(): Promise<{
   settings: AppSettings | null;
-  autosave: GameSession | null;
+  autosave: AutosaveRecord | null;
   saves: SaveSlotRecord[];
 }> {
   const [settingsRow, autosaveRow, saves] = await Promise.all([
@@ -43,7 +50,12 @@ export async function loadBootstrapData(): Promise<{
 
   return {
     settings: settingsRow?.value ?? null,
-    autosave: autosaveRow?.value ?? null,
+    autosave: autosaveRow
+      ? {
+          updatedAt: autosaveRow.updatedAt,
+          session: autosaveRow.value,
+        }
+      : null,
     saves,
   };
 }
@@ -52,8 +64,13 @@ export async function persistSettings(settings: AppSettings): Promise<void> {
   await db.settings.put({ key: "app", value: settings });
 }
 
-export async function persistAutosave(session: GameSession): Promise<void> {
-  await db.autosave.put({ key: "autosave", value: session });
+export async function persistAutosave(session: GameSession): Promise<AutosaveRecord> {
+  const record: AutosaveRecord = {
+    updatedAt: new Date().toISOString(),
+    session,
+  };
+  await db.autosave.put({ key: "autosave", updatedAt: record.updatedAt, value: record.session });
+  return record;
 }
 
 export async function clearAutosave(): Promise<void> {

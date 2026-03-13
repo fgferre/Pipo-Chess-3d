@@ -21,6 +21,7 @@ import {
 } from "../game/gameService";
 import { t } from "../i18n";
 import {
+  clearAutosave,
   createSaveSlot as persistSaveSlot,
   deleteSaveSlot as removeSaveSlot,
   listSaveSlots,
@@ -31,6 +32,7 @@ import {
   persistSettings,
 } from "../persistence/db";
 import type {
+  AutosaveRecord,
   ClockConfig,
   EnginePhase,
   GameSession,
@@ -52,6 +54,7 @@ interface GameStore {
   enginePhase: EnginePhase;
   engineMessage: string;
   session: GameSession;
+  autosave: AutosaveRecord | null;
   saveSlots: SaveSlotRecord[];
   selectedSquare: Square | null;
   legalTargets: Square[];
@@ -71,6 +74,7 @@ interface GameStore {
   setClockConfig: (clockConfig: ClockConfig) => Promise<void>;
   createManualSave: () => Promise<void>;
   loadManualSave: (id: number) => Promise<void>;
+  restoreAutosave: () => Promise<void>;
   deleteManualSave: (id: number) => Promise<void>;
   exportPgn: () => void;
   importPgnText: (pgn: string) => Promise<void>;
@@ -80,12 +84,15 @@ interface GameStore {
 }
 
 let subscribedToEngine = false;
+let bootstrapPromise: Promise<void> | null = null;
+let activeAnalysisSignature: string | null = null;
 
 export const useGameStore = create<GameStore>((set, get) => ({
   booted: false,
   enginePhase: "booting",
   engineMessage: "",
   session: createNewSession(),
+  autosave: null,
   saveSlots: [],
   selectedSquare: null,
   legalTargets: [],
@@ -94,6 +101,16 @@ export const useGameStore = create<GameStore>((set, get) => ({
   lastError: null,
 
   bootstrap: async () => {
+    if (get().booted) {
+      return;
+    }
+
+    if (bootstrapPromise) {
+      await bootstrapPromise;
+      return;
+    }
+
+    bootstrapPromise = (async () => {
     if (!subscribedToEngine) {
       engineClient.subscribe((event) => {
         if (event.type === "status") {
@@ -112,6 +129,10 @@ export const useGameStore = create<GameStore>((set, get) => ({
         }
 
         if (event.type === "analysisProgress") {
+          if (activeAnalysisSignature !== getAnalysisSignature(get().session)) {
+            return;
+          }
+
           set({
             analysisProgress: {
               completed: event.completed,
@@ -125,25 +146,47 @@ export const useGameStore = create<GameStore>((set, get) => ({
     }
 
     const defaults = createDefaultSettings();
-    const bootstrapData = await loadBootstrapData();
-    const settings = bootstrapData.settings ?? defaults;
-    const restoredSession = bootstrapData.autosave
-      ? hydrateSession(bootstrapData.autosave, settings)
-      : createNewSession(settings);
-    const liveSession = withClockState(
-      restoredSession,
-      resumeClock(pauseClock(restoredSession.snapshot.clockState)),
-    );
+    let liveSession = createNewSession(defaults);
+    let autosave: AutosaveRecord | null = null;
+    let saveSlots: SaveSlotRecord[] = [];
+    let lastError: string | null = null;
+
+    try {
+      const bootstrapData = await loadBootstrapData();
+      const settings = bootstrapData.settings ?? defaults;
+      autosave = bootstrapData.autosave;
+      saveSlots = bootstrapData.saves;
+
+      if (autosave) {
+        try {
+          liveSession = resumePersistedSession(hydrateSession(autosave.session, settings));
+        } catch (error) {
+          autosave = null;
+          liveSession = createNewSession(settings);
+          lastError = normalizeErrorMessage(error, t(settings.locale, "save.restoreError"));
+          await clearAutosave().catch(() => undefined);
+        }
+      } else {
+        liveSession = createNewSession(settings);
+      }
+    } catch (error) {
+      liveSession = createNewSession(defaults);
+      autosave = null;
+      saveSlots = [];
+      lastError = normalizeErrorMessage(error, t(defaults.locale, "save.restoreError"));
+    }
 
     set({
       booted: true,
       session: liveSession,
-      saveSlots: bootstrapData.saves,
+      autosave,
+      saveSlots,
       enginePhase: "booting",
       engineMessage: t(liveSession.settings.locale, "engine.prewarm"),
+      lastError,
     });
 
-    await persistSettings(liveSession.settings);
+    await persistLiveSettings(get, set);
 
     try {
       await engineClient.init();
@@ -155,8 +198,15 @@ export const useGameStore = create<GameStore>((set, get) => ({
       set({
         enginePhase: "error",
         engineMessage: t(get().session.settings.locale, "engine.error"),
-        lastError: error instanceof Error ? error.message : "Engine failed",
+        lastError: normalizeErrorMessage(error, t(get().session.settings.locale, "engine.error")),
       });
+    }
+    })();
+
+    try {
+      await bootstrapPromise;
+    } finally {
+      bootstrapPromise = null;
     }
   },
 
@@ -198,17 +248,21 @@ export const useGameStore = create<GameStore>((set, get) => ({
         return;
       }
 
+      await interruptEngineWork();
+      activeAnalysisSignature = null;
       set({
         session: nextSession,
         selectedSquare: null,
         legalTargets: [],
         hintMove: null,
+        analysisProgress: null,
+        lastError: null,
       });
 
       if (nextSession.snapshot.sideToMove === "b" && nextSession.snapshot.status === "active") {
         await runEngineMove((partial) => set(partial), get);
       } else {
-        await persistLiveAutosave(get);
+        await persistLiveAutosave(get, set);
       }
 
       return;
@@ -238,39 +292,59 @@ export const useGameStore = create<GameStore>((set, get) => ({
     }
 
     const difficulty = getDifficultyPreset(session.settings.difficultyId);
-    const result = await engineClient.hint(session.snapshot.fen, difficulty);
+    const signature = getPositionSignature(session);
 
-    set({
-      hintMove: {
-        from: result.bestMove.slice(0, 2) as Square,
-        to: result.bestMove.slice(2, 4) as Square,
-        pv: result.pv,
-      },
-      selectedSquare: result.bestMove.slice(0, 2) as Square,
-      legalTargets: getLegalMovesForSquare(session, result.bestMove.slice(0, 2) as Square),
-    });
+    set({ lastError: null });
+
+    try {
+      const result = await engineClient.hint(session.snapshot.fen, difficulty);
+      const currentSession = get().session;
+      if (getPositionSignature(currentSession) !== signature) {
+        return;
+      }
+
+      set({
+        hintMove: {
+          from: result.bestMove.slice(0, 2) as Square,
+          to: result.bestMove.slice(2, 4) as Square,
+          pv: result.pv,
+        },
+        selectedSquare: result.bestMove.slice(0, 2) as Square,
+        legalTargets: getLegalMovesForSquare(currentSession, result.bestMove.slice(0, 2) as Square),
+      });
+    } catch (error) {
+      setStoreError(set, session.settings.locale, error, "engine.error");
+    }
   },
 
   undo: async () => {
+    await interruptEngineWork();
+    activeAnalysisSignature = null;
     const nextSession = undoTurn(get().session);
     set({
       session: nextSession,
       selectedSquare: null,
       legalTargets: [],
       hintMove: null,
+      analysisProgress: null,
+      lastError: null,
     });
-    await persistLiveAutosave(get);
+    await persistLiveAutosave(get, set);
   },
 
   redo: async () => {
+    await interruptEngineWork();
+    activeAnalysisSignature = null;
     const nextSession = redoTurn(get().session);
     set({
       session: nextSession,
       selectedSquare: null,
       legalTargets: [],
       hintMove: null,
+      analysisProgress: null,
+      lastError: null,
     });
-    await persistLiveAutosave(get);
+    await persistLiveAutosave(get, set);
 
     if (nextSession.snapshot.sideToMove === "b" && nextSession.snapshot.status === "active") {
       await runEngineMove((partial) => set(partial), get);
@@ -278,6 +352,8 @@ export const useGameStore = create<GameStore>((set, get) => ({
   },
 
   newGame: async () => {
+    await interruptEngineWork();
+    activeAnalysisSignature = null;
     const nextSession = createNewSession(get().session.settings);
     set({
       session: nextSession,
@@ -285,9 +361,14 @@ export const useGameStore = create<GameStore>((set, get) => ({
       legalTargets: [],
       hintMove: null,
       analysisProgress: null,
+      lastError: null,
     });
-    await engineClient.newGame();
-    await persistLiveAutosave(get);
+    try {
+      await engineClient.newGame();
+    } catch (error) {
+      setStoreError(set, nextSession.settings.locale, error, "engine.error");
+    }
+    await persistLiveAutosave(get, set);
   },
 
   setDifficulty: async (difficultyId) => {
@@ -295,9 +376,9 @@ export const useGameStore = create<GameStore>((set, get) => ({
       ...get().session.settings,
       difficultyId,
     });
-    set({ session: nextSession });
-    await persistSettings(get().session.settings);
-    await persistLiveAutosave(get);
+    set({ session: nextSession, lastError: null });
+    await persistLiveSettings(get, set);
+    await persistLiveAutosave(get, set);
   },
 
   setTheme: async (themeId) => {
@@ -305,9 +386,9 @@ export const useGameStore = create<GameStore>((set, get) => ({
       ...get().session.settings,
       themeId,
     });
-    set({ session: nextSession });
-    await persistSettings(get().session.settings);
-    await persistLiveAutosave(get);
+    set({ session: nextSession, lastError: null });
+    await persistLiveSettings(get, set);
+    await persistLiveAutosave(get, set);
   },
 
   setLocale: async (locale) => {
@@ -315,9 +396,9 @@ export const useGameStore = create<GameStore>((set, get) => ({
       ...get().session.settings,
       locale,
     });
-    set({ session: nextSession });
-    await persistSettings(get().session.settings);
-    await persistLiveAutosave(get);
+    set({ session: nextSession, lastError: null });
+    await persistLiveSettings(get, set);
+    await persistLiveAutosave(get, set);
   },
 
   toggleOrientation: async () => {
@@ -326,9 +407,9 @@ export const useGameStore = create<GameStore>((set, get) => ({
       ...get().session.settings,
       orientation,
     });
-    set({ session: nextSession });
-    await persistSettings(get().session.settings);
-    await persistLiveAutosave(get);
+    set({ session: nextSession, lastError: null });
+    await persistLiveSettings(get, set);
+    await persistLiveAutosave(get, set);
   },
 
   setClockConfig: async (clockConfig) => {
@@ -336,9 +417,9 @@ export const useGameStore = create<GameStore>((set, get) => ({
       ...get().session.settings,
       clockConfig,
     });
-    set({ session: nextSession });
-    await persistSettings(get().session.settings);
-    await persistLiveAutosave(get);
+    set({ session: nextSession, lastError: null });
+    await persistLiveSettings(get, set);
+    await persistLiveAutosave(get, set);
   },
 
   createManualSave: async () => {
@@ -346,33 +427,76 @@ export const useGameStore = create<GameStore>((set, get) => ({
     const label = `${t(state.session.settings.locale, "save.labelPrefix")} ${String(
       state.saveSlots.length + 1,
     ).padStart(2, "0")}`;
-    await persistSaveSlot(state.session, label);
-    const saves = await listSaveSlots();
-    set({ saveSlots: saves });
-    await persistLiveAutosave(get);
+
+    try {
+      await persistSaveSlot(createPersistedSessionSnapshot(state.session), label);
+      const saves = await listSaveSlots();
+      set({ saveSlots: saves, lastError: null });
+    } catch (error) {
+      setStoreError(set, state.session.settings.locale, error, "save.persistError");
+    }
+
+    await persistLiveAutosave(get, set);
   },
 
   loadManualSave: async (id) => {
-    const record = await loadSaveSlot(id);
-    if (!record) {
+    await interruptEngineWork();
+
+    try {
+      const record = await loadSaveSlot(id);
+      if (!record) {
+        return;
+      }
+
+      activeAnalysisSignature = null;
+      const nextSession = resumePersistedSession(hydrateSession(record.session, get().session.settings));
+      set({
+        session: nextSession,
+        selectedSquare: null,
+        legalTargets: [],
+        hintMove: null,
+        analysisProgress: null,
+        lastError: null,
+      });
+      await persistLiveAutosave(get, set);
+    } catch (error) {
+      setStoreError(set, get().session.settings.locale, error, "save.restoreError");
+    }
+  },
+
+  restoreAutosave: async () => {
+    const autosave = get().autosave;
+    if (!autosave) {
       return;
     }
 
-    const nextSession = hydrateSession(record.session, get().session.settings);
-    set({
-      session: nextSession,
-      selectedSquare: null,
-      legalTargets: [],
-      hintMove: null,
-      analysisProgress: null,
-    });
-    await persistLiveAutosave(get);
+    await interruptEngineWork();
+
+    try {
+      activeAnalysisSignature = null;
+      const nextSession = resumePersistedSession(hydrateSession(autosave.session, get().session.settings));
+      set({
+        session: nextSession,
+        selectedSquare: null,
+        legalTargets: [],
+        hintMove: null,
+        analysisProgress: null,
+        lastError: null,
+      });
+      await persistLiveAutosave(get, set);
+    } catch (error) {
+      setStoreError(set, get().session.settings.locale, error, "save.restoreError");
+    }
   },
 
   deleteManualSave: async (id) => {
-    await removeSaveSlot(id);
-    const saves = await listSaveSlots();
-    set({ saveSlots: saves });
+    try {
+      await removeSaveSlot(id);
+      const saves = await listSaveSlots();
+      set({ saveSlots: saves, lastError: null });
+    } catch (error) {
+      setStoreError(set, get().session.settings.locale, error, "save.persistError");
+    }
   },
 
   exportPgn: () => {
@@ -382,40 +506,80 @@ export const useGameStore = create<GameStore>((set, get) => ({
   },
 
   importPgnText: async (pgn) => {
+    await interruptEngineWork();
+
     const nextSession = sessionFromPgn(pgn, get().session.settings);
+    activeAnalysisSignature = null;
     set({
       session: nextSession,
       selectedSquare: null,
       legalTargets: [],
       hintMove: null,
       analysisProgress: null,
+      lastError: null,
     });
-    await persistLiveAutosave(get);
-    await persistSettings(get().session.settings);
+    await persistLiveAutosave(get, set);
+    await persistLiveSettings(get, set);
   },
 
   runAnalysis: async () => {
     const session = get().session;
-    const summary = await engineClient.analyzeGame(buildAnalysisPayload(session));
-    const nextSession = withAnalysis(session, summary);
-
+    const signature = getAnalysisSignature(session);
+    activeAnalysisSignature = signature;
     set({
-      session: nextSession,
-      analysisProgress: null,
+      analysisProgress:
+        session.moveEntries.length > 0
+          ? {
+              completed: 0,
+              total: session.moveEntries.length,
+              currentPly: 0,
+            }
+          : null,
+      lastError: null,
     });
 
-    await persistAnalysis({
-      createdAt: new Date().toISOString(),
-      pgn: nextSession.snapshot.pgn,
-      summary,
-    });
-    await persistLiveAutosave(get);
+    try {
+      const summary = await engineClient.analyzeGame(buildAnalysisPayload(session));
+      if (activeAnalysisSignature !== signature || getAnalysisSignature(get().session) !== signature) {
+        return;
+      }
+
+      const nextSession = withAnalysis(get().session, summary);
+
+      set({
+        session: nextSession,
+        analysisProgress: null,
+      });
+
+      try {
+        await persistAnalysis({
+          createdAt: new Date().toISOString(),
+          pgn: nextSession.snapshot.pgn,
+          summary,
+        });
+      } catch (error) {
+        setStoreError(set, nextSession.settings.locale, error, "save.persistError");
+      }
+
+      await persistLiveAutosave(get, set);
+    } catch (error) {
+      if (error instanceof Error && error.message === "Analysis interrupted") {
+        return;
+      }
+
+      set({
+        analysisProgress: null,
+      });
+      setStoreError(set, get().session.settings.locale, error, "engine.error");
+    } finally {
+      if (activeAnalysisSignature === signature) {
+        activeAnalysisSignature = null;
+      }
+    }
   },
 
   persistCurrentAutosave: async () => {
-    const nextSession = withClockState(get().session, pauseClock(get().session.snapshot.clockState));
-    set({ session: nextSession });
-    await persistAutosave(nextSession);
+    await persistLiveAutosave(get, set);
   },
 
   tickLiveClock: () => {
@@ -441,19 +605,95 @@ async function runEngineMove(
 ): Promise<void> {
   const state = get();
   const difficulty = getDifficultyPreset(state.session.settings.difficultyId);
-  const result = await engineClient.search(state.session.snapshot.fen, difficulty);
-  const nextSession = applyEngineMove(get().session, result.bestMove);
+  const signature = getPositionSignature(state.session);
 
-  set({
-    session: nextSession,
-    hintMove: null,
-    selectedSquare: null,
-    legalTargets: [],
-  });
+  try {
+    const result = await engineClient.search(state.session.snapshot.fen, difficulty);
+    const currentSession = get().session;
+    if (getPositionSignature(currentSession) !== signature) {
+      return;
+    }
 
-  await persistLiveAutosave(get);
+    const nextSession = applyEngineMove(currentSession, result.bestMove);
+
+    set({
+      session: nextSession,
+      hintMove: null,
+      selectedSquare: null,
+      legalTargets: [],
+      lastError: null,
+    });
+
+    await persistLiveAutosave(get, set);
+  } catch (error) {
+    setStoreError(set, state.session.settings.locale, error, "engine.error");
+  }
 }
 
-async function persistLiveAutosave(get: () => GameStore): Promise<void> {
-  await persistAutosave(get().session);
+async function persistLiveAutosave(
+  get: () => GameStore,
+  set: (partial: Partial<GameStore>) => void,
+): Promise<void> {
+  try {
+    const autosave = await persistAutosave(createPersistedSessionSnapshot(get().session));
+    set({ autosave });
+  } catch (error) {
+    setStoreError(set, get().session.settings.locale, error, "save.persistError");
+  }
+}
+
+async function persistLiveSettings(
+  get: () => GameStore,
+  set: (partial: Partial<GameStore>) => void,
+): Promise<void> {
+  try {
+    await persistSettings(get().session.settings);
+  } catch (error) {
+    setStoreError(set, get().session.settings.locale, error, "save.persistError");
+  }
+}
+
+async function interruptEngineWork(): Promise<void> {
+  try {
+    await engineClient.stop();
+  } catch {
+    // Ignore stop failures and let the caller continue with local state updates.
+  }
+}
+
+function createPersistedSessionSnapshot(session: GameSession): GameSession {
+  return withClockState(session, pauseClock(session.snapshot.clockState));
+}
+
+function resumePersistedSession(session: GameSession): GameSession {
+  const clockState = {
+    ...session.snapshot.clockState,
+    running: false,
+    lastTickAt: null,
+  };
+
+  return withClockState(session, resumeClock(clockState));
+}
+
+function getPositionSignature(session: GameSession): string {
+  return `${session.snapshot.fen}|${session.moveEntries.length}|${session.settings.difficultyId}`;
+}
+
+function getAnalysisSignature(session: GameSession): string {
+  return session.snapshot.pgn;
+}
+
+function normalizeErrorMessage(error: unknown, fallback: string): string {
+  return error instanceof Error && error.message ? error.message : fallback;
+}
+
+function setStoreError(
+  set: (partial: Partial<GameStore>) => void,
+  locale: Locale,
+  error: unknown,
+  fallbackKey: Parameters<typeof t>[1],
+): void {
+  set({
+    lastError: normalizeErrorMessage(error, t(locale, fallbackKey)),
+  });
 }

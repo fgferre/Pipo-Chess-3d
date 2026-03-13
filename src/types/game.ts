@@ -130,6 +130,11 @@ export interface GameSession {
   analysisSummary?: AnalysisSummary;
 }
 
+export interface AutosaveRecord {
+  updatedAt: string;
+  session: GameSession;
+}
+
 export interface SaveSlotRecord {
   id?: number;
   label: string;
@@ -174,4 +179,3 @@ export interface EngineInfoSnapshot {
   mate: number | null;
   depth: number | null;
 }
-

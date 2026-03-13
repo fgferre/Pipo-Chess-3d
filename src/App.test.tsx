@@ -95,9 +95,9 @@ describe("App integration", () => {
 
     await screen.findByText("Pipo Chess 3D");
     fireEvent.click(screen.getByRole("button", { name: "Tema" }));
-    fireEvent.click(screen.getByRole("button", { name: "Emerald" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Emerald" }));
     fireEvent.click(screen.getByRole("button", { name: "Idioma" }));
-    fireEvent.click(screen.getByRole("button", { name: "English" }));
+    fireEvent.click(await screen.findByRole("button", { name: "English" }));
     fireEvent.click(screen.getByText("Square e2"));
     fireEvent.click(screen.getByText("Square e4"));
 
@@ -109,7 +109,60 @@ describe("App integration", () => {
       const bootstrapData = await loadBootstrapData();
       expect(bootstrapData.settings?.themeId).toBe("emerald");
       expect(bootstrapData.settings?.locale).toBe("en");
-      expect(bootstrapData.autosave?.snapshot.moveList).toHaveLength(2);
+      expect(bootstrapData.autosave?.session.snapshot.moveList).toHaveLength(2);
+      expect(bootstrapData.autosave?.session.snapshot.clockState.running).toBe(false);
+    });
+  });
+
+  it("ignores a stale engine response after resetting the board", async () => {
+    let resolveSearch:
+      | ((value: {
+          bestMove: string;
+          pv: string[];
+          scoreCp: number;
+          mate: null;
+          depth: number;
+        }) => void)
+      | undefined;
+
+    engineClientMock.search.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          resolveSearch = resolve;
+        }),
+    );
+
+    const { default: App } = await import("./App");
+    const { loadBootstrapData } = await import("./persistence/db");
+    render(<App />);
+
+    await screen.findByText("Pipo Chess 3D");
+    fireEvent.click(screen.getByText("Square e2"));
+    fireEvent.click(screen.getByText("Square e4"));
+
+    await waitFor(() => {
+      expect(engineClientMock.search).toHaveBeenCalledTimes(1);
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Nova partida" }));
+
+    await waitFor(() => {
+      expect(engineClientMock.newGame).toHaveBeenCalledTimes(1);
+      expect(screen.queryByText("e4")).not.toBeInTheDocument();
+    });
+
+    resolveSearch?.({
+      bestMove: "e7e5",
+      pv: ["e7e5"],
+      scoreCp: 12,
+      mate: null,
+      depth: 12,
+    });
+
+    await waitFor(async () => {
+      const bootstrapData = await loadBootstrapData();
+      expect(bootstrapData.autosave?.session.snapshot.moveList).toHaveLength(0);
+      expect(screen.queryByText("e4")).not.toBeInTheDocument();
     });
   });
 

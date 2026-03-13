@@ -39,7 +39,7 @@ button {
 .app-shell {
   position: relative;
   min-height: 100vh;
-  padding: 1.2rem 1rem 6rem;
+  padding: 1.2rem 1rem calc(6rem + env(safe-area-inset-bottom));
   overflow: hidden;
 }
 
@@ -429,6 +429,7 @@ button {
 
 .save-row__actions {
   display: flex;
+  flex-wrap: wrap;
   gap: 0.55rem;
 }
 
@@ -440,7 +441,7 @@ button {
   position: fixed;
   left: 1rem;
   right: 1rem;
-  bottom: 1rem;
+  bottom: calc(1rem + env(safe-area-inset-bottom));
   display: grid;
   grid-template-columns: repeat(7, minmax(0, 1fr));
   gap: 0.35rem;
@@ -459,7 +460,7 @@ button {
   position: fixed;
   left: 1rem;
   right: 1rem;
-  bottom: 5.6rem;
+  bottom: calc(5.6rem + env(safe-area-inset-bottom));
   max-height: 70vh;
   border-radius: 1.5rem;
   padding: 1rem;
@@ -588,6 +589,10 @@ button {
 @media (max-width: 720px) {
   .hero-stats {
     grid-template-columns: 1fr;
+  }
+
+  .quick-actions {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
   .bottom-dock {

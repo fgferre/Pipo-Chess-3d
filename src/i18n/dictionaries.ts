@@ -56,6 +56,8 @@ export const dictionaries = {
     "analysis.blunder": "Blunder",
     "save.labelPrefix": "Save",
     "save.importError": "PGN inválido ou incompleto.",
+    "save.persistError": "Não foi possível salvar o progresso local.",
+    "save.restoreError": "Não foi possível restaurar o autosave.",
     "save.restore": "Retomar autosave",
     "clock.none": "Sem relógio",
     "engine.prewarm": "Pré-aquecendo Stockfish",
@@ -126,6 +128,8 @@ export const dictionaries = {
     "analysis.blunder": "Blunder",
     "save.labelPrefix": "Save",
     "save.importError": "Invalid or incomplete PGN.",
+    "save.persistError": "Unable to save local progress.",
+    "save.restoreError": "Unable to restore the autosave.",
     "save.restore": "Resume autosave",
     "clock.none": "No clock",
     "engine.prewarm": "Warming up Stockfish",
@@ -146,4 +150,3 @@ export const dictionaries = {
 export const locales = Object.keys(dictionaries) as Locale[];
 
 export type TranslationKey = keyof (typeof dictionaries)["pt-BR"];
-

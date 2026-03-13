@@ -27,6 +27,7 @@ function App() {
     enginePhase,
     engineMessage,
     session,
+    autosave,
     saveSlots,
     selectedSquare,
     legalTargets,
@@ -46,6 +47,7 @@ function App() {
     setClockConfig,
     createManualSave,
     loadManualSave,
+    restoreAutosave,
     deleteManualSave,
     exportPgn,
     importPgnText,
@@ -61,6 +63,9 @@ function App() {
   const deferredMoves = useDeferredValue(session.snapshot.moveList);
   const theme = getTheme(session.settings.themeId);
   const closePanel = () => setActivePanel(null);
+  const autosaveTimestamp = autosave
+    ? formatRelativeTimestamp(autosave.updatedAt, session.settings.locale)
+    : null;
 
   useEffect(() => {
     void bootstrap();
@@ -81,15 +86,22 @@ function App() {
 
   useEffect(() => {
     const interval = window.setInterval(() => tickLoop(), 250);
-    const pageHideHandler = () => {
+    const persistAutosaveSnapshot = () => {
       persistOnPause();
     };
+    const visibilityChangeHandler = () => {
+      if (document.visibilityState === "hidden") {
+        persistAutosaveSnapshot();
+      }
+    };
 
-    window.addEventListener("pagehide", pageHideHandler);
+    window.addEventListener("pagehide", persistAutosaveSnapshot);
+    document.addEventListener("visibilitychange", visibilityChangeHandler);
 
     return () => {
       window.clearInterval(interval);
-      window.removeEventListener("pagehide", pageHideHandler);
+      window.removeEventListener("pagehide", persistAutosaveSnapshot);
+      document.removeEventListener("visibilitychange", visibilityChangeHandler);
     };
   }, []);
 
@@ -126,6 +138,11 @@ function App() {
       baseMs: Math.max(0, minutes) * 60_000,
       incrementMs: Math.max(0, increment) * 1_000,
     });
+  };
+
+  const runPanelAction = async (action: () => Promise<void>) => {
+    await action();
+    closePanel();
   };
 
   const style = getThemeCssVariables(theme) as CSSProperties;
@@ -312,7 +329,13 @@ function App() {
         {activePanel === "new-game" ? (
           <div className="panel-stack">
             <p>{t(session.settings.locale, "panel.newGame.body")}</p>
-            <button className="primary-button" type="button" onClick={() => void newGame()}>
+            <button
+              className="primary-button"
+              type="button"
+              onClick={() => {
+                void runPanelAction(newGame);
+              }}
+            >
               {t(session.settings.locale, "panel.newGame.confirm")}
             </button>
           </div>
@@ -327,7 +350,9 @@ function App() {
                 }`}
                 key={difficulty.id}
                 type="button"
-                onClick={() => void setDifficulty(difficulty.id)}
+                onClick={() => {
+                  void runPanelAction(() => setDifficulty(difficulty.id));
+                }}
               >
                 <strong>{difficulty.label}</strong>
                 <span>
@@ -349,7 +374,9 @@ function App() {
                   }`}
                   key={preset.label}
                   type="button"
-                  onClick={() => void setClockConfig(preset)}
+                  onClick={() => {
+                    void runPanelAction(() => setClockConfig(preset));
+                  }}
                 >
                   <strong>{preset.label}</strong>
                   <span>{preset.enabled ? "Tournament" : t(session.settings.locale, "clock.none")}</span>
@@ -365,7 +392,13 @@ function App() {
                 Increment
                 <input value={customIncrement} onChange={(event) => setCustomIncrement(event.target.value)} />
               </label>
-              <button className="primary-button" type="button" onClick={() => void applyCustomClock()}>
+              <button
+                className="primary-button"
+                type="button"
+                onClick={() => {
+                  void runPanelAction(applyCustomClock);
+                }}
+              >
                 {t(session.settings.locale, "panel.clock.custom")}
               </button>
             </div>
@@ -379,7 +412,9 @@ function App() {
                 className={`option-card ${session.settings.themeId === option.id ? "is-selected" : ""}`}
                 key={option.id}
                 type="button"
-                onClick={() => void setTheme(option.id)}
+                onClick={() => {
+                  void runPanelAction(() => setTheme(option.id));
+                }}
               >
                 <strong>{option.label}</strong>
                 <span className="theme-swatch-row">
@@ -394,6 +429,25 @@ function App() {
 
         {activePanel === "save-load" ? (
           <div className="panel-stack">
+            {autosave ? (
+              <article className="save-row">
+                <div>
+                  <strong>{t(session.settings.locale, "panel.saveLoad.autosave")}</strong>
+                  <span>{autosaveTimestamp}</span>
+                </div>
+                <div className="save-row__actions">
+                  <button
+                    className="ghost-button"
+                    type="button"
+                    onClick={() => {
+                      void runPanelAction(restoreAutosave);
+                    }}
+                  >
+                    {t(session.settings.locale, "save.restore")}
+                  </button>
+                </div>
+              </article>
+            ) : null}
             <button className="primary-button" type="button" onClick={() => void createManualSave()}>
               {t(session.settings.locale, "panel.saveLoad.create")}
             </button>
@@ -405,7 +459,13 @@ function App() {
                     <span>{formatRelativeTimestamp(save.updatedAt, session.settings.locale)}</span>
                   </div>
                   <div className="save-row__actions">
-                    <button className="ghost-button" type="button" onClick={() => void loadManualSave(save.id!)}>
+                    <button
+                      className="ghost-button"
+                      type="button"
+                      onClick={() => {
+                        void runPanelAction(() => loadManualSave(save.id!));
+                      }}
+                    >
                       {t(session.settings.locale, "panel.saveLoad.load")}
                     </button>
                     <button className="ghost-button" type="button" onClick={() => void deleteManualSave(save.id!)}>
@@ -435,7 +495,9 @@ function App() {
                 className={`option-card ${session.settings.locale === locale ? "is-selected" : ""}`}
                 key={locale}
                 type="button"
-                onClick={() => void setLocale(locale)}
+                onClick={() => {
+                  void runPanelAction(() => setLocale(locale));
+                }}
               >
                 <strong>{getLocaleLabel(locale)}</strong>
               </button>
