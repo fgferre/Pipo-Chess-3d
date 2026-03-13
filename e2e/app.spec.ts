@@ -14,10 +14,11 @@ test("boots offline, imports a PGN, switches language, and exports PGN", async (
     }
   });
 
-  await page.getByRole("button", { name: "Idioma" }).click();
+  await page.getByRole("button", { name: /Partida/i }).click();
   await page.getByRole("button", { name: "English" }).click();
   await expect(page.getByText("Ready to play")).toBeVisible();
 
+  await page.getByRole("button", { name: /Library/i }).click();
   const pgnPath = testInfo.outputPath("sample-game.pgn");
   await writeFile(pgnPath, "1. e4 e5 2. Nf3 Nc6");
   await page.locator('input[type="file"]').setInputFiles(pgnPath);
@@ -25,6 +26,7 @@ test("boots offline, imports a PGN, switches language, and exports PGN", async (
   await waitForAutosaveMoveCount(page, 4);
 
   const downloadPromise = page.waitForEvent("download");
+  await page.getByRole("button", { name: /Library/i }).click();
   await page.getByRole("button", { name: "Export PGN" }).click();
   const download = await downloadPromise;
   expect(await download.path()).toBeTruthy();
@@ -34,9 +36,10 @@ test("boots offline, imports a PGN, switches language, and exports PGN", async (
   await expect(page.getByText("Pipo Chess 3D")).toBeVisible();
   await expect(page.locator(".move-list")).toContainText("e4");
 
-  await page.getByRole("button", { name: "Save" }).click();
+  await page.getByRole("button", { name: /Library/i }).click();
   await expect(page.getByText("Recover autosave")).toBeVisible();
   await page.getByRole("button", { name: "Resume autosave" }).click();
+  await page.getByRole("button", { name: /Moves/i }).click();
   await expect(page.locator(".move-list")).toContainText("e4");
 });
 

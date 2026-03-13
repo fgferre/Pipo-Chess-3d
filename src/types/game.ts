@@ -3,14 +3,6 @@ import type { Color, PieceSymbol, Square } from "chess.js";
 export type Locale = "pt-BR" | "en";
 export type Orientation = "white" | "black";
 export type EnginePhase = "booting" | "ready" | "thinking" | "analyzing" | "error";
-export type PanelId =
-  | "new-game"
-  | "difficulty"
-  | "clock"
-  | "themes"
-  | "save-load"
-  | "analysis"
-  | "language";
 
 export interface ClockConfig {
   enabled: boolean;

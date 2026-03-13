@@ -6,20 +6,23 @@ import {
   useRef,
   useState,
   type CSSProperties,
+  type ReactNode,
 } from "react";
-import type { PanelId } from "./types/game";
+import type { Color } from "chess.js";
 import { ChessScene } from "./components/ChessScene";
 import { MoveList } from "./components/MoveList";
-import { PanelSheet } from "./components/PanelSheet";
 import { AnalysisSummaryView } from "./components/AnalysisSummaryView";
 import { clockPresets } from "./data/clocks";
-import { difficultyPresets } from "./data/difficulties";
+import { difficultyPresets, getDifficultyPreset } from "./data/difficulties";
 import { getTheme, getThemeCssVariables, themes } from "./data/themes";
 import { getLocaleLabel, t } from "./i18n";
 import { locales } from "./i18n/dictionaries";
 import { useGameStore } from "./state/gameStore";
 import { formatClock, formatRelativeTimestamp } from "./utils/format";
 import { readTextFile } from "./utils/files";
+import type { Locale } from "./types/game";
+
+type SectionId = "moves" | "analysis" | "library" | "game";
 
 function App() {
   const {
@@ -55,17 +58,21 @@ function App() {
     persistCurrentAutosave,
     tickLiveClock,
   } = useGameStore();
-  const [activePanel, setActivePanel] = useState<PanelId | null>(null);
+  const [openSection, setOpenSection] = useState<SectionId | null>(null);
   const [customMinutes, setCustomMinutes] = useState("10");
   const [customIncrement, setCustomIncrement] = useState("5");
   const [transientError, setTransientError] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const initializedSectionRef = useRef(false);
   const deferredMoves = useDeferredValue(session.snapshot.moveList);
   const theme = getTheme(session.settings.themeId);
-  const closePanel = () => setActivePanel(null);
+  const activeDifficulty = getDifficultyPreset(session.settings.difficultyId);
   const autosaveTimestamp = autosave
     ? formatRelativeTimestamp(autosave.updatedAt, session.settings.locale)
     : null;
+  const topColor: Color = session.settings.orientation === "white" ? "b" : "w";
+  const bottomColor: Color = session.settings.orientation === "white" ? "w" : "b";
+  const lastMove = deferredMoves.at(-1);
 
   useEffect(() => {
     void bootstrap();
@@ -75,6 +82,20 @@ function App() {
     setCustomMinutes(String(Math.max(0, Math.round(session.settings.clockConfig.baseMs / 60_000))));
     setCustomIncrement(String(Math.max(0, Math.round(session.settings.clockConfig.incrementMs / 1_000))));
   }, [session.settings.clockConfig.baseMs, session.settings.clockConfig.incrementMs]);
+
+  useEffect(() => {
+    if (initializedSectionRef.current || !booted) {
+      return;
+    }
+
+    if (session.analysisSummary) {
+      setOpenSection("analysis");
+    } else if (session.snapshot.moveList.length > 0) {
+      setOpenSection("moves");
+    }
+
+    initializedSectionRef.current = true;
+  }, [booted, session.analysisSummary, session.snapshot.moveList.length]);
 
   const persistOnPause = useEffectEvent(() => {
     void persistCurrentAutosave();
@@ -105,9 +126,15 @@ function App() {
     };
   }, []);
 
-  const togglePanel = (panel: PanelId) => {
+  const toggleSection = (section: SectionId) => {
     startTransition(() => {
-      setActivePanel((current) => (current === panel ? null : panel));
+      setOpenSection((current) => (current === section ? null : section));
+    });
+  };
+
+  const revealSection = (section: SectionId) => {
+    startTransition(() => {
+      setOpenSection(section);
     });
   };
 
@@ -120,6 +147,7 @@ function App() {
     try {
       const text = await readTextFile(file);
       await importPgnText(text);
+      revealSection("moves");
       setTransientError(null);
     } catch {
       setTransientError(t(session.settings.locale, "save.importError"));
@@ -138,11 +166,7 @@ function App() {
       baseMs: Math.max(0, minutes) * 60_000,
       incrementMs: Math.max(0, increment) * 1_000,
     });
-  };
-
-  const runPanelAction = async (action: () => Promise<void>) => {
-    await action();
-    closePanel();
+    revealSection("game");
   };
 
   const style = getThemeCssVariables(theme) as CSSProperties;
@@ -165,57 +189,66 @@ function App() {
     session.snapshot.status === "timeout"
       ? `result.${session.snapshot.status}`
       : "result.active";
+  const movesSummary =
+    deferredMoves.length === 0
+      ? t(session.settings.locale, "section.moves.subtitle.empty")
+      : t(session.settings.locale, "section.moves.subtitle.last", {
+          count: deferredMoves.length,
+          move: lastMove?.san ?? "—",
+        });
+  const analysisSummaryText = analysisProgress
+    ? t(session.settings.locale, "section.analysis.subtitle.progress", {
+        completed: analysisProgress.completed,
+        total: analysisProgress.total,
+      })
+    : session.analysisSummary
+      ? t(session.settings.locale, "section.analysis.subtitle.ready", {
+          count: session.analysisSummary.criticalMoments.length,
+        })
+      : t(session.settings.locale, "section.analysis.subtitle.empty");
+  const librarySummary =
+    saveSlots.length > 0
+      ? t(session.settings.locale, "section.library.subtitle.ready", {
+          count: saveSlots.length,
+        })
+      : autosaveTimestamp
+        ? t(session.settings.locale, "section.library.subtitle.autosave", {
+            time: autosaveTimestamp,
+          })
+        : t(session.settings.locale, "section.library.subtitle.empty");
+  const gameSummary = t(session.settings.locale, "section.game.subtitle", {
+    difficulty: activeDifficulty.label,
+    clock: session.settings.clockConfig.enabled ? session.settings.clockConfig.label : t(session.settings.locale, "clock.none"),
+  });
 
   return (
     <div className="app-shell" style={style}>
       <div className="backdrop-orb backdrop-orb--primary" />
       <div className="backdrop-orb backdrop-orb--secondary" />
 
-      <header className="hero">
-        <div>
+      <header className="app-header">
+        <div className="brand-block">
           <p className="eyebrow">{t(session.settings.locale, "hud.offline")}</p>
-          <h1>{t(session.settings.locale, "app.title")}</h1>
-          <p className="hero-copy">{t(session.settings.locale, "app.subtitle")}</p>
+          <div className="brand-row">
+            <h1>{t(session.settings.locale, "app.title")}</h1>
+            <span className={`status-pill status-pill--${enginePhase}`}>{t(session.settings.locale, statusKey)}</span>
+          </div>
+          <p className="brand-copy">{engineMessage || t(session.settings.locale, statusKey)}</p>
         </div>
-        <div className="hero-badges">
-          <span className={`status-pill status-pill--${enginePhase}`}>{t(session.settings.locale, statusKey)}</span>
-          <span className="status-pill status-pill--result">{t(session.settings.locale, resultKey as never)}</span>
-        </div>
+        <span className="status-pill status-pill--result">{t(session.settings.locale, resultKey as never)}</span>
       </header>
 
       <main className="app-layout">
-        <section className="play-column">
-          <article className="hero-stats">
-            <div className="stat-card">
-              <span>{t(session.settings.locale, "hud.engine")}</span>
-              <strong>{engineMessage || t(session.settings.locale, statusKey)}</strong>
-            </div>
-            <div className="stat-card">
-              <span>{t(session.settings.locale, "hud.turn.white")}</span>
-              <strong>{formatClock(session.snapshot.clockState.whiteMs)}</strong>
-            </div>
-            <div className="stat-card">
-              <span>{t(session.settings.locale, "hud.turn.black")}</span>
-              <strong>{formatClock(session.snapshot.clockState.blackMs)}</strong>
-            </div>
-          </article>
+        <section className="play-stage">
+          <ClockTray
+            color={topColor}
+            locale={session.settings.locale}
+            isPlayer={topColor === session.playerColor}
+            isActive={session.snapshot.clockState.activeColor === topColor}
+            time={topColor === "w" ? session.snapshot.clockState.whiteMs : session.snapshot.clockState.blackMs}
+          />
 
           <section className="board-card">
-            <div className="board-overlays">
-              <div
-                className={`clock-banner ${session.snapshot.clockState.activeColor === "b" ? "is-active" : ""}`}
-              >
-                <span>Black</span>
-                <strong>{formatClock(session.snapshot.clockState.blackMs)}</strong>
-              </div>
-              <div
-                className={`clock-banner ${session.snapshot.clockState.activeColor === "w" ? "is-active" : ""}`}
-              >
-                <span>White</span>
-                <strong>{formatClock(session.snapshot.clockState.whiteMs)}</strong>
-              </div>
-            </div>
-
             <ChessScene
               session={session}
               theme={theme}
@@ -228,7 +261,15 @@ function App() {
             />
           </section>
 
-          <section className="quick-actions">
+          <ClockTray
+            color={bottomColor}
+            locale={session.settings.locale}
+            isPlayer={bottomColor === session.playerColor}
+            isActive={session.snapshot.clockState.activeColor === bottomColor}
+            time={bottomColor === "w" ? session.snapshot.clockState.whiteMs : session.snapshot.clockState.blackMs}
+          />
+
+          <section className="quick-actions" aria-label={t(session.settings.locale, "hud.primaryActions")}>
             <button className="primary-button" type="button" onClick={() => void requestHint()}>
               {t(session.settings.locale, "hud.hint")}
             </button>
@@ -241,270 +282,282 @@ function App() {
             <button className="ghost-button" type="button" onClick={() => void toggleOrientation()}>
               {t(session.settings.locale, "hud.flip")}
             </button>
-            <button className="ghost-button" type="button" onClick={() => fileInputRef.current?.click()}>
-              {t(session.settings.locale, "hud.import")}
-            </button>
-            <button className="ghost-button" type="button" onClick={exportPgn}>
-              {t(session.settings.locale, "hud.export")}
-            </button>
-            <button className="ghost-button" type="button" onClick={() => void newGame()}>
-              {t(session.settings.locale, "hud.newGame")}
-            </button>
           </section>
         </section>
 
-        <aside className="info-column">
-          <article className="side-card">
-            <div className="side-card__header">
-              <h2>{t(session.settings.locale, "hud.moves")}</h2>
-              <span>{deferredMoves.length}</span>
-            </div>
+        <section className="detail-column">
+          <AccordionSection
+            title={t(session.settings.locale, "hud.moves")}
+            summary={movesSummary}
+            meta={deferredMoves.length > 0 ? <span className="section-badge">{deferredMoves.length}</span> : null}
+            open={openSection === "moves"}
+            onToggle={() => toggleSection("moves")}
+          >
             <MoveList moves={deferredMoves} />
-          </article>
+          </AccordionSection>
 
-          <article className="side-card">
-            <div className="side-card__header">
-              <h2>{t(session.settings.locale, "hud.analysis")}</h2>
-              {analysisProgress ? (
-                <span>
+          <AccordionSection
+            title={t(session.settings.locale, "section.analysis.title")}
+            summary={analysisSummaryText}
+            meta={
+              analysisProgress ? (
+                <span className="section-badge">
                   {analysisProgress.completed}/{analysisProgress.total}
                 </span>
-              ) : null}
-            </div>
-            <AnalysisSummaryView summary={session.analysisSummary} locale={session.settings.locale} />
-          </article>
-
-          <article className="side-card">
-            <div className="side-card__header">
-              <h2>{t(session.settings.locale, "nav.saveLoad")}</h2>
-            </div>
-            <div className="save-grid">
-              {saveSlots.slice(0, 4).map((save) => (
-                <button
-                  className="save-tile"
-                  key={save.id}
-                  type="button"
-                  onClick={() => void loadManualSave(save.id!)}
-                >
-                  <strong>{save.label}</strong>
-                  <span>{formatRelativeTimestamp(save.updatedAt, session.settings.locale)}</span>
-                </button>
-              ))}
-              {saveSlots.length === 0 ? <p className="muted-copy">{t(session.settings.locale, "panel.saveLoad.empty")}</p> : null}
-            </div>
-          </article>
-        </aside>
-      </main>
-
-      <nav className="bottom-dock">
-        <button type="button" onClick={() => togglePanel("new-game")}>
-          {t(session.settings.locale, "nav.newGame")}
-        </button>
-        <button type="button" onClick={() => togglePanel("difficulty")}>
-          {t(session.settings.locale, "nav.difficulty")}
-        </button>
-        <button type="button" onClick={() => togglePanel("clock")}>
-          {t(session.settings.locale, "nav.clock")}
-        </button>
-        <button type="button" onClick={() => togglePanel("themes")}>
-          {t(session.settings.locale, "nav.themes")}
-        </button>
-        <button type="button" onClick={() => togglePanel("save-load")}>
-          {t(session.settings.locale, "nav.saveLoad")}
-        </button>
-        <button type="button" onClick={() => togglePanel("analysis")}>
-          {t(session.settings.locale, "nav.analysis")}
-        </button>
-        <button type="button" onClick={() => togglePanel("language")}>
-          {t(session.settings.locale, "nav.language")}
-        </button>
-      </nav>
-
-      <PanelSheet
-        title={panelTitle(activePanel, session.settings.locale)}
-        visible={activePanel !== null}
-        closeLabel={t(session.settings.locale, "panel.close")}
-        onClose={closePanel}
-      >
-        {activePanel === "new-game" ? (
-          <div className="panel-stack">
-            <p>{t(session.settings.locale, "panel.newGame.body")}</p>
-            <button
-              className="primary-button"
-              type="button"
-              onClick={() => {
-                void runPanelAction(newGame);
-              }}
-            >
-              {t(session.settings.locale, "panel.newGame.confirm")}
-            </button>
-          </div>
-        ) : null}
-
-        {activePanel === "difficulty" ? (
-          <div className="option-grid">
-            {difficultyPresets.map((difficulty) => (
-              <button
-                className={`option-card ${
-                  session.settings.difficultyId === difficulty.id ? "is-selected" : ""
-                }`}
-                key={difficulty.id}
-                type="button"
-                onClick={() => {
-                  void runPanelAction(() => setDifficulty(difficulty.id));
-                }}
-              >
-                <strong>{difficulty.label}</strong>
-                <span>
-                  {difficulty.uciElo ? `Elo ${difficulty.uciElo}` : "Unlimited"}
-                </span>
-                <small>{difficulty.moveTimeMs} ms</small>
-              </button>
-            ))}
-          </div>
-        ) : null}
-
-        {activePanel === "clock" ? (
-          <div className="panel-stack">
-            <div className="option-grid">
-              {clockPresets.map((preset) => (
-                <button
-                  className={`option-card ${
-                    session.settings.clockConfig.label === preset.label ? "is-selected" : ""
-                  }`}
-                  key={preset.label}
-                  type="button"
-                  onClick={() => {
-                    void runPanelAction(() => setClockConfig(preset));
-                  }}
-                >
-                  <strong>{preset.label}</strong>
-                  <span>{preset.enabled ? "Tournament" : t(session.settings.locale, "clock.none")}</span>
-                </button>
-              ))}
-            </div>
-            <div className="custom-clock">
-              <label>
-                Minutes
-                <input value={customMinutes} onChange={(event) => setCustomMinutes(event.target.value)} />
-              </label>
-              <label>
-                Increment
-                <input value={customIncrement} onChange={(event) => setCustomIncrement(event.target.value)} />
-              </label>
+              ) : session.analysisSummary ? (
+                <span className="section-badge">{session.analysisSummary.criticalMoments.length}</span>
+              ) : null
+            }
+            open={openSection === "analysis"}
+            onToggle={() => toggleSection("analysis")}
+          >
+            <div className="panel-stack">
               <button
                 className="primary-button"
                 type="button"
                 onClick={() => {
-                  void runPanelAction(applyCustomClock);
+                  revealSection("analysis");
+                  void runAnalysis();
                 }}
               >
-                {t(session.settings.locale, "panel.clock.custom")}
+                {t(session.settings.locale, "panel.analysis.run")}
               </button>
+              <AnalysisSummaryView summary={session.analysisSummary} locale={session.settings.locale} />
             </div>
-          </div>
-        ) : null}
+          </AccordionSection>
 
-        {activePanel === "themes" ? (
-          <div className="option-grid">
-            {themes.map((option) => (
-              <button
-                className={`option-card ${session.settings.themeId === option.id ? "is-selected" : ""}`}
-                key={option.id}
-                type="button"
-                onClick={() => {
-                  void runPanelAction(() => setTheme(option.id));
-                }}
-              >
-                <strong>{option.label}</strong>
-                <span className="theme-swatch-row">
-                  <i style={{ background: option.boardLight }} />
-                  <i style={{ background: option.boardDark }} />
-                  <i style={{ background: option.highlightPrimary }} />
-                </span>
-              </button>
-            ))}
-          </div>
-        ) : null}
-
-        {activePanel === "save-load" ? (
-          <div className="panel-stack">
-            {autosave ? (
-              <article className="save-row">
-                <div>
-                  <strong>{t(session.settings.locale, "panel.saveLoad.autosave")}</strong>
-                  <span>{autosaveTimestamp}</span>
-                </div>
-                <div className="save-row__actions">
-                  <button
-                    className="ghost-button"
-                    type="button"
-                    onClick={() => {
-                      void runPanelAction(restoreAutosave);
-                    }}
-                  >
-                    {t(session.settings.locale, "save.restore")}
-                  </button>
-                </div>
-              </article>
-            ) : null}
-            <button className="primary-button" type="button" onClick={() => void createManualSave()}>
-              {t(session.settings.locale, "panel.saveLoad.create")}
-            </button>
-            <div className="save-list">
-              {saveSlots.map((save) => (
-                <article className="save-row" key={save.id}>
+          <AccordionSection
+            title={t(session.settings.locale, "section.library.title")}
+            summary={librarySummary}
+            meta={
+              saveSlots.length > 0 ? (
+                <span className="section-badge">{saveSlots.length}</span>
+              ) : autosave ? (
+                <span className="section-badge">A</span>
+              ) : null
+            }
+            open={openSection === "library"}
+            onToggle={() => toggleSection("library")}
+          >
+            <div className="panel-stack">
+              {autosave ? (
+                <article className="save-row">
                   <div>
-                    <strong>{save.label}</strong>
-                    <span>{formatRelativeTimestamp(save.updatedAt, session.settings.locale)}</span>
+                    <strong>{t(session.settings.locale, "panel.saveLoad.autosave")}</strong>
+                    <span>{autosaveTimestamp}</span>
                   </div>
                   <div className="save-row__actions">
                     <button
                       className="ghost-button"
                       type="button"
                       onClick={() => {
-                        void runPanelAction(() => loadManualSave(save.id!));
+                        revealSection("library");
+                        void restoreAutosave();
                       }}
                     >
-                      {t(session.settings.locale, "panel.saveLoad.load")}
-                    </button>
-                    <button className="ghost-button" type="button" onClick={() => void deleteManualSave(save.id!)}>
-                      {t(session.settings.locale, "panel.saveLoad.delete")}
+                      {t(session.settings.locale, "save.restore")}
                     </button>
                   </div>
                 </article>
-              ))}
-              {saveSlots.length === 0 ? <p className="muted-copy">{t(session.settings.locale, "panel.saveLoad.empty")}</p> : null}
+              ) : null}
+
+              <div className="inline-actions">
+                <button
+                  className="primary-button"
+                  type="button"
+                  onClick={() => {
+                    revealSection("library");
+                    void createManualSave();
+                  }}
+                >
+                  {t(session.settings.locale, "panel.saveLoad.create")}
+                </button>
+                <button
+                  className="ghost-button"
+                  type="button"
+                  onClick={() => fileInputRef.current?.click()}
+                >
+                  {t(session.settings.locale, "hud.import")}
+                </button>
+                <button className="ghost-button" type="button" onClick={exportPgn}>
+                  {t(session.settings.locale, "hud.export")}
+                </button>
+              </div>
+
+              <div className="save-list">
+                {saveSlots.map((save) => (
+                  <article className="save-row" key={save.id}>
+                    <div>
+                      <strong>{save.label}</strong>
+                      <span>{formatRelativeTimestamp(save.updatedAt, session.settings.locale)}</span>
+                    </div>
+                    <div className="save-row__actions">
+                      <button
+                        className="ghost-button"
+                        type="button"
+                        onClick={() => {
+                          revealSection("library");
+                          void loadManualSave(save.id!);
+                        }}
+                      >
+                        {t(session.settings.locale, "panel.saveLoad.load")}
+                      </button>
+                      <button
+                        className="ghost-button"
+                        type="button"
+                        onClick={() => {
+                          revealSection("library");
+                          void deleteManualSave(save.id!);
+                        }}
+                      >
+                        {t(session.settings.locale, "panel.saveLoad.delete")}
+                      </button>
+                    </div>
+                  </article>
+                ))}
+                {saveSlots.length === 0 ? <p className="muted-copy">{t(session.settings.locale, "panel.saveLoad.empty")}</p> : null}
+              </div>
             </div>
-          </div>
-        ) : null}
+          </AccordionSection>
 
-        {activePanel === "analysis" ? (
-          <div className="panel-stack">
-            <button className="primary-button" type="button" onClick={() => void runAnalysis()}>
-              {t(session.settings.locale, "panel.analysis.run")}
-            </button>
-            <AnalysisSummaryView summary={session.analysisSummary} locale={session.settings.locale} />
-          </div>
-        ) : null}
+          <AccordionSection
+            title={t(session.settings.locale, "section.game.title")}
+            summary={gameSummary}
+            open={openSection === "game"}
+            onToggle={() => toggleSection("game")}
+          >
+            <div className="panel-stack">
+              <div className="panel-stack">
+                <p className="muted-copy">{t(session.settings.locale, "panel.newGame.body")}</p>
+                <button
+                  className="primary-button"
+                  type="button"
+                  onClick={() => {
+                    void newGame();
+                  }}
+                >
+                  {t(session.settings.locale, "panel.newGame.confirm")}
+                </button>
+              </div>
 
-        {activePanel === "language" ? (
-          <div className="option-grid">
-            {locales.map((locale) => (
-              <button
-                className={`option-card ${session.settings.locale === locale ? "is-selected" : ""}`}
-                key={locale}
-                type="button"
-                onClick={() => {
-                  void runPanelAction(() => setLocale(locale));
-                }}
-              >
-                <strong>{getLocaleLabel(locale)}</strong>
-              </button>
-            ))}
-          </div>
-        ) : null}
-      </PanelSheet>
+              <div className="settings-group">
+                <div className="settings-group__header">
+                  <h2>{t(session.settings.locale, "panel.difficulty.title")}</h2>
+                </div>
+                <div className="option-grid">
+                  {difficultyPresets.map((difficulty) => (
+                    <button
+                      className={`option-card ${
+                        session.settings.difficultyId === difficulty.id ? "is-selected" : ""
+                      }`}
+                      key={difficulty.id}
+                      type="button"
+                      onClick={() => {
+                        revealSection("game");
+                        void setDifficulty(difficulty.id);
+                      }}
+                    >
+                      <strong>{difficulty.label}</strong>
+                      <span>{difficulty.uciElo ? `Elo ${difficulty.uciElo}` : "Unlimited"}</span>
+                      <small>{difficulty.moveTimeMs} ms</small>
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <div className="settings-group">
+                <div className="settings-group__header">
+                  <h2>{t(session.settings.locale, "panel.clock.title")}</h2>
+                </div>
+                <div className="option-grid">
+                  {clockPresets.map((preset) => (
+                    <button
+                      className={`option-card ${
+                        session.settings.clockConfig.label === preset.label ? "is-selected" : ""
+                      }`}
+                      key={preset.label}
+                      type="button"
+                      onClick={() => {
+                        revealSection("game");
+                        void setClockConfig(preset);
+                      }}
+                    >
+                      <strong>{preset.label}</strong>
+                      <span>{preset.enabled ? "Tournament" : t(session.settings.locale, "clock.none")}</span>
+                    </button>
+                  ))}
+                </div>
+                <div className="custom-clock">
+                  <label>
+                    {t(session.settings.locale, "panel.clock.minutes")}
+                    <input value={customMinutes} onChange={(event) => setCustomMinutes(event.target.value)} />
+                  </label>
+                  <label>
+                    {t(session.settings.locale, "panel.clock.increment")}
+                    <input value={customIncrement} onChange={(event) => setCustomIncrement(event.target.value)} />
+                  </label>
+                  <button
+                    className="ghost-button"
+                    type="button"
+                    onClick={() => {
+                      void applyCustomClock();
+                    }}
+                  >
+                    {t(session.settings.locale, "panel.clock.custom")}
+                  </button>
+                </div>
+              </div>
+
+              <div className="settings-group">
+                <div className="settings-group__header">
+                  <h2>{t(session.settings.locale, "panel.themes.title")}</h2>
+                </div>
+                <div className="option-grid">
+                  {themes.map((option) => (
+                    <button
+                      className={`option-card ${session.settings.themeId === option.id ? "is-selected" : ""}`}
+                      key={option.id}
+                      type="button"
+                      onClick={() => {
+                        revealSection("game");
+                        void setTheme(option.id);
+                      }}
+                    >
+                      <strong>{option.label}</strong>
+                      <span className="theme-swatch-row">
+                        <i style={{ background: option.boardLight }} />
+                        <i style={{ background: option.boardDark }} />
+                        <i style={{ background: option.highlightPrimary }} />
+                      </span>
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <div className="settings-group">
+                <div className="settings-group__header">
+                  <h2>{t(session.settings.locale, "panel.language.title")}</h2>
+                </div>
+                <div className="option-grid">
+                  {locales.map((locale) => (
+                    <button
+                      className={`option-card ${session.settings.locale === locale ? "is-selected" : ""}`}
+                      key={locale}
+                      type="button"
+                      onClick={() => {
+                        revealSection("game");
+                        void setLocale(locale);
+                      }}
+                    >
+                      <strong>{getLocaleLabel(locale)}</strong>
+                    </button>
+                  ))}
+                </div>
+              </div>
+            </div>
+          </AccordionSection>
+        </section>
+      </main>
 
       {!booted ? <div className="boot-scrim">{t(session.settings.locale, "status.loading")}</div> : null}
       {transientError || lastError ? <div className="toast">{transientError ?? lastError}</div> : null}
@@ -521,25 +574,58 @@ function App() {
   );
 }
 
-function panelTitle(panel: PanelId | null, locale: "pt-BR" | "en"): string {
-  switch (panel) {
-    case "new-game":
-      return t(locale, "panel.newGame.title");
-    case "difficulty":
-      return t(locale, "panel.difficulty.title");
-    case "clock":
-      return t(locale, "panel.clock.title");
-    case "themes":
-      return t(locale, "panel.themes.title");
-    case "save-load":
-      return t(locale, "panel.saveLoad.title");
-    case "analysis":
-      return t(locale, "panel.analysis.title");
-    case "language":
-      return t(locale, "panel.language.title");
-    default:
-      return "";
-  }
+interface ClockTrayProps {
+  color: Color;
+  locale: Locale;
+  isPlayer: boolean;
+  isActive: boolean;
+  time: number;
+}
+
+function ClockTray({ color, locale, isPlayer, isActive, time }: ClockTrayProps) {
+  return (
+    <article className={`clock-tray ${isActive ? "is-active" : ""}`}>
+      <div className="clock-tray__identity">
+        <span>{t(locale, color === "w" ? "hud.side.white" : "hud.side.black")}</span>
+        <strong>{isPlayer ? t(locale, "hud.you") : t(locale, "hud.localAi")}</strong>
+      </div>
+      <time className="clock-tray__time">{formatClock(time)}</time>
+    </article>
+  );
+}
+
+interface AccordionSectionProps {
+  title: string;
+  summary: string;
+  open: boolean;
+  onToggle: () => void;
+  children: ReactNode;
+  meta?: ReactNode;
+}
+
+function AccordionSection({ title, summary, open, onToggle, children, meta }: AccordionSectionProps) {
+  return (
+    <section className={`section-card ${open ? "is-open" : ""}`}>
+      <button
+        className="section-card__header"
+        type="button"
+        aria-expanded={open}
+        onClick={onToggle}
+      >
+        <div className="section-card__copy">
+          <span className="section-card__title">{title}</span>
+          <strong>{summary}</strong>
+        </div>
+        <div className="section-card__meta">
+          {meta}
+          <span className="section-chevron" aria-hidden="true">
+            {open ? "−" : "+"}
+          </span>
+        </div>
+      </button>
+      {open ? <div className="section-card__body">{children}</div> : null}
+    </section>
+  );
 }
 
 export default App;

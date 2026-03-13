@@ -1,10 +1,10 @@
 # AGENTS.md
 
-## Mandatory Principles
+## Mandatory Principles (Always On)
 
 1. Read the relevant files before changing code.
 2. Preserve existing user changes unless explicitly told to replace them.
-3. Prefer small, reversible diffs over broad refactors.
+3. Make the smallest change that fully solves the issue: find the root cause, touch only necessary code, prefer small and reversible diffs. Avoid hacks, broad refactors, and rewriting working code.
 4. Do not invent APIs, routes, data contracts, or environment assumptions.
 5. Keep business logic in testable functions and UI glue thin.
 6. Add or update tests when behavior changes.
@@ -12,23 +12,6 @@
 8. Call out assumptions, known risks, and anything not verified.
 9. Never use destructive git commands without explicit approval.
 10. Keep documentation, scripts, and config aligned with the actual codebase.
-
-## Working Style
-
-- Understand the current implementation first.
-- Make one coherent change set at a time.
-- Favor explicit names and predictable data flow.
-- Optimize for maintainability before cleverness.
-- Treat persistence, migrations, and offline flows as high-risk areas.
-
-## Verification
-
-- At minimum, run lint for edited code paths.
-- Run unit/integration/E2E tests when they are relevant to the change.
-- If a test is failing before the task is complete, say so clearly.
-
-## Communication
-
-- Be direct and specific.
-- Report what changed, what was verified, and what still needs attention.
-- When blocked, explain the blocker and the next best action.
+11. Before creating any file, folder, or module — or reorganizing the structure: search for existing equivalents first. Only proceed if nothing fits (and explain why). Never rename, move, or reorganize unless explicitly requested.
+12. Before finishing a task, do a cleanup pass: remove temporary debug code, dead branches, redundant helpers, and any legacy/shim introduced unless still required.
+13. Follow the existing code style, patterns, and naming conventions of the project.

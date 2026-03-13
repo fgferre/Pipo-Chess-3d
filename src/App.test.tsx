@@ -94,9 +94,8 @@ describe("App integration", () => {
     render(<App />);
 
     await screen.findByText("Pipo Chess 3D");
-    fireEvent.click(screen.getByRole("button", { name: "Tema" }));
+    fireEvent.click(screen.getByRole("button", { name: /Partida/i }));
     fireEvent.click(await screen.findByRole("button", { name: "Emerald" }));
-    fireEvent.click(screen.getByRole("button", { name: "Idioma" }));
     fireEvent.click(await screen.findByRole("button", { name: "English" }));
     fireEvent.click(screen.getByText("Square e2"));
     fireEvent.click(screen.getByText("Square e4"));
@@ -144,7 +143,8 @@ describe("App integration", () => {
       expect(engineClientMock.search).toHaveBeenCalledTimes(1);
     });
 
-    fireEvent.click(screen.getByRole("button", { name: "Nova partida" }));
+    fireEvent.click(screen.getByRole("button", { name: /Partida/i }));
+    fireEvent.click(screen.getByRole("button", { name: "Começar agora" }));
 
     await waitFor(() => {
       expect(engineClientMock.newGame).toHaveBeenCalledTimes(1);
@@ -171,7 +171,7 @@ describe("App integration", () => {
     render(<App />);
 
     await screen.findByText("Pipo Chess 3D");
-    fireEvent.click(screen.getByRole("button", { name: "Análise" }));
+    fireEvent.click(screen.getByRole("button", { name: /Análise/i }));
     fireEvent.click(screen.getByRole("button", { name: "Gerar análise" }));
 
     await waitFor(() => {
