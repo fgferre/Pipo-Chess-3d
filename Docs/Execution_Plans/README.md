@@ -6,11 +6,12 @@ Esta pasta organiza os planos de execucao dos tickets que ainda faltam no epic d
 
 Ler sempre nesta ordem:
 
-1. `Docs/Specs/Epic_Brief_—_Pipo_Chess_3d.md`
-2. `Docs/Specs/Core_Flows_—_Pipo_Chess_3d.md`
-3. `Docs/Specs/Tech_Plan_—_Pipo_Chess_3d.md`
-4. ticket alvo em `Docs/Tickets/`
-5. plano de execucao correspondente nesta pasta
+1. `Docs/Execution_Plans/EXECUTION_PROTOCOL.md`
+2. `Docs/Specs/Epic_Brief_—_Pipo_Chess_3d.md`
+3. `Docs/Specs/Core_Flows_—_Pipo_Chess_3d.md`
+4. `Docs/Specs/Tech_Plan_—_Pipo_Chess_3d.md`
+5. ticket alvo em `Docs/Tickets/`
+6. plano de execucao correspondente nesta pasta
 
 Os planos abaixo nao substituem os tickets nem os specs. Eles descrevem a sequencia de acoes recomendada para executar cada ticket de forma aderente ao estado atual do projeto e com o menor retrabalho possivel.
 
@@ -54,9 +55,10 @@ graph TD
 
 1. Nao iniciar um plano sem validar o gate de saida do plano anterior.
 2. Em cada ticket, revisar novamente o ticket original e as secoes de spec citadas pelo plano.
-3. Se a implementacao encontrada exigir mudar produto, parar e alinhar antes de seguir.
-4. Se a implementacao divergir apenas do detalhe tecnico do Tech Plan, registrar a divergencia, revisar impacto nos tickets seguintes e so entao continuar.
-5. Nenhum ticket deve ser dado como concluido sem validacao local proporcional ao risco: teste unitario, smoke test visual e checagem estatica quando aplicavel.
+3. Seguir tambem o `Docs/Execution_Plans/EXECUTION_PROTOCOL.md`.
+4. Se a implementacao encontrada exigir mudar produto, parar e alinhar antes de seguir.
+5. Se a implementacao divergir apenas do detalhe tecnico do Tech Plan, registrar a divergencia, revisar impacto nos tickets seguintes e so entao continuar.
+6. Nenhum ticket deve ser dado como concluido sem validacao local proporcional ao risco: teste unitario, smoke test visual e checagem estatica quando aplicavel.
 
 ## Observacoes sobre o estado atual do codigo
 
