@@ -6,18 +6,19 @@ Estes prompts sao para uma segunda IA revisar o que foi implementado apos a exec
 
 1. Execute a fase com o prompt de execucao correspondente.
 2. Abra uma nova conversa com a IA revisora.
-3. Use o prompt generico desta pasta preenchendo apenas os caminhos da fase.
-4. A IA revisora deve inferir o escopo tecnico usando o estado do repo e os arquivos implicados pelo plano e ticket.
-5. Ela deve corrigir problemas razoaveis e revalidar antes de concluir.
-6. So avance para a proxima fase depois de tratar o resultado do review.
+3. Cole o prompt generico desta pasta na IA revisora.
+4. A IA revisora deve pedir apenas:
+   - qual prompt de execucao foi usado
+   - se existe algum contexto extra
+5. A partir do prompt de execucao, ela deve localizar plano, ticket, specs e arquivos relevantes.
+6. Ela deve corrigir problemas razoaveis e revalidar antes de concluir.
+7. So avance para a proxima fase depois de tratar o resultado do review.
 
 ## O que a IA revisora deve ler
 
 - `Docs/Execution_Plans/REVIEW_PROTOCOL.md`
 - prompt de execucao usado
-- plano da fase
-- ticket alvo
-- specs relevantes
+- referencias derivadas a partir dele
 - mudancas reais inferidas a partir do repo
 
 ## Regra pratica
@@ -30,5 +31,5 @@ Se nao tiver, cole o conteudo manualmente.
 Na conversa com a IA revisora:
 
 1. abra `PROMPT_REVIEW_TEMPLATE.md`
-2. preencha os caminhos da fase
-3. cole o prompt completo na IA revisora
+2. cole o prompt na IA revisora
+3. responda apenas o caminho do prompt de execucao e algum contexto extra, se houver

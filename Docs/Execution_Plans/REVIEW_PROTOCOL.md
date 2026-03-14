@@ -29,10 +29,8 @@ O revisor deve ler, no minimo:
 
 1. `Docs/Execution_Plans/REVIEW_PROTOCOL.md`
 2. prompt de execucao usado
-3. plano da fase correspondente
-4. ticket alvo
-5. specs relevantes
-6. mudancas reais implicadas pela fase, inferidas a partir do repo
+3. qualquer contexto extra informado pelo usuario
+4. mudancas reais implicadas pela fase, inferidas a partir do repo
 
 Se o review nao olhar a mudanca real entregue, ele e incompleto.
 
@@ -46,14 +44,17 @@ Se o review nao olhar a mudanca real entregue, ele e incompleto.
 
 2. Ler o contexto planejado.
    O revisor deve entender:
+   - qual era a fase executada
    - o que o ticket pedia
    - quais criterios de aceite importam
    - quais restricoes de produto e tecnica estavam previstas
 
+   O caminho principal para isso e o prompt de execucao usado, que deve levar o revisor ao plano, ticket, specs e arquivos relevantes.
+
 3. Ler a implementacao real.
    Prioridade:
    - `git status`, quando houver mudancas locais da fase
-   - arquivos implicados pelo plano e pelo ticket
+   - arquivos implicados pelo prompt de execucao e pelas referencias que ele aponta
    - commits recentes nos arquivos relevantes, se o worktree estiver limpo
    - testes adicionados ou ajustados
 
@@ -113,7 +114,7 @@ O revisor deve distinguir:
 Quando o usuario nao informar commit ou diff:
 
 - usar primeiro `git status` para localizar as mudancas da fase
-- cruzar esse resultado com os arquivos citados no plano e no ticket
+- cruzar esse resultado com os arquivos citados pelo prompt de execucao e pelas referencias que ele aponta
 - ignorar alteracoes claramente nao relacionadas
 - se o worktree estiver limpo, olhar o historico recente dos arquivos implicados pela fase
 

@@ -21,7 +21,7 @@ Para cada ticket:
 
 1. executar a fase com o prompt de execucao correspondente
 2. revisar a entrega com `Docs/Execution_Plans/REVIEW_PROTOCOL.md`
-   o revisor deve inferir a implementacao da fase a partir do repo e dos arquivos implicados pelo plano e ticket
+   o revisor deve receber o prompt de execucao usado e derivar dele o plano, ticket, specs e arquivos relevantes
 3. o revisor deve corrigir bugs e gaps razoaveis, revalidar e so parar se houver desvio de produto ou mudanca de escopo
 4. decidir se:
    - pode marcar `done`
