@@ -62,6 +62,8 @@ export function ChessScene({
         lastMoveEntry && lastMoveEntry.color !== session.playerColor
           ? { from: lastMoveEntry.from, to: lastMoveEntry.to }
           : null,
+      moveEntries: session.moveEntries,
+      redoStack: session.redoStack,
       selectedSquare,
       legalTargets,
       hintMove,
@@ -72,12 +74,23 @@ export function ChessScene({
     selectedSquare,
     session.moveEntries,
     session.playerColor,
+    session.redoStack,
     session.settings.orientation,
     session.snapshot.fen,
     session.snapshot.sideToMove,
     session.snapshot.status,
     theme,
   ]);
+
+  useEffect(() => {
+    stageRef.current?.setAnimationMode(session.settings.animationMode);
+  }, [session.settings.animationMode]);
+
+  useEffect(() => {
+    stageRef.current?.setCameraPreset(
+      session.settings.defaultViewMode === "2d" ? "2d" : "classic",
+    );
+  }, [session.settings.defaultViewMode]);
 
   return (
     <div

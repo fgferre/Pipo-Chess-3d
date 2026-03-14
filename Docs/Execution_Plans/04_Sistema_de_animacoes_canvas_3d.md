@@ -1,4 +1,4 @@
-# Plano de execucao - Sistema de animacoes do canvas 3D
+# Plano de execucao - Sistema de animacoes do canvas 3D — done
 
 ## Ticket alvo
 

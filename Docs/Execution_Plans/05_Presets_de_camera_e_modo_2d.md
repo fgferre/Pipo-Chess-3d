@@ -1,4 +1,4 @@
-# Plano de execucao - Presets de camera e modo 2D
+# Plano de execucao - Presets de camera e modo 2D — done
 
 ## Ticket alvo
 

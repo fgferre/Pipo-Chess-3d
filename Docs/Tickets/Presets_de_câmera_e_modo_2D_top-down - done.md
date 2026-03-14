@@ -48,10 +48,20 @@ Os Core Flows definem 4 presets de câmera (Perspectiva clássica, Visão latera
 
 ## Critérios de aceite
 
-- [ ] 4 presets de câmera funcionam e transitam suavemente entre si.
-- [ ] O modo 2D ativa visão perfeitamente top-down com crossfade: peças 3D somem enquanto sprites 2D aparecem.
-- [ ] Os sprites 2D representam corretamente todas as 12 variantes (6 tipos × 2 cores).
-- [ ] Sair do modo 2D faz crossfade reverso (sprites somem, peças 3D reaparecem).
-- [ ] Seleção/jogada (tap-tap e drag-and-drop) continua funcionando em todos os presets, incluindo modo 2D.
-- [ ] O `viewMode` atual continua sendo estado local do canvas, mas a abertura/restauração da sessão respeita `defaultViewMode` persistido.
-- [ ] Transições respeitam o `animationMode` (reduced = transição mais rápida, off = troca instantânea).
+- [x] 4 presets de câmera funcionam e transitam suavemente entre si.
+- [x] O modo 2D ativa visão perfeitamente top-down com crossfade: peças 3D somem enquanto sprites 2D aparecem.
+- [x] Os sprites 2D representam corretamente todas as 12 variantes (6 tipos × 2 cores).
+- [x] Sair do modo 2D faz crossfade reverso (sprites somem, peças 3D reaparecem).
+- [x] Seleção/jogada (tap-tap e drag-and-drop) continua funcionando em todos os presets, incluindo modo 2D.
+- [x] O `viewMode` atual continua sendo estado local do canvas, mas a abertura/restauração da sessão respeita `defaultViewMode` persistido.
+- [x] Transições respeitam o `animationMode` (reduced = transição mais rápida, off = troca instantânea).
+
+## Notas de fechamento
+
+- `ChessStage.ts` ganhou `CAMERA_PRESET_PROFILES` com 4 perfis (classic, side, topdown, 2d), transição de câmera eased com crossfade 3D↔sprites, e 12 sprites gerados via canvas 2D (glifos Unicode estilizados).
+- `ChessScene.tsx` aplica `defaultViewMode` e `animationMode` via `useEffect` com wiring mínimo.
+- `viewMode` é propriedade privada do `ChessStage` — estado local, não persistido.
+- OrbitControls desabilitam rotação no modo 2D e durante transições de câmera.
+- Validação executada:
+  - `vitest run src/scene/ChessStage.test.ts src/components/ChessScene.test.tsx` — 16 testes passam
+  - `tsc -p tsconfig.app.json --noEmit` — sem erros

@@ -19,6 +19,8 @@ import {
   MeshStandardMaterial,
   Texture,
   WebGLRenderTarget,
+  Sprite,
+  SpriteMaterial,
   BoxGeometry,
   PlaneGeometry,
   CylinderGeometry,
@@ -38,13 +40,14 @@ import {
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import { RoomEnvironment } from "three/examples/jsm/environments/RoomEnvironment.js";
 import { RoundedBoxGeometry } from "three/examples/jsm/geometries/RoundedBoxGeometry.js";
-import type { Color as PieceColor, Square } from "chess.js";
-import type { Orientation, ThemeDefinition } from "../types/game";
-import { fenToPieces, squareToCoords } from "../utils/board";
+import type { Color as PieceColor, PieceSymbol, Square } from "chess.js";
+import type { AppSettings, Orientation, SerializableMove, ThemeDefinition } from "../types/game";
+import { fenToPieces, squareToCoords, type BoardPiece } from "../utils/board";
 
 const SEGMENTS = 64;
 const CLICK_THRESHOLD_PX = 6;
 const DRAG_LIFT_Y = 1.1;
+const PIECE_SCALE = 0.5;
 const RETURN_DURATION_MS = 160;
 const LAST_MOVE_HIGHLIGHT_MS = 1800;
 const HINT_HIGHLIGHT_MS = 4200;
@@ -87,7 +90,188 @@ interface RenderState extends HighlightState {
   playerColor: PieceColor;
   canInteract: boolean;
   lastMove: { from: Square; to: Square } | null;
+  moveEntries: SerializableMove[];
+  redoStack: SerializableMove[][];
 }
+
+type AnimationMode = AppSettings["animationMode"];
+type CameraPreset = "classic" | "side" | "topdown" | "2d";
+type ViewMode = "3d" | "topdown" | "2d";
+
+interface TransitionComparableState {
+  fen: string;
+  moveEntries: SerializableMove[];
+  redoStack: SerializableMove[][];
+}
+
+type StageTransitionDirection = "forward" | "backward";
+type StageTransitionReason = "move" | "undo" | "redo";
+
+interface StageTransitionStep {
+  move: SerializableMove;
+  direction: StageTransitionDirection;
+  reason: StageTransitionReason;
+  sourceFen: string;
+  targetFen: string;
+}
+
+interface StageTransitionBatch {
+  kind: "none" | "sync" | "animate";
+  steps: StageTransitionStep[];
+}
+
+interface MoveTransitionDescriptor {
+  move: SerializableMove;
+  direction: StageTransitionDirection;
+  reason: StageTransitionReason;
+  sourceFen: string;
+  targetFen: string;
+  moverColor: PieceColor;
+  moverFrom: Square;
+  moverTo: Square;
+  moverStartType: PieceSymbol;
+  moverEndType: PieceSymbol;
+  captureSquare: Square | null;
+  capturedPiece: BoardPiece | null;
+  rookMove: { from: Square; to: Square } | null;
+  isPromotion: boolean;
+  isEnPassant: boolean;
+}
+
+interface PieceMotionAnimation {
+  piece: Group;
+  from: Vector3;
+  to: Vector3;
+  arcHeight: number;
+}
+
+interface PieceScaleAnimation {
+  piece: Group;
+  from: number;
+  to: number;
+  startProgress: number;
+  endProgress: number;
+}
+
+interface PieceOpacityAnimation {
+  piece: Group;
+  from: number;
+  to: number;
+  startProgress: number;
+  endProgress: number;
+}
+
+interface ActiveStageTransition {
+  descriptor: MoveTransitionDescriptor;
+  startedAt: number;
+  durationMs: number;
+  motions: PieceMotionAnimation[];
+  scales: PieceScaleAnimation[];
+  opacities: PieceOpacityAnimation[];
+  finalize: () => void;
+}
+
+const ANIMATION_MODE_CONFIG: Record<
+  Exclude<AnimationMode, "off">,
+  { durationMs: number; arcHeight: number; captureFx: boolean; promotionFx: boolean }
+> = {
+  normal: {
+    durationMs: 300,
+    arcHeight: 0.9,
+    captureFx: true,
+    promotionFx: true,
+  },
+  reduced: {
+    durationMs: 150,
+    arcHeight: 0,
+    captureFx: false,
+    promotionFx: false,
+  },
+};
+
+const CAMERA_TRANSITION_DURATION_MS: Record<Exclude<AnimationMode, "off">, number> = {
+  normal: 520,
+  reduced: 220,
+};
+
+const CAMERA_PRESET_PROFILES: Record<CameraPreset, CameraPresetProfile> = {
+  classic: {
+    position: [0, 24, 32],
+    target: [0, 0, 0],
+    minPolarAngle: 0.55,
+    maxPolarAngle: Math.PI / 2 - 0.05,
+    minDistance: 8,
+    maxDistance: 50,
+    enableRotate: true,
+    viewMode: "3d",
+    pieceOpacity: 1,
+    spriteOpacity: 0,
+  },
+  side: {
+    position: [0, 9, 36],
+    target: [0, 1.2, 0],
+    minPolarAngle: 1,
+    maxPolarAngle: Math.PI / 2 - 0.04,
+    minDistance: 12,
+    maxDistance: 56,
+    enableRotate: true,
+    viewMode: "3d",
+    pieceOpacity: 1,
+    spriteOpacity: 0,
+  },
+  topdown: {
+    position: [0, 34, 4.25],
+    target: [0, 0, 0],
+    minPolarAngle: 0.08,
+    maxPolarAngle: 0.38,
+    minDistance: 12,
+    maxDistance: 58,
+    enableRotate: true,
+    viewMode: "topdown",
+    pieceOpacity: 1,
+    spriteOpacity: 0,
+  },
+  "2d": {
+    position: [0, 40, 0.001],
+    target: [0, 0, 0],
+    minPolarAngle: 0.001,
+    maxPolarAngle: 0.001,
+    minDistance: 18,
+    maxDistance: 60,
+    enableRotate: false,
+    viewMode: "2d",
+    pieceOpacity: 0,
+    spriteOpacity: 1,
+  },
+};
+
+const SPRITE_GLYPHS: Record<PieceColor, Record<PieceSymbol, string>> = {
+  w: {
+    k: "♔",
+    q: "♕",
+    r: "♖",
+    b: "♗",
+    n: "♘",
+    p: "♙",
+  },
+  b: {
+    k: "♚",
+    q: "♛",
+    r: "♜",
+    b: "♝",
+    n: "♞",
+    p: "♟",
+  },
+};
+
+const SPRITE_SCALE_BY_TYPE: Record<PieceSymbol, number> = {
+  k: 1.62,
+  q: 1.52,
+  r: 1.4,
+  b: 1.42,
+  n: 1.45,
+  p: 1.24,
+};
 
 interface WoodPalette {
   baseHex: string;
@@ -137,6 +321,34 @@ interface ReturnAnimation {
   to: Vector3;
   startedAt: number;
   durationMs: number;
+}
+
+interface CameraPresetProfile {
+  position: [number, number, number];
+  target: [number, number, number];
+  minPolarAngle: number;
+  maxPolarAngle: number;
+  minDistance: number;
+  maxDistance: number;
+  enableRotate: boolean;
+  viewMode: ViewMode;
+  pieceOpacity: number;
+  spriteOpacity: number;
+}
+
+interface ActiveCameraTransition {
+  preset: CameraPreset;
+  viewMode: ViewMode;
+  startedAt: number;
+  durationMs: number;
+  fromPosition: Vector3;
+  toPosition: Vector3;
+  fromTarget: Vector3;
+  toTarget: Vector3;
+  fromPieceOpacity: number;
+  toPieceOpacity: number;
+  fromSpriteOpacity: number;
+  toSpriteOpacity: number;
 }
 
 export function resolveSquareFromBoardPoint(localX: number, localZ: number): Square | null {
@@ -628,6 +840,264 @@ function easeOutCubic(progress: number): number {
   return 1 - Math.pow(1 - clampUnit(progress), 3);
 }
 
+function easeInOutCubic(progress: number): number {
+  const clamped = clampUnit(progress);
+  return clamped < 0.5
+    ? 4 * clamped * clamped * clamped
+    : 1 - Math.pow(-2 * clamped + 2, 3) / 2;
+}
+
+function lerp(start: number, end: number, amount: number): number {
+  return start + (end - start) * amount;
+}
+
+function normalizeWindowProgress(
+  progress: number,
+  startProgress: number,
+  endProgress: number,
+): number {
+  if (endProgress <= startProgress) {
+    return progress >= endProgress ? 1 : 0;
+  }
+
+  return clampUnit((progress - startProgress) / (endProgress - startProgress));
+}
+
+function moveEquals(left: SerializableMove, right: SerializableMove): boolean {
+  return (
+    left.uci === right.uci &&
+    left.beforeFen === right.beforeFen &&
+    left.afterFen === right.afterFen &&
+    left.ply === right.ply
+  );
+}
+
+function moveChunkEquals(left: SerializableMove[], right: SerializableMove[]): boolean {
+  return (
+    left.length === right.length &&
+    left.every((move, index) => moveEquals(move, right[index]))
+  );
+}
+
+function getSharedMovePrefixLength(left: SerializableMove[], right: SerializableMove[]): number {
+  const sharedLength = Math.min(left.length, right.length);
+  let index = 0;
+
+  while (index < sharedLength && moveEquals(left[index], right[index])) {
+    index += 1;
+  }
+
+  return index;
+}
+
+function toTransitionComparableState(state: RenderState): TransitionComparableState {
+  return {
+    fen: state.fen,
+    moveEntries: state.moveEntries,
+    redoStack: state.redoStack,
+  };
+}
+
+export function deriveTransitionBatch(
+  previous: TransitionComparableState | null,
+  next: TransitionComparableState,
+): StageTransitionBatch {
+  if (!previous) {
+    return { kind: "sync", steps: [] };
+  }
+
+  if (
+    previous.fen === next.fen &&
+    previous.moveEntries.length === next.moveEntries.length &&
+    previous.redoStack.length === next.redoStack.length
+  ) {
+    return { kind: "none", steps: [] };
+  }
+
+  const sharedPrefix = getSharedMovePrefixLength(previous.moveEntries, next.moveEntries);
+
+  if (
+    next.moveEntries.length > previous.moveEntries.length &&
+    sharedPrefix === previous.moveEntries.length
+  ) {
+    const appendedMoves = next.moveEntries.slice(previous.moveEntries.length);
+    const redoneChunk = previous.redoStack[0] ?? [];
+
+    if (
+      previous.redoStack.length > next.redoStack.length &&
+      redoneChunk.length > 0 &&
+      moveChunkEquals(appendedMoves, redoneChunk)
+    ) {
+      return {
+        kind: "animate",
+        steps: appendedMoves.map((move) => ({
+          move,
+          direction: "forward",
+          reason: "redo",
+          sourceFen: move.beforeFen,
+          targetFen: move.afterFen,
+        })),
+      };
+    }
+
+    if (appendedMoves.length === 1) {
+      return {
+        kind: "animate",
+        steps: [
+          {
+            move: appendedMoves[0],
+            direction: "forward",
+            reason: "move",
+            sourceFen: appendedMoves[0].beforeFen,
+            targetFen: appendedMoves[0].afterFen,
+          },
+        ],
+      };
+    }
+  }
+
+  if (
+    next.moveEntries.length < previous.moveEntries.length &&
+    sharedPrefix === next.moveEntries.length
+  ) {
+    const removedMoves = previous.moveEntries.slice(next.moveEntries.length);
+    const queuedUndoChunk = next.redoStack[0] ?? [];
+
+    if (
+      next.redoStack.length > previous.redoStack.length &&
+      queuedUndoChunk.length > 0 &&
+      moveChunkEquals(removedMoves, queuedUndoChunk)
+    ) {
+      return {
+        kind: "animate",
+        steps: removedMoves
+          .slice()
+          .reverse()
+          .map((move) => ({
+            move,
+            direction: "backward",
+            reason: "undo",
+            sourceFen: move.afterFen,
+            targetFen: move.beforeFen,
+          })),
+      };
+    }
+  }
+
+  return { kind: "sync", steps: [] };
+}
+
+function findBoardPiece(pieces: BoardPiece[], square: Square): BoardPiece | null {
+  return pieces.find((piece) => piece.square === square) ?? null;
+}
+
+function getPromotionType(move: SerializableMove, direction: StageTransitionDirection): PieceSymbol {
+  if (!move.promotion) {
+    return move.piece;
+  }
+
+  return direction === "forward" ? move.promotion : move.piece;
+}
+
+function getMoverStartType(move: SerializableMove, direction: StageTransitionDirection): PieceSymbol {
+  if (direction === "forward") {
+    return move.piece;
+  }
+
+  return move.promotion ?? move.piece;
+}
+
+function getCastlingRookMove(
+  move: SerializableMove,
+  direction: StageTransitionDirection,
+): { from: Square; to: Square } | null {
+  if (move.piece !== "k") {
+    return null;
+  }
+
+  const fileDelta = move.to.charCodeAt(0) - move.from.charCodeAt(0);
+  if (Math.abs(fileDelta) !== 2) {
+    return null;
+  }
+
+  const rank = move.from[1];
+  const isKingside = fileDelta > 0;
+  const forwardMove = {
+    from: `${isKingside ? "h" : "a"}${rank}` as Square,
+    to: `${isKingside ? "f" : "d"}${rank}` as Square,
+  };
+
+  if (direction === "forward") {
+    return forwardMove;
+  }
+
+  return {
+    from: forwardMove.to,
+    to: forwardMove.from,
+  };
+}
+
+function buildCapturedPieceFallback(
+  move: SerializableMove,
+  moverColor: PieceColor,
+  square: Square,
+): BoardPiece {
+  return {
+    square,
+    color: moverColor === "w" ? "b" : "w",
+    type: move.captured!,
+  };
+}
+
+export function describeMoveTransition(step: StageTransitionStep): MoveTransitionDescriptor {
+  const sourcePieces = fenToPieces(step.sourceFen);
+  const targetPieces = fenToPieces(step.targetFen);
+  const moverColor = step.move.color;
+  const boardWithCapturedPiece =
+    step.direction === "forward" ? sourcePieces : targetPieces;
+  const directCapturePiece =
+    step.move.captured &&
+    findBoardPiece(boardWithCapturedPiece, step.move.to)?.color !== moverColor
+      ? findBoardPiece(boardWithCapturedPiece, step.move.to)
+      : null;
+  const captureSquare = step.move.captured
+    ? directCapturePiece
+      ? step.move.to
+      : `${step.move.to[0]}${step.move.from[1]}` as Square
+    : null;
+  const capturedPiece =
+    step.move.captured && captureSquare
+      ? findBoardPiece(boardWithCapturedPiece, captureSquare) ??
+        buildCapturedPieceFallback(step.move, moverColor, captureSquare)
+      : null;
+
+  return {
+    move: step.move,
+    direction: step.direction,
+    reason: step.reason,
+    sourceFen: step.sourceFen,
+    targetFen: step.targetFen,
+    moverColor,
+    moverFrom: step.direction === "forward" ? step.move.from : step.move.to,
+    moverTo: step.direction === "forward" ? step.move.to : step.move.from,
+    moverStartType: getMoverStartType(step.move, step.direction),
+    moverEndType: getPromotionType(step.move, step.direction),
+    captureSquare,
+    capturedPiece,
+    rookMove: getCastlingRookMove(step.move, step.direction),
+    isPromotion: !!step.move.promotion,
+    isEnPassant: !!step.move.captured && captureSquare !== null && captureSquare !== step.move.to,
+  };
+}
+
+function createVector3FromTuple([x, y, z]: [number, number, number]): Vector3 {
+  return new Vector3(x, y, z);
+}
+
+function getCameraPresetProfile(preset: CameraPreset): CameraPresetProfile {
+  return CAMERA_PRESET_PROFILES[preset];
+}
+
 function collectMeshResources(
   root: Group | Mesh,
   geometries: Set<BufferGeometry>,
@@ -687,6 +1157,7 @@ export class ChessStage {
   private readonly root = new Group();
   private readonly boardGroup = new Group();
   private readonly pieceGroup = new Group();
+  private readonly spriteGroup = new Group();
   private readonly highlightGroup = new Group();
   private readonly hitPlane = new Mesh(
     new PlaneGeometry(8, 8),
@@ -696,6 +1167,7 @@ export class ChessStage {
   private readonly darkSquareMats: MeshPhysicalMaterial[] = [];
   private readonly frameMats: MeshPhysicalMaterial[] = [];
   private readonly prototypes = new Map<string, Group>();
+  private readonly spriteTextures = new Map<string, Texture>();
   private readonly resizeObserver: ResizeObserver;
   private readonly eyeMat: MeshPhysicalMaterial;
   // Initialized in buildBoard() / init() before first use
@@ -708,15 +1180,23 @@ export class ChessStage {
   private animationFrame = 0;
   private disposed = false;
   private paused = false;
+  private viewMode: ViewMode = "3d";
+  private cameraPreset: CameraPreset = "classic";
+  private activeCameraTransition: ActiveCameraTransition | null = null;
+  private pieceRepresentationOpacity = 1;
+  private spriteRepresentationOpacity = 0;
   private activePointerId: number | null = null;
   private activePointerType = "";
   private readonly touchPointerIds = new Set<number>();
   private multiTouchGesture = false;
+  private animationMode: AnimationMode = "normal";
   private pointerMaxTravel = 0;
   private pointerDownSquare: Square | null = null;
   private pointerDownOwnPieceSquare: Square | null = null;
   private dragState: DragState | null = null;
   private returnAnimation: ReturnAnimation | null = null;
+  private activeStageTransition: ActiveStageTransition | null = null;
+  private readonly transitionQueue: StageTransitionStep[] = [];
   private readonly pieceBySquare = new Map<Square, Group>();
   private animatedHighlights: AnimatedHighlight[] = [];
   private selectedPiece: Group | null = null;
@@ -726,6 +1206,7 @@ export class ChessStage {
   private currentOrientation: Orientation = "white";
   private currentHighlightKey = "";
   private currentState: RenderState | null = null;
+  private transitionStateCursor: TransitionComparableState | null = null;
   private activeHintKey = "";
   private suppressedHintKey = "";
   private hintAnimationStartedAt = 0;
@@ -759,6 +1240,7 @@ export class ChessStage {
     this.controls = new OrbitControls(this.camera, this.renderer.domElement);
     this.controls.enableDamping = true;
     this.controls.dampingFactor = 0.05;
+    this.controls.minPolarAngle = 0.55;
     this.controls.maxPolarAngle = Math.PI / 2 - 0.05;
     this.controls.minDistance = 8;
     this.controls.maxDistance = 50;
@@ -768,7 +1250,8 @@ export class ChessStage {
     this.scene.fog = new FogExp2(0x050508, 0.012);
 
     this.scene.add(this.root);
-    this.root.add(this.boardGroup, this.pieceGroup, this.highlightGroup);
+    this.root.add(this.boardGroup, this.pieceGroup, this.spriteGroup, this.highlightGroup);
+    this.spriteGroup.renderOrder = 4;
 
     this.hitPlane.rotation.x = -Math.PI / 2;
     this.hitPlane.position.y = 0.03;
@@ -786,6 +1269,7 @@ export class ChessStage {
     window.addEventListener("pointercancel", this.handlePointerCancel);
     this.resizeObserver = new ResizeObserver(() => this.resize());
     this.resizeObserver.observe(this.container);
+    this.applyCameraPresetState("classic");
     this.resize();
   }
 
@@ -825,8 +1309,161 @@ export class ChessStage {
     this.startLoop();
   }
 
+  private applyCameraPresetState(preset: CameraPreset): void {
+    const profile = getCameraPresetProfile(preset);
+    this.cameraPreset = preset;
+    this.viewMode = profile.viewMode;
+    this.activeCameraTransition = null;
+    this.camera.position.copy(createVector3FromTuple(profile.position));
+    this.controls.target.copy(createVector3FromTuple(profile.target));
+    this.camera.lookAt(this.controls.target);
+    this.applyControlProfile(profile);
+    this.setRepresentationBlend(profile.pieceOpacity, profile.spriteOpacity);
+    this.controls.enabled = true;
+  }
+
+  private applyControlProfile(profile: CameraPresetProfile): void {
+    this.controls.minPolarAngle = profile.minPolarAngle;
+    this.controls.maxPolarAngle = profile.maxPolarAngle;
+    this.controls.minDistance = profile.minDistance;
+    this.controls.maxDistance = profile.maxDistance;
+    this.controls.enableRotate = profile.enableRotate;
+    this.controls.update();
+  }
+
+  private updateCameraTransition(now: number): void {
+    if (!this.activeCameraTransition) {
+      return;
+    }
+
+    const transition = this.activeCameraTransition;
+    const progress = easeInOutCubic(
+      clampUnit((now - transition.startedAt) / transition.durationMs),
+    );
+
+    this.camera.position.lerpVectors(transition.fromPosition, transition.toPosition, progress);
+    this.controls.target.lerpVectors(transition.fromTarget, transition.toTarget, progress);
+    this.camera.lookAt(this.controls.target);
+    this.setRepresentationBlend(
+      lerp(transition.fromPieceOpacity, transition.toPieceOpacity, progress),
+      lerp(transition.fromSpriteOpacity, transition.toSpriteOpacity, progress),
+    );
+
+    if (progress >= 1) {
+      this.applyCameraPresetState(transition.preset);
+    }
+  }
+
+  private setRepresentationBlend(pieceOpacity: number, spriteOpacity: number): void {
+    this.pieceRepresentationOpacity = pieceOpacity;
+    this.spriteRepresentationOpacity = spriteOpacity;
+    this.pieceBySquare.forEach((piece) => {
+      this.setPieceOpacity(piece, piece.userData.effectOpacity ?? 1);
+    });
+    this.syncSpriteVisuals();
+  }
+
+  private createPieceSprite(piece: BoardPiece): Sprite {
+    const material = new SpriteMaterial({
+      map: this.getOrCreateSpriteTexture(piece.color, piece.type),
+      transparent: true,
+      opacity: 0,
+      depthWrite: false,
+    });
+    const sprite = new Sprite(material);
+    sprite.renderOrder = 5;
+    sprite.userData.type = piece.type;
+    sprite.userData.color = piece.color;
+    sprite.userData.square = piece.square;
+    return sprite;
+  }
+
+  private getOrCreateSpriteTexture(color: PieceColor, type: PieceSymbol): Texture {
+    const key = `${color}-${type}`;
+    const existing = this.spriteTextures.get(key);
+    if (existing) {
+      return existing;
+    }
+
+    // Placeholder sprite provider: swap this generator for local image assets later
+    // without touching camera, interaction, or piece-transition code.
+    const canvas = document.createElement("canvas");
+    canvas.width = 256;
+    canvas.height = 256;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) {
+      throw new Error("Could not create a 2D sprite context.");
+    }
+
+    const glyph = SPRITE_GLYPHS[color][type];
+    ctx.clearRect(0, 0, 256, 256);
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.lineJoin = "round";
+    ctx.lineCap = "round";
+    ctx.font = "190px Georgia, 'Times New Roman', serif";
+    ctx.lineWidth = color === "w" ? 20 : 18;
+    ctx.strokeStyle = color === "w" ? "rgba(72, 42, 10, 0.95)" : "rgba(250, 240, 224, 0.9)";
+    ctx.fillStyle = color === "w" ? "#f8efe2" : "#1e1711";
+    ctx.strokeText(glyph, 128, 140);
+    ctx.fillText(glyph, 128, 140);
+
+    const texture = new CanvasTexture(canvas);
+    texture.colorSpace = SRGBColorSpace;
+    this.spriteTextures.set(key, texture);
+    return texture;
+  }
+
+  private clearSprites(): void {
+    for (const child of [...this.spriteGroup.children]) {
+      if (!(child instanceof Sprite)) {
+        continue;
+      }
+
+      if (child.material instanceof Material) {
+        child.material.dispose();
+      }
+      this.spriteGroup.remove(child);
+    }
+  }
+
+  private removePieceSprite(piece: Group): void {
+    const sprite = piece.userData.sprite;
+    if (!(sprite instanceof Sprite)) {
+      return;
+    }
+
+    if (sprite.material instanceof Material) {
+      sprite.material.dispose();
+    }
+    this.spriteGroup.remove(sprite);
+    delete piece.userData.sprite;
+  }
+
+  private syncSpriteVisuals(): void {
+    this.pieceBySquare.forEach((piece) => {
+      const sprite = piece.userData.sprite;
+      if (!(sprite instanceof Sprite) || !(sprite.material instanceof SpriteMaterial)) {
+        return;
+      }
+
+      const spriteScaleBase = piece.userData.spriteBaseScale ?? 1.3;
+      const scaleFactor = piece.scale.x / PIECE_SCALE;
+      const isSelected = this.currentState?.selectedSquare === piece.userData.square;
+      sprite.position.set(piece.position.x, 0.18, piece.position.z);
+      sprite.scale.setScalar(spriteScaleBase * scaleFactor * (isSelected ? 1.08 : 1));
+      sprite.material.opacity =
+        (piece.visible ? 1 : 0) *
+        this.spriteRepresentationOpacity *
+        (piece.userData.effectOpacity ?? 1);
+      sprite.visible = sprite.material.opacity > 0.01;
+    });
+  }
+
   update(state: RenderState): void {
+    const previousTransitionState = this.transitionStateCursor;
     this.currentState = state;
+    this.transitionStateCursor = toTransitionComparableState(state);
 
     if (state.orientation !== this.currentOrientation) {
       this.currentOrientation = state.orientation;
@@ -852,8 +1489,17 @@ export class ChessStage {
     }
 
     if (state.fen !== this.currentFen) {
+      const transitionBatch =
+        this.animationMode === "off"
+          ? { kind: "sync", steps: [] as StageTransitionStep[] }
+          : deriveTransitionBatch(previousTransitionState, this.transitionStateCursor);
       this.currentFen = state.fen;
-      this.rebuildPieces();
+
+      if (transitionBatch.kind === "animate") {
+        this.enqueueTransitions(transitionBatch.steps);
+      } else if (transitionBatch.kind === "sync") {
+        this.syncPiecesToCurrentState();
+      }
     }
 
     const highlightKey = [
@@ -880,14 +1526,49 @@ export class ChessStage {
     }
   }
 
-  setCameraPreset(preset: "classic" | "side" | "topdown" | "2d"): void {
-    void preset;
-    // stub — implemented in future ticket
+  setCameraPreset(preset: CameraPreset): void {
+    const profile = getCameraPresetProfile(preset);
+    if (
+      this.cameraPreset === preset &&
+      !this.activeCameraTransition &&
+      this.viewMode === profile.viewMode
+    ) {
+      return;
+    }
+
+    if (this.animationMode === "off") {
+      this.applyCameraPresetState(preset);
+      return;
+    }
+
+    const durationMs = CAMERA_TRANSITION_DURATION_MS[this.animationMode];
+    this.cameraPreset = preset;
+    this.viewMode = profile.viewMode;
+    this.activeCameraTransition = {
+      preset,
+      viewMode: profile.viewMode,
+      startedAt: performance.now(),
+      durationMs,
+      fromPosition: this.camera.position.clone(),
+      toPosition: createVector3FromTuple(profile.position),
+      fromTarget: this.controls.target.clone(),
+      toTarget: createVector3FromTuple(profile.target),
+      fromPieceOpacity: this.pieceRepresentationOpacity,
+      toPieceOpacity: profile.pieceOpacity,
+      fromSpriteOpacity: this.spriteRepresentationOpacity,
+      toSpriteOpacity: profile.spriteOpacity,
+    };
+    this.controls.enabled = false;
   }
 
   setAnimationMode(mode: "normal" | "reduced" | "off"): void {
-    void mode;
-    // stub — implemented in future ticket
+    this.animationMode = mode;
+    if (mode === "off") {
+      if (this.activeCameraTransition) {
+        this.applyCameraPresetState(this.activeCameraTransition.preset);
+      }
+      this.syncPiecesToCurrentState();
+    }
   }
 
   dispose(): void {
@@ -900,6 +1581,9 @@ export class ChessStage {
     this.multiTouchGesture = false;
     this.clearDragState();
     this.returnAnimation = null;
+    this.activeCameraTransition = null;
+    this.activeStageTransition = null;
+    this.transitionQueue.length = 0;
     this.clearSelectedPieceHighlight();
     this.resetPointerTracking();
     cancelAnimationFrame(this.animationFrame);
@@ -912,8 +1596,12 @@ export class ChessStage {
     window.removeEventListener("pointercancel", this.handlePointerCancel);
 
     this.disposeHighlights();
+    this.clearPieceEffectMaterials(this.pieceGroup);
+    this.clearSprites();
     this.pieceBySquare.clear();
     this.pieceGroup.clear();
+    this.spriteTextures.forEach((texture) => texture.dispose());
+    this.spriteTextures.clear();
 
     const geometries = new Set<BufferGeometry>();
     const materials = new Set<Material>();
@@ -1124,9 +1812,14 @@ export class ChessStage {
         return;
       }
       const now = performance.now();
+      this.updateCameraTransition(now);
       this.updateReturnAnimation(now);
+      this.updateStageTransition(now);
+      this.syncSpriteVisuals();
       this.updateAnimatedHighlights(now);
-      this.controls.update();
+      if (!this.activeCameraTransition) {
+        this.controls.update();
+      }
       this.renderer.render(this.scene, this.camera);
       this.animationFrame = requestAnimationFrame(tick);
     };
@@ -1134,7 +1827,17 @@ export class ChessStage {
     this.animationFrame = requestAnimationFrame(tick);
   }
 
-  private rebuildPieces(): void {
+  private syncPiecesToCurrentState(): void {
+    if (!this.currentState) {
+      return;
+    }
+
+    this.transitionQueue.length = 0;
+    this.activeStageTransition = null;
+    this.syncPieces(this.currentState.fen);
+  }
+
+  private syncPieces(fen: string): void {
     if (!this.currentState) {
       return;
     }
@@ -1142,48 +1845,13 @@ export class ChessStage {
     this.clearDragState();
     this.returnAnimation = null;
     this.clearSelectedPieceHighlight();
+    this.clearPieceEffectMaterials(this.pieceGroup);
+    this.clearSprites();
     this.pieceBySquare.clear();
     this.pieceGroup.clear();
 
-    const pieces = fenToPieces(this.currentState.fen);
-
-    for (const piece of pieces) {
-      const prototype = this.prototypes.get(piece.type);
-      if (!prototype) {
-        continue;
-      }
-
-      const clone = prototype.clone(true);
-      clone.name = `${piece.color}-${piece.type}-${piece.square}`;
-      clone.userData.square = piece.square;
-      clone.userData.color = piece.color;
-      clone.userData.type = piece.type;
-      const { x, z } = squareToCoords(piece.square);
-      clone.position.set(x, 0, z);
-      clone.scale.setScalar(0.5);
-
-      if (piece.type === "n") {
-        clone.rotation.y = piece.color === "b" ? 0 : Math.PI;
-      }
-
-      const pieceMat = piece.color === "w" ? this.lightPieceMat : this.darkPieceMat;
-
-      clone.traverse((child) => {
-        if (!(child instanceof Mesh)) {
-          return;
-        }
-        if (child.name === "felt") {
-          child.material = this.feltMat;
-          child.userData.baseMaterial = this.feltMat;
-        } else if (child.name === "eye") {
-          child.material = this.eyeMat;
-          child.userData.baseMaterial = this.eyeMat;
-        } else {
-          child.material = pieceMat;
-          child.userData.baseMaterial = pieceMat;
-        }
-      });
-
+    for (const piece of fenToPieces(fen)) {
+      const clone = this.createPieceInstance(piece);
       this.pieceBySquare.set(piece.square, clone);
       this.pieceGroup.add(clone);
     }
@@ -1194,6 +1862,459 @@ export class ChessStage {
         this.currentState.theme.highlightPrimary,
       );
     }
+  }
+
+  private createPieceInstance(piece: BoardPiece): Group {
+    const prototype = this.prototypes.get(piece.type);
+    if (!prototype) {
+      throw new Error(`Missing prototype for piece type "${piece.type}".`);
+    }
+
+    const clone = prototype.clone(true);
+    const pieceMat = piece.color === "w" ? this.lightPieceMat : this.darkPieceMat;
+
+    clone.traverse((child) => {
+      if (!(child instanceof Mesh)) {
+        return;
+      }
+      if (child.name === "felt") {
+        child.material = this.feltMat;
+        child.userData.baseMaterial = this.feltMat;
+      } else if (child.name === "eye") {
+        child.material = this.eyeMat;
+        child.userData.baseMaterial = this.eyeMat;
+      } else {
+        child.material = pieceMat;
+        child.userData.baseMaterial = pieceMat;
+      }
+    });
+
+    this.updatePieceIdentity(clone, piece.square, piece.type, piece.color);
+    this.positionPieceAtSquare(clone, piece.square);
+    clone.scale.setScalar(PIECE_SCALE);
+    clone.userData.effectOpacity = 1;
+    clone.userData.spriteBaseScale = SPRITE_SCALE_BY_TYPE[piece.type];
+
+    const sprite = this.createPieceSprite(piece);
+    clone.userData.sprite = sprite;
+    this.spriteGroup.add(sprite);
+    this.setPieceOpacity(clone, 1);
+
+    return clone;
+  }
+
+  private updatePieceIdentity(
+    piece: Group,
+    square: Square,
+    type: PieceSymbol,
+    color: PieceColor,
+  ): void {
+    piece.name = `${color}-${type}-${square}`;
+    piece.userData.square = square;
+    piece.userData.color = color;
+    piece.userData.type = type;
+    piece.rotation.y = type === "n" ? (color === "b" ? 0 : Math.PI) : 0;
+  }
+
+  private positionPieceAtSquare(piece: Group, square: Square, y = 0): void {
+    const { x, z } = squareToCoords(square);
+    piece.position.set(x, y, z);
+  }
+
+  private createSquareVector(square: Square, y = 0): Vector3 {
+    const { x, z } = squareToCoords(square);
+    return new Vector3(x, y, z);
+  }
+
+  private enqueueTransitions(steps: StageTransitionStep[]): void {
+    if (steps.length === 0) {
+      this.syncPiecesToCurrentState();
+      return;
+    }
+
+    this.transitionQueue.push(...steps);
+    this.startNextQueuedTransition(performance.now());
+  }
+
+  private startNextQueuedTransition(now: number): void {
+    if (this.activeStageTransition || this.transitionQueue.length === 0) {
+      return;
+    }
+
+    const step = this.transitionQueue.shift();
+    if (!step) {
+      return;
+    }
+
+    const activeTransition = this.createActiveTransition(step, now);
+    if (!activeTransition) {
+      this.syncPiecesToCurrentState();
+      return;
+    }
+
+    this.activeStageTransition = activeTransition;
+  }
+
+  private createActiveTransition(
+    step: StageTransitionStep,
+    startedAt: number,
+  ): ActiveStageTransition | null {
+    const descriptor = describeMoveTransition(step);
+    const mover = this.pieceBySquare.get(descriptor.moverFrom);
+    if (!mover) {
+      return null;
+    }
+
+    const animationConfig = ANIMATION_MODE_CONFIG[this.animationMode as keyof typeof ANIMATION_MODE_CONFIG];
+    if (!animationConfig) {
+      return null;
+    }
+
+    this.clearSelectedPieceHighlight();
+
+    const motions: PieceMotionAnimation[] = [
+      {
+        piece: mover,
+        from: mover.position.clone(),
+        to: this.createSquareVector(descriptor.moverTo),
+        arcHeight: animationConfig.arcHeight,
+      },
+    ];
+    const scales: PieceScaleAnimation[] = [];
+    const opacities: PieceOpacityAnimation[] = [];
+
+    let capturedPiece: Group | null = null;
+    let restoredPiece: Group | null = null;
+    let rookPiece: Group | null = null;
+
+    if (descriptor.captureSquare) {
+      if (descriptor.direction === "forward") {
+        capturedPiece = this.pieceBySquare.get(descriptor.captureSquare) ?? null;
+        if (!capturedPiece) {
+          return null;
+        }
+
+        this.pieceBySquare.delete(descriptor.captureSquare);
+
+        if (animationConfig.captureFx) {
+          scales.push({
+            piece: capturedPiece,
+            from: PIECE_SCALE,
+            to: PIECE_SCALE * 0.2,
+            startProgress: 0,
+            endProgress: 1,
+          });
+          opacities.push({
+            piece: capturedPiece,
+            from: 1,
+            to: 0,
+            startProgress: 0,
+            endProgress: 1,
+          });
+        } else {
+          capturedPiece.visible = false;
+        }
+      } else if (descriptor.capturedPiece) {
+        restoredPiece = this.createPieceInstance(descriptor.capturedPiece);
+        this.positionPieceAtSquare(restoredPiece, descriptor.captureSquare);
+        this.pieceBySquare.set(descriptor.captureSquare, restoredPiece);
+        this.pieceGroup.add(restoredPiece);
+
+        if (animationConfig.captureFx) {
+          restoredPiece.scale.setScalar(PIECE_SCALE * 0.3);
+          this.setPieceOpacity(restoredPiece, 0.15);
+          scales.push({
+            piece: restoredPiece,
+            from: PIECE_SCALE * 0.3,
+            to: PIECE_SCALE,
+            startProgress: 0,
+            endProgress: 1,
+          });
+          opacities.push({
+            piece: restoredPiece,
+            from: 0.15,
+            to: 1,
+            startProgress: 0,
+            endProgress: 1,
+          });
+        }
+      }
+    }
+
+    if (descriptor.moverFrom !== descriptor.moverTo) {
+      this.pieceBySquare.delete(descriptor.moverFrom);
+    }
+    this.pieceBySquare.set(descriptor.moverTo, mover);
+    mover.userData.square = descriptor.moverTo;
+
+    if (descriptor.rookMove) {
+      rookPiece = this.pieceBySquare.get(descriptor.rookMove.from) ?? null;
+      if (!rookPiece) {
+        return null;
+      }
+
+      this.pieceBySquare.delete(descriptor.rookMove.from);
+      this.pieceBySquare.set(descriptor.rookMove.to, rookPiece);
+      rookPiece.userData.square = descriptor.rookMove.to;
+
+      motions.push({
+        piece: rookPiece,
+        from: rookPiece.position.clone(),
+        to: this.createSquareVector(descriptor.rookMove.to),
+        arcHeight: animationConfig.arcHeight * 0.35,
+      });
+    }
+
+    if (descriptor.isPromotion && animationConfig.promotionFx) {
+      scales.push({
+        piece: mover,
+        from: PIECE_SCALE,
+        to: PIECE_SCALE * 0.7,
+        startProgress: 0.55,
+        endProgress: 1,
+      });
+      opacities.push({
+        piece: mover,
+        from: 1,
+        to: 0.3,
+        startProgress: 0.55,
+        endProgress: 1,
+      });
+    }
+
+    return {
+      descriptor,
+      startedAt,
+      durationMs: animationConfig.durationMs,
+      motions,
+      scales,
+      opacities,
+      finalize: () => {
+        this.finalizeTransition(
+          descriptor,
+          mover,
+          rookPiece,
+          capturedPiece,
+          restoredPiece,
+        );
+      },
+    };
+  }
+
+  private updateStageTransition(now: number): void {
+    if (!this.activeStageTransition) {
+      this.startNextQueuedTransition(now);
+      return;
+    }
+
+    const transition = this.activeStageTransition;
+    const progress = clampUnit((now - transition.startedAt) / transition.durationMs);
+
+    transition.motions.forEach((motion) => {
+      motion.piece.position.copy(
+        this.sampleMotionPoint(motion.from, motion.to, motion.arcHeight, progress),
+      );
+    });
+
+    transition.scales.forEach((scaleAnimation) => {
+      const localProgress = easeInOutCubic(
+        normalizeWindowProgress(
+          progress,
+          scaleAnimation.startProgress,
+          scaleAnimation.endProgress,
+        ),
+      );
+      scaleAnimation.piece.scale.setScalar(
+        lerp(scaleAnimation.from, scaleAnimation.to, localProgress),
+      );
+    });
+
+    transition.opacities.forEach((opacityAnimation) => {
+      const localProgress = easeInOutCubic(
+        normalizeWindowProgress(
+          progress,
+          opacityAnimation.startProgress,
+          opacityAnimation.endProgress,
+        ),
+      );
+      this.setPieceOpacity(
+        opacityAnimation.piece,
+        lerp(opacityAnimation.from, opacityAnimation.to, localProgress),
+      );
+    });
+
+    if (progress >= 1) {
+      transition.finalize();
+      this.activeStageTransition = null;
+      this.startNextQueuedTransition(now);
+    }
+  }
+
+  private sampleMotionPoint(
+    from: Vector3,
+    to: Vector3,
+    arcHeight: number,
+    progress: number,
+  ): Vector3 {
+    const eased = easeInOutCubic(progress);
+    if (arcHeight <= 0) {
+      return new Vector3().lerpVectors(from, to, eased);
+    }
+
+    const control = from.clone().add(to).multiplyScalar(0.5);
+    control.y = Math.max(from.y, to.y) + arcHeight;
+    const oneMinusT = 1 - eased;
+
+    return new Vector3()
+      .copy(from)
+      .multiplyScalar(oneMinusT * oneMinusT)
+      .add(control.multiplyScalar(2 * oneMinusT * eased))
+      .add(to.clone().multiplyScalar(eased * eased));
+  }
+
+  private finalizeTransition(
+    descriptor: MoveTransitionDescriptor,
+    mover: Group,
+    rookPiece: Group | null,
+    capturedPiece: Group | null,
+    restoredPiece: Group | null,
+  ): void {
+    this.positionPieceAtSquare(mover, descriptor.moverTo);
+    mover.visible = true;
+    mover.scale.setScalar(PIECE_SCALE);
+
+    if (capturedPiece) {
+      this.clearPieceEffectMaterials(capturedPiece);
+      this.removePieceSprite(capturedPiece);
+      this.pieceGroup.remove(capturedPiece);
+      capturedPiece.visible = true;
+    }
+
+    if (restoredPiece) {
+      this.positionPieceAtSquare(restoredPiece, descriptor.captureSquare!);
+      restoredPiece.scale.setScalar(PIECE_SCALE);
+      restoredPiece.visible = true;
+      this.clearPieceEffectMaterials(restoredPiece);
+      this.updatePieceIdentity(
+        restoredPiece,
+        descriptor.captureSquare!,
+        restoredPiece.userData.type as PieceSymbol,
+        restoredPiece.userData.color as PieceColor,
+      );
+      this.setPieceOpacity(restoredPiece, restoredPiece.userData.effectOpacity ?? 1);
+    }
+
+    if (descriptor.isPromotion) {
+      this.clearPieceEffectMaterials(mover);
+      this.removePieceSprite(mover);
+      this.pieceGroup.remove(mover);
+      const promotedPiece = this.createPieceInstance({
+        square: descriptor.moverTo,
+        color: descriptor.moverColor,
+        type: descriptor.moverEndType,
+      });
+      this.pieceBySquare.set(descriptor.moverTo, promotedPiece);
+      this.pieceGroup.add(promotedPiece);
+    } else {
+      this.clearPieceEffectMaterials(mover);
+      this.updatePieceIdentity(
+        mover,
+        descriptor.moverTo,
+        descriptor.moverEndType,
+        descriptor.moverColor,
+      );
+      this.setPieceOpacity(mover, mover.userData.effectOpacity ?? 1);
+    }
+
+    if (rookPiece && descriptor.rookMove) {
+      this.positionPieceAtSquare(rookPiece, descriptor.rookMove.to);
+      rookPiece.scale.setScalar(PIECE_SCALE);
+      this.clearPieceEffectMaterials(rookPiece);
+      this.updatePieceIdentity(
+        rookPiece,
+        descriptor.rookMove.to,
+        rookPiece.userData.type as PieceSymbol,
+        rookPiece.userData.color as PieceColor,
+      );
+      this.setPieceOpacity(rookPiece, rookPiece.userData.effectOpacity ?? 1);
+    }
+  }
+
+  private setPieceOpacity(piece: Group, opacity: number): void {
+    piece.userData.effectOpacity = opacity;
+    const resolvedOpacity =
+      (piece.visible ? 1 : 0) * opacity * this.pieceRepresentationOpacity;
+
+    piece.traverse((child) => {
+      if (!(child instanceof Mesh) || Array.isArray(child.material)) {
+        return;
+      }
+
+      const baseMaterial = child.userData.baseMaterial;
+      if (
+        !(baseMaterial instanceof MeshPhysicalMaterial) &&
+        !(baseMaterial instanceof MeshStandardMaterial)
+      ) {
+        return;
+      }
+
+      let fxMaterial = child.userData.fxMaterial;
+      if (
+        resolvedOpacity < 0.999 &&
+        !(fxMaterial instanceof MeshPhysicalMaterial) &&
+        !(fxMaterial instanceof MeshStandardMaterial)
+      ) {
+        fxMaterial = baseMaterial.clone();
+        child.userData.fxMaterial = fxMaterial;
+      }
+
+      if (
+        resolvedOpacity >= 0.999 &&
+        fxMaterial instanceof Material &&
+        child.material === fxMaterial
+      ) {
+        child.material = baseMaterial;
+        fxMaterial.dispose();
+        delete child.userData.fxMaterial;
+        return;
+      }
+
+      const activeMaterial =
+        child.material === baseMaterial && fxMaterial instanceof Material
+          ? fxMaterial
+          : child.material;
+
+      if (
+        activeMaterial instanceof MeshPhysicalMaterial ||
+        activeMaterial instanceof MeshStandardMaterial
+      ) {
+        activeMaterial.transparent = resolvedOpacity < 0.999;
+        activeMaterial.opacity = resolvedOpacity;
+        if (child.material !== activeMaterial) {
+          child.material = activeMaterial;
+        }
+      }
+    });
+  }
+
+  private clearPieceEffectMaterials(root: Group | Mesh): void {
+    root.traverse((child) => {
+      if (!(child instanceof Mesh) || Array.isArray(child.material)) {
+        return;
+      }
+
+      const fxMaterial = child.userData.fxMaterial;
+      if (!(fxMaterial instanceof Material)) {
+        return;
+      }
+
+      if (child.material === fxMaterial && child.userData.baseMaterial instanceof Material) {
+        child.material = child.userData.baseMaterial;
+      }
+
+      fxMaterial.dispose();
+      delete child.userData.fxMaterial;
+    });
   }
 
   private updateHighlights(state: RenderState): void {
@@ -1323,7 +2444,7 @@ export class ChessStage {
       this.darkPieceMat.color.set(theme.blackPiece);
     }
     if (this.currentFen) {
-      this.rebuildPieces();
+      this.syncPiecesToCurrentState();
     }
   }
 
@@ -1396,6 +2517,9 @@ export class ChessStage {
       const highlightMaterial = baseMaterial.clone();
       highlightMaterial.emissive = new Color(color);
       highlightMaterial.emissiveIntensity = 0.48;
+      highlightMaterial.transparent = this.pieceRepresentationOpacity < 0.999;
+      highlightMaterial.opacity =
+        this.pieceRepresentationOpacity * (piece.userData.effectOpacity ?? 1);
       child.material = highlightMaterial;
       this.selectedPieceHighlightMaterials.push(highlightMaterial);
     });
@@ -1413,6 +2537,7 @@ export class ChessStage {
           child.material = baseMaterial;
         }
       });
+      this.setPieceOpacity(this.selectedPiece, this.selectedPiece.userData.effectOpacity ?? 1);
     }
 
     this.selectedPiece = null;
@@ -1453,12 +2578,16 @@ export class ChessStage {
     this.dragState = null;
   }
 
+  private isInteractionLocked(): boolean {
+    return this.activeStageTransition !== null || this.transitionQueue.length > 0;
+  }
+
   private isTouchPointer(event: PointerEvent): boolean {
     return event.pointerType === "touch";
   }
 
   private isDraggablePieceSquare(square: Square | null): square is Square {
-    if (!square || !this.currentState?.canInteract) {
+    if (!square || !this.currentState?.canInteract || this.isInteractionLocked()) {
       return false;
     }
 
@@ -1670,6 +2799,7 @@ export class ChessStage {
     const maxTravel = this.updatePointerTravel(event);
     const shouldSelect =
       this.currentState?.canInteract &&
+      !this.isInteractionLocked() &&
       !this.multiTouchGesture &&
       maxTravel <= CLICK_THRESHOLD_PX;
     const square = shouldSelect ? this.resolveSquareFromPointerEvent(event) : null;
