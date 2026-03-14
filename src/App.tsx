@@ -5,24 +5,47 @@ import {
   useEffectEvent,
   useRef,
   useState,
+  type ChangeEvent,
   type CSSProperties,
   type ReactNode,
 } from "react";
-import type { Color } from "chess.js";
+import type { Color, PieceSymbol } from "chess.js";
 import { ChessScene } from "./components/ChessScene";
 import { MoveList } from "./components/MoveList";
 import { AnalysisSummaryView } from "./components/AnalysisSummaryView";
 import { clockPresets } from "./data/clocks";
 import { difficultyPresets, getDifficultyPreset } from "./data/difficulties";
 import { getTheme, getThemeCssVariables, themes } from "./data/themes";
+import { deriveSessionAtPly } from "./game/gameService";
 import { getLocaleLabel, t } from "./i18n";
 import { locales } from "./i18n/dictionaries";
 import { useGameStore } from "./state/gameStore";
-import { formatClock, formatRelativeTimestamp } from "./utils/format";
+import type {
+  CameraPreset,
+  ClockConfig,
+  GameSession,
+  NewGameColorChoice,
+  PositionEvaluation,
+} from "./types/game";
+import { clamp, formatClock, formatRelativeTimestamp } from "./utils/format";
 import { readTextFile } from "./utils/files";
-import type { Locale } from "./types/game";
 
-type SectionId = "moves" | "analysis" | "library" | "game";
+type TranslationKey = Parameters<typeof t>[1];
+
+const NEW_GAME_CLOCK_PRESETS = [
+  clockPresets[0],
+  clockPresets[3],
+  clockPresets[4],
+  clockPresets[5],
+  clockPresets[6],
+];
+const CAMERA_PRESETS: Array<{ id: CameraPreset; icon: string; labelKey: TranslationKey }> = [
+  { id: "classic", icon: "◢", labelKey: "camera.classic" },
+  { id: "side", icon: "▤", labelKey: "camera.side" },
+  { id: "topdown", icon: "▣", labelKey: "camera.topdown" },
+  { id: "2d", icon: "□", labelKey: "camera.2d" },
+];
+const PROMOTION_CHOICES = ["q", "r", "b", "n"] as const;
 
 function App() {
   const {
@@ -35,19 +58,29 @@ function App() {
     selectedSquare,
     legalTargets,
     hintMove,
+    pendingPromotion,
+    analysisCursor,
+    analysisAutoplay,
     analysisProgress,
+    cameraPreset,
+    restoreNotice,
     lastError,
     bootstrap,
     selectSquare,
+    confirmPromotion,
     requestHint,
     undo,
     redo,
     newGame,
-    setDifficulty,
     setTheme,
     setLocale,
     toggleOrientation,
-    setClockConfig,
+    setAnimationMode,
+    setDefaultViewMode,
+    setCameraPreset,
+    setAnalysisCursor,
+    setAnalysisAutoplay,
+    clearRestoreNotice,
     createManualSave,
     loadManualSave,
     restoreAutosave,
@@ -58,44 +91,122 @@ function App() {
     persistCurrentAutosave,
     tickLiveClock,
   } = useGameStore();
-  const [openSection, setOpenSection] = useState<SectionId | null>(null);
+  const [topBarExpanded, setTopBarExpanded] = useState(false);
+  const [bottomBarExpanded, setBottomBarExpanded] = useState(false);
+  const [historyOpen, setHistoryOpen] = useState(false);
+  const [menuOpen, setMenuOpen] = useState(false);
+  const [newGameOpen, setNewGameOpen] = useState(false);
+  const [cameraPickerOpen, setCameraPickerOpen] = useState(false);
+  const [replacePromptOpen, setReplacePromptOpen] = useState(false);
+  const [resultModalOpen, setResultModalOpen] = useState(false);
+  const [newGameColor, setNewGameColor] = useState<NewGameColorChoice>("white");
+  const [newGameDifficultyId, setNewGameDifficultyId] = useState(difficultyPresets[0].id);
+  const [selectedClockKey, setSelectedClockKey] = useState("custom");
   const [customMinutes, setCustomMinutes] = useState("10");
-  const [customIncrement, setCustomIncrement] = useState("5");
+  const [customIncrement, setCustomIncrement] = useState("0");
   const [transientError, setTransientError] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
-  const initializedSectionRef = useRef(false);
+  const lastFinishedGameRef = useRef<string | null>(null);
   const deferredMoves = useDeferredValue(session.snapshot.moveList);
+  const locale = session.settings.locale;
   const theme = getTheme(session.settings.themeId);
+  const style = getThemeCssVariables(theme) as CSSProperties;
   const activeDifficulty = getDifficultyPreset(session.settings.difficultyId);
-  const autosaveTimestamp = autosave
-    ? formatRelativeTimestamp(autosave.updatedAt, session.settings.locale)
-    : null;
+  const boardSession = analysisCursor === null ? session : deriveSessionAtPly(session, analysisCursor);
+  const analysisMode = analysisCursor !== null;
+  const currentPly = analysisCursor ?? session.moveEntries.length;
+  const currentEvaluation = getEvaluationForPly(session.analysisSummary?.evaluationsByPly, currentPly);
+  const autosaveTimestamp = autosave ? formatRelativeTimestamp(autosave.updatedAt, locale) : null;
   const topColor: Color = session.settings.orientation === "white" ? "b" : "w";
   const bottomColor: Color = session.settings.orientation === "white" ? "w" : "b";
-  const lastMove = deferredMoves.at(-1);
+  const isHintDisabled =
+    analysisMode ||
+    !!pendingPromotion ||
+    (session.snapshot.status !== "active" && session.snapshot.status !== "idle") ||
+    session.snapshot.sideToMove !== session.playerColor ||
+    enginePhase === "thinking" ||
+    enginePhase === "analyzing";
+  const isGameInProgress =
+    session.moveEntries.length > 0 &&
+    (session.snapshot.status === "active" || session.snapshot.status === "idle");
+  const selectedDifficultyIndex = Math.max(
+    0,
+    difficultyPresets.findIndex((preset) => preset.id === newGameDifficultyId),
+  );
 
   useEffect(() => {
     void bootstrap();
   }, [bootstrap]);
 
   useEffect(() => {
-    setCustomMinutes(String(Math.max(0, Math.round(session.settings.clockConfig.baseMs / 60_000))));
-    setCustomIncrement(String(Math.max(0, Math.round(session.settings.clockConfig.incrementMs / 1_000))));
-  }, [session.settings.clockConfig.baseMs, session.settings.clockConfig.incrementMs]);
+    syncNewGameForm(
+      session.settings.clockConfig,
+      session.settings.difficultyId,
+      setNewGameDifficultyId,
+      setSelectedClockKey,
+      setCustomMinutes,
+      setCustomIncrement,
+    );
+  }, [
+    session.settings.clockConfig.baseMs,
+    session.settings.clockConfig.incrementMs,
+    session.settings.clockConfig.enabled,
+    session.settings.difficultyId,
+  ]);
 
   useEffect(() => {
-    if (initializedSectionRef.current || !booted) {
+    if (isTerminalStatus(session.snapshot.status)) {
+      if (lastFinishedGameRef.current !== session.snapshot.pgn) {
+        setResultModalOpen(true);
+        lastFinishedGameRef.current = session.snapshot.pgn;
+      }
       return;
     }
 
-    if (session.analysisSummary) {
-      setOpenSection("analysis");
-    } else if (session.snapshot.moveList.length > 0) {
-      setOpenSection("moves");
+    setResultModalOpen(false);
+    lastFinishedGameRef.current = null;
+  }, [session.snapshot.pgn, session.snapshot.status]);
+
+  useEffect(() => {
+    if (!restoreNotice) {
+      return;
     }
 
-    initializedSectionRef.current = true;
-  }, [booted, session.analysisSummary, session.snapshot.moveList.length]);
+    const timeout = window.setTimeout(() => {
+      clearRestoreNotice();
+    }, 3200);
+
+    return () => {
+      window.clearTimeout(timeout);
+    };
+  }, [clearRestoreNotice, restoreNotice]);
+
+  useEffect(() => {
+    if (!analysisAutoplay || analysisCursor === null) {
+      return;
+    }
+
+    if (analysisCursor >= session.moveEntries.length) {
+      setAnalysisAutoplay(false);
+      return;
+    }
+
+    const timeout = window.setTimeout(() => {
+      startTransition(() => {
+        setAnalysisCursor(analysisCursor + 1);
+      });
+    }, 850);
+
+    return () => {
+      window.clearTimeout(timeout);
+    };
+  }, [
+    analysisAutoplay,
+    analysisCursor,
+    session.moveEntries.length,
+    setAnalysisAutoplay,
+    setAnalysisCursor,
+  ]);
 
   const persistOnPause = useEffectEvent(() => {
     void persistCurrentAutosave();
@@ -126,19 +237,7 @@ function App() {
     };
   }, []);
 
-  const toggleSection = (section: SectionId) => {
-    startTransition(() => {
-      setOpenSection((current) => (current === section ? null : section));
-    });
-  };
-
-  const revealSection = (section: SectionId) => {
-    startTransition(() => {
-      setOpenSection(section);
-    });
-  };
-
-  const handleImport = async (event: React.ChangeEvent<HTMLInputElement>) => {
+  const handleImport = async (event: ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
     if (!file) {
       return;
@@ -147,420 +246,667 @@ function App() {
     try {
       const text = await readTextFile(file);
       await importPgnText(text);
-      revealSection("moves");
+      startTransition(() => {
+        setHistoryOpen(true);
+        setMenuOpen(false);
+      });
       setTransientError(null);
     } catch {
-      setTransientError(t(session.settings.locale, "save.importError"));
+      setTransientError(t(locale, "save.importError"));
     } finally {
       event.target.value = "";
     }
   };
 
-  const applyCustomClock = async () => {
-    const minutes = Number(customMinutes);
-    const increment = Number(customIncrement);
-
-    await setClockConfig({
-      enabled: minutes > 0,
-      label: minutes > 0 ? `${minutes} + ${increment}` : t(session.settings.locale, "clock.none"),
-      baseMs: Math.max(0, minutes) * 60_000,
-      incrementMs: Math.max(0, increment) * 1_000,
+  const openNewGameSheet = () => {
+    startTransition(() => {
+      setMenuOpen(false);
+      setCameraPickerOpen(false);
+      setNewGameColor(session.playerColor === "b" ? "black" : "white");
+      syncNewGameForm(
+        session.settings.clockConfig,
+        session.settings.difficultyId,
+        setNewGameDifficultyId,
+        setSelectedClockKey,
+        setCustomMinutes,
+        setCustomIncrement,
+      );
+      setNewGameOpen(true);
+      setBottomBarExpanded(true);
     });
-    revealSection("game");
   };
 
-  const style = getThemeCssVariables(theme) as CSSProperties;
-  const statusKey =
-    enginePhase === "booting"
-      ? "status.loading"
-      : enginePhase === "thinking"
-        ? "status.thinking"
-        : enginePhase === "analyzing"
-          ? "status.analyzing"
-          : enginePhase === "error"
-            ? "status.error"
-            : "status.ready";
-  const resultKey =
-    session.snapshot.status === "checkmate" ||
-    session.snapshot.status === "stalemate" ||
-    session.snapshot.status === "draw" ||
-    session.snapshot.status === "threefold" ||
-    session.snapshot.status === "insufficient" ||
-    session.snapshot.status === "timeout"
-      ? `result.${session.snapshot.status}`
-      : "result.active";
-  const movesSummary =
-    deferredMoves.length === 0
-      ? t(session.settings.locale, "section.moves.subtitle.empty")
-      : t(session.settings.locale, "section.moves.subtitle.last", {
-          count: deferredMoves.length,
-          move: lastMove?.san ?? "—",
-        });
-  const analysisSummaryText = analysisProgress
-    ? t(session.settings.locale, "section.analysis.subtitle.progress", {
-        completed: analysisProgress.completed,
-        total: analysisProgress.total,
-      })
-    : session.analysisSummary
-      ? t(session.settings.locale, "section.analysis.subtitle.ready", {
-          count: session.analysisSummary.criticalMoments.length,
-        })
-      : t(session.settings.locale, "section.analysis.subtitle.empty");
-  const librarySummary =
-    saveSlots.length > 0
-      ? t(session.settings.locale, "section.library.subtitle.ready", {
-          count: saveSlots.length,
-        })
-      : autosaveTimestamp
-        ? t(session.settings.locale, "section.library.subtitle.autosave", {
-            time: autosaveTimestamp,
-          })
-        : t(session.settings.locale, "section.library.subtitle.empty");
-  const gameSummary = t(session.settings.locale, "section.game.subtitle", {
-    difficulty: activeDifficulty.label,
-    clock: session.settings.clockConfig.enabled ? session.settings.clockConfig.label : t(session.settings.locale, "clock.none"),
-  });
+  const applyNewGame = async (forceReplace = false) => {
+    if (isGameInProgress && !forceReplace) {
+      setReplacePromptOpen(true);
+      return;
+    }
+
+    const clockConfig = resolveSheetClockConfig(selectedClockKey, customMinutes, customIncrement, locale);
+    await newGame({
+      playerColor: newGameColor,
+      difficultyId: newGameDifficultyId,
+      clockConfig,
+    });
+    startTransition(() => {
+      setNewGameOpen(false);
+      setReplacePromptOpen(false);
+      setResultModalOpen(false);
+      setHistoryOpen(false);
+      setMenuOpen(false);
+      setAnalysisAutoplay(false);
+      setAnalysisCursor(null);
+    });
+  };
+
+  const enterAnalysis = async () => {
+    startTransition(() => {
+      setResultModalOpen(false);
+      setHistoryOpen(true);
+      setBottomBarExpanded(true);
+    });
+    setAnalysisAutoplay(false);
+    setAnalysisCursor(session.moveEntries.length);
+    if (!session.analysisSummary && !analysisProgress && session.moveEntries.length > 0) {
+      await runAnalysis();
+    }
+  };
+
+  const topSide = buildClockSide(topColor, session, locale);
+  const bottomSide = buildClockSide(bottomColor, session, locale);
 
   return (
     <div className="app-shell" style={style}>
+      <div className="canvas-backdrop" />
       <div className="backdrop-orb backdrop-orb--primary" />
       <div className="backdrop-orb backdrop-orb--secondary" />
+      <p className="app-title-badge">Pipo Chess 3D</p>
 
-      <header className="app-header">
-        <div className="brand-block">
-          <p className="eyebrow">{t(session.settings.locale, "hud.offline")}</p>
-          <div className="brand-row">
-            <h1>{t(session.settings.locale, "app.title")}</h1>
-            <span className={`status-pill status-pill--${enginePhase}`}>{t(session.settings.locale, statusKey)}</span>
-          </div>
-          <p className="brand-copy">{engineMessage || t(session.settings.locale, statusKey)}</p>
-        </div>
-        <span className="status-pill status-pill--result">{t(session.settings.locale, resultKey as never)}</span>
-      </header>
-
-      <main className="app-layout">
-        <section className="play-stage">
-          <ClockTray
-            color={topColor}
-            locale={session.settings.locale}
-            isPlayer={topColor === session.playerColor}
-            isActive={session.snapshot.clockState.activeColor === topColor}
-            time={topColor === "w" ? session.snapshot.clockState.whiteMs : session.snapshot.clockState.blackMs}
-          />
-
-          <section className="board-card">
-            <ChessScene
-              session={session}
-              theme={theme}
-              selectedSquare={selectedSquare}
-              legalTargets={legalTargets}
-              hintMove={hintMove}
-              onSquareSelect={(square) => {
-                void selectSquare(square);
-              }}
-            />
-          </section>
-
-          <ClockTray
-            color={bottomColor}
-            locale={session.settings.locale}
-            isPlayer={bottomColor === session.playerColor}
-            isActive={session.snapshot.clockState.activeColor === bottomColor}
-            time={bottomColor === "w" ? session.snapshot.clockState.whiteMs : session.snapshot.clockState.blackMs}
-          />
-
-          <section className="quick-actions" aria-label={t(session.settings.locale, "hud.primaryActions")}>
-            <button className="primary-button" type="button" onClick={() => void requestHint()}>
-              {t(session.settings.locale, "hud.hint")}
-            </button>
-            <button className="ghost-button" type="button" onClick={() => void undo()}>
-              {t(session.settings.locale, "hud.undo")}
-            </button>
-            <button className="ghost-button" type="button" onClick={() => void redo()}>
-              {t(session.settings.locale, "hud.redo")}
-            </button>
-            <button className="ghost-button" type="button" onClick={() => void toggleOrientation()}>
-              {t(session.settings.locale, "hud.flip")}
-            </button>
-          </section>
-        </section>
-
-        <section className="detail-column">
-          <AccordionSection
-            title={t(session.settings.locale, "hud.moves")}
-            summary={movesSummary}
-            meta={deferredMoves.length > 0 ? <span className="section-badge">{deferredMoves.length}</span> : null}
-            open={openSection === "moves"}
-            onToggle={() => toggleSection("moves")}
-          >
-            <MoveList moves={deferredMoves} />
-          </AccordionSection>
-
-          <AccordionSection
-            title={t(session.settings.locale, "section.analysis.title")}
-            summary={analysisSummaryText}
-            meta={
-              analysisProgress ? (
-                <span className="section-badge">
-                  {analysisProgress.completed}/{analysisProgress.total}
-                </span>
-              ) : session.analysisSummary ? (
-                <span className="section-badge">{session.analysisSummary.criticalMoments.length}</span>
-              ) : null
+      <main className="stage-root">
+        <ChessScene
+          session={boardSession}
+          theme={theme}
+          selectedSquare={analysisMode ? null : selectedSquare}
+          legalTargets={analysisMode ? [] : legalTargets}
+          hintMove={analysisMode ? null : hintMove}
+          onSquareSelect={(square) => {
+            if (analysisMode) {
+              return;
             }
-            open={openSection === "analysis"}
-            onToggle={() => toggleSection("analysis")}
-          >
-            <div className="panel-stack">
-              <button
-                className="primary-button"
-                type="button"
-                onClick={() => {
-                  revealSection("analysis");
-                  void runAnalysis();
-                }}
-              >
-                {t(session.settings.locale, "panel.analysis.run")}
-              </button>
-              <AnalysisSummaryView summary={session.analysisSummary} locale={session.settings.locale} />
-            </div>
-          </AccordionSection>
-
-          <AccordionSection
-            title={t(session.settings.locale, "section.library.title")}
-            summary={librarySummary}
-            meta={
-              saveSlots.length > 0 ? (
-                <span className="section-badge">{saveSlots.length}</span>
-              ) : autosave ? (
-                <span className="section-badge">A</span>
-              ) : null
-            }
-            open={openSection === "library"}
-            onToggle={() => toggleSection("library")}
-          >
-            <div className="panel-stack">
-              {autosave ? (
-                <article className="save-row">
-                  <div>
-                    <strong>{t(session.settings.locale, "panel.saveLoad.autosave")}</strong>
-                    <span>{autosaveTimestamp}</span>
-                  </div>
-                  <div className="save-row__actions">
-                    <button
-                      className="ghost-button"
-                      type="button"
-                      onClick={() => {
-                        revealSection("library");
-                        void restoreAutosave();
-                      }}
-                    >
-                      {t(session.settings.locale, "save.restore")}
-                    </button>
-                  </div>
-                </article>
-              ) : null}
-
-              <div className="inline-actions">
-                <button
-                  className="primary-button"
-                  type="button"
-                  onClick={() => {
-                    revealSection("library");
-                    void createManualSave();
-                  }}
-                >
-                  {t(session.settings.locale, "panel.saveLoad.create")}
-                </button>
-                <button
-                  className="ghost-button"
-                  type="button"
-                  onClick={() => fileInputRef.current?.click()}
-                >
-                  {t(session.settings.locale, "hud.import")}
-                </button>
-                <button className="ghost-button" type="button" onClick={exportPgn}>
-                  {t(session.settings.locale, "hud.export")}
-                </button>
-              </div>
-
-              <div className="save-list">
-                {saveSlots.map((save) => (
-                  <article className="save-row" key={save.id}>
-                    <div>
-                      <strong>{save.label}</strong>
-                      <span>{formatRelativeTimestamp(save.updatedAt, session.settings.locale)}</span>
-                    </div>
-                    <div className="save-row__actions">
-                      <button
-                        className="ghost-button"
-                        type="button"
-                        onClick={() => {
-                          revealSection("library");
-                          void loadManualSave(save.id!);
-                        }}
-                      >
-                        {t(session.settings.locale, "panel.saveLoad.load")}
-                      </button>
-                      <button
-                        className="ghost-button"
-                        type="button"
-                        onClick={() => {
-                          revealSection("library");
-                          void deleteManualSave(save.id!);
-                        }}
-                      >
-                        {t(session.settings.locale, "panel.saveLoad.delete")}
-                      </button>
-                    </div>
-                  </article>
-                ))}
-                {saveSlots.length === 0 ? <p className="muted-copy">{t(session.settings.locale, "panel.saveLoad.empty")}</p> : null}
-              </div>
-            </div>
-          </AccordionSection>
-
-          <AccordionSection
-            title={t(session.settings.locale, "section.game.title")}
-            summary={gameSummary}
-            open={openSection === "game"}
-            onToggle={() => toggleSection("game")}
-          >
-            <div className="panel-stack">
-              <div className="panel-stack">
-                <p className="muted-copy">{t(session.settings.locale, "panel.newGame.body")}</p>
-                <button
-                  className="primary-button"
-                  type="button"
-                  onClick={() => {
-                    void newGame();
-                  }}
-                >
-                  {t(session.settings.locale, "panel.newGame.confirm")}
-                </button>
-              </div>
-
-              <div className="settings-group">
-                <div className="settings-group__header">
-                  <h2>{t(session.settings.locale, "panel.difficulty.title")}</h2>
-                </div>
-                <div className="option-grid">
-                  {difficultyPresets.map((difficulty) => (
-                    <button
-                      className={`option-card ${
-                        session.settings.difficultyId === difficulty.id ? "is-selected" : ""
-                      }`}
-                      key={difficulty.id}
-                      type="button"
-                      onClick={() => {
-                        revealSection("game");
-                        void setDifficulty(difficulty.id);
-                      }}
-                    >
-                      <strong>{difficulty.label}</strong>
-                      <span>{difficulty.uciElo ? `Elo ${difficulty.uciElo}` : "Unlimited"}</span>
-                      <small>{difficulty.moveTimeMs} ms</small>
-                    </button>
-                  ))}
-                </div>
-              </div>
-
-              <div className="settings-group">
-                <div className="settings-group__header">
-                  <h2>{t(session.settings.locale, "panel.clock.title")}</h2>
-                </div>
-                <div className="option-grid">
-                  {clockPresets.map((preset) => (
-                    <button
-                      className={`option-card ${
-                        session.settings.clockConfig.label === preset.label ? "is-selected" : ""
-                      }`}
-                      key={preset.label}
-                      type="button"
-                      onClick={() => {
-                        revealSection("game");
-                        void setClockConfig(preset);
-                      }}
-                    >
-                      <strong>{preset.label}</strong>
-                      <span>{preset.enabled ? "Tournament" : t(session.settings.locale, "clock.none")}</span>
-                    </button>
-                  ))}
-                </div>
-                <div className="custom-clock">
-                  <label>
-                    {t(session.settings.locale, "panel.clock.minutes")}
-                    <input value={customMinutes} onChange={(event) => setCustomMinutes(event.target.value)} />
-                  </label>
-                  <label>
-                    {t(session.settings.locale, "panel.clock.increment")}
-                    <input value={customIncrement} onChange={(event) => setCustomIncrement(event.target.value)} />
-                  </label>
-                  <button
-                    className="ghost-button"
-                    type="button"
-                    onClick={() => {
-                      void applyCustomClock();
-                    }}
-                  >
-                    {t(session.settings.locale, "panel.clock.custom")}
-                  </button>
-                </div>
-              </div>
-
-              <div className="settings-group">
-                <div className="settings-group__header">
-                  <h2>{t(session.settings.locale, "panel.themes.title")}</h2>
-                </div>
-                <div className="option-grid">
-                  {themes.map((option) => (
-                    <button
-                      className={`option-card ${session.settings.themeId === option.id ? "is-selected" : ""}`}
-                      key={option.id}
-                      type="button"
-                      onClick={() => {
-                        revealSection("game");
-                        void setTheme(option.id);
-                      }}
-                    >
-                      <strong>{option.label}</strong>
-                      <span className="theme-swatch-row">
-                        <i style={{ background: option.boardLight }} />
-                        <i style={{ background: option.boardDark }} />
-                        <i style={{ background: option.highlightPrimary }} />
-                      </span>
-                    </button>
-                  ))}
-                </div>
-              </div>
-
-              <div className="settings-group">
-                <div className="settings-group__header">
-                  <h2>{t(session.settings.locale, "panel.language.title")}</h2>
-                </div>
-                <div className="option-grid">
-                  {locales.map((locale) => (
-                    <button
-                      className={`option-card ${session.settings.locale === locale ? "is-selected" : ""}`}
-                      key={locale}
-                      type="button"
-                      onClick={() => {
-                        revealSection("game");
-                        void setLocale(locale);
-                      }}
-                    >
-                      <strong>{getLocaleLabel(locale)}</strong>
-                    </button>
-                  ))}
-                </div>
-              </div>
-            </div>
-          </AccordionSection>
-        </section>
+            void selectSquare(square);
+          }}
+        />
+        {analysisMode ? <div className="board-input-lock" aria-hidden="true" /> : null}
+        {analysisMode ? <EvalBar evaluation={currentEvaluation} locale={locale} /> : null}
       </main>
 
-      {!booted ? <div className="boot-scrim">{t(session.settings.locale, "status.loading")}</div> : null}
-      {transientError || lastError ? <div className="toast">{transientError ?? lastError}</div> : null}
+      <button
+        className={`history-tab ${historyOpen ? "is-open" : ""}`}
+        type="button"
+        aria-label={t(locale, "history.toggle")}
+        onClick={() => {
+          startTransition(() => {
+            setHistoryOpen((value) => !value);
+          });
+        }}
+      >
+        <span>{analysisMode ? t(locale, "history.analysis") : "PGN"}</span>
+      </button>
+
+      <section className={`top-bar ${topBarExpanded ? "is-expanded" : ""}`}>
+        <button
+          className="bar-toggle"
+          type="button"
+          aria-label={t(locale, topBarExpanded ? "panel.close" : "hud.expandStatus")}
+          onClick={() => {
+            startTransition(() => {
+              setTopBarExpanded((value) => !value);
+            });
+          }}
+        >
+          {topBarExpanded ? "−" : "+"}
+        </button>
+        <ClockPill side={topSide} collapsed={!topBarExpanded} />
+        <div className={`top-bar__meta ${topBarExpanded ? "is-visible" : ""}`}>
+          <div className="top-bar__engine">
+            <span className={`status-pill status-pill--${enginePhase}`}>{t(locale, getStatusKey(enginePhase))}</span>
+            <strong>{activeDifficulty.label}</strong>
+            <small>{engineMessage || t(locale, getStatusKey(enginePhase))}</small>
+          </div>
+        </div>
+        <ClockPill side={bottomSide} collapsed={!topBarExpanded} />
+      </section>
+
+      <section className={`bottom-bar ${bottomBarExpanded ? "is-expanded" : ""}`}>
+        <button
+          className="bar-toggle"
+          type="button"
+          aria-label={t(locale, bottomBarExpanded ? "panel.close" : "hud.expandActions")}
+          onClick={() => {
+            startTransition(() => {
+              setBottomBarExpanded((value) => !value);
+            });
+          }}
+        >
+          {bottomBarExpanded ? "−" : "+"}
+        </button>
+        {analysisMode ? (
+          <>
+            <ActionButton
+              icon="⏮"
+              label={t(locale, "analysis.start")}
+              compact={!bottomBarExpanded}
+              onClick={() => {
+                setAnalysisAutoplay(false);
+                setAnalysisCursor(0);
+              }}
+            />
+            <ActionButton
+              icon="◀"
+              label={t(locale, "analysis.previous")}
+              compact={!bottomBarExpanded}
+              disabled={currentPly <= 0}
+              onClick={() => {
+                setAnalysisAutoplay(false);
+                setAnalysisCursor(currentPly - 1);
+              }}
+            />
+            <ActionButton
+              icon={analysisAutoplay ? "⏸" : "▶"}
+              label={t(locale, analysisAutoplay ? "analysis.pause" : "analysis.play")}
+              compact={!bottomBarExpanded}
+              onClick={() => setAnalysisAutoplay(!analysisAutoplay)}
+            />
+            <ActionButton
+              icon="▶"
+              label={t(locale, "analysis.next")}
+              compact={!bottomBarExpanded}
+              disabled={currentPly >= session.moveEntries.length}
+              onClick={() => {
+                setAnalysisAutoplay(false);
+                setAnalysisCursor(currentPly + 1);
+              }}
+            />
+            <ActionButton
+              icon="⏭"
+              label={t(locale, "analysis.end")}
+              compact={!bottomBarExpanded}
+              onClick={() => {
+                setAnalysisAutoplay(false);
+                setAnalysisCursor(session.moveEntries.length);
+              }}
+            />
+            <ActionButton
+              icon="↩"
+              label={t(locale, "analysis.exit")}
+              compact={!bottomBarExpanded}
+              onClick={() => {
+                setAnalysisAutoplay(false);
+                setAnalysisCursor(null);
+              }}
+            />
+          </>
+        ) : (
+          <>
+            <ActionButton
+              icon="＋"
+              label={t(locale, "hud.newGame")}
+              compact={!bottomBarExpanded}
+              onClick={openNewGameSheet}
+            />
+            <ActionButton
+              icon="↺"
+              label={t(locale, "hud.undo")}
+              compact={!bottomBarExpanded}
+              disabled={!session.snapshot.canUndo}
+              onClick={() => void undo()}
+            />
+            <ActionButton
+              icon="↻"
+              label={t(locale, "hud.redo")}
+              compact={!bottomBarExpanded}
+              disabled={!session.snapshot.canRedo}
+              onClick={() => void redo()}
+            />
+            <ActionButton
+              icon="💡"
+              label={t(locale, "hud.hint")}
+              compact={!bottomBarExpanded}
+              disabled={isHintDisabled}
+              loading={enginePhase === "thinking" && session.snapshot.sideToMove === session.playerColor}
+              onClick={() => void requestHint()}
+            />
+            <ActionButton
+              icon="🎥"
+              label={t(locale, "hud.camera")}
+              compact={!bottomBarExpanded}
+              onClick={() => {
+                startTransition(() => {
+                  setCameraPickerOpen((value) => !value);
+                  setMenuOpen(false);
+                });
+              }}
+            />
+            <ActionButton
+              icon="☰"
+              label={t(locale, "hud.menu")}
+              compact={!bottomBarExpanded}
+              onClick={() => {
+                startTransition(() => {
+                  setMenuOpen((value) => !value);
+                  setCameraPickerOpen(false);
+                });
+              }}
+            />
+          </>
+        )}
+      </section>
+
+      <aside className={`history-panel ${historyOpen ? "is-open" : ""}`}>
+        <div className="panel-header">
+          <div>
+            <p className="panel-kicker">{t(locale, "history.kicker")}</p>
+            <h2>{t(locale, "hud.moves")}</h2>
+          </div>
+          <button
+            className="ghost-icon-button"
+            type="button"
+            aria-label={t(locale, "panel.close")}
+            onClick={() => setHistoryOpen(false)}
+          >
+            ×
+          </button>
+        </div>
+        <MoveList
+          moves={deferredMoves}
+          selectedPly={analysisMode ? currentPly : null}
+          onSelectPly={(ply) => {
+            setAnalysisAutoplay(false);
+            setAnalysisCursor(ply);
+          }}
+          tagsByPly={session.analysisSummary?.tagsByPly}
+        />
+      </aside>
+
+      {cameraPickerOpen ? (
+        <div
+          className="overlay-scrim"
+          aria-hidden="true"
+          onClick={() => setCameraPickerOpen(false)}
+        />
+      ) : null}
+
+      <section className={`camera-picker ${cameraPickerOpen ? "is-open" : ""}`}>
+        <div className="panel-header">
+          <div>
+            <p className="panel-kicker">{t(locale, "camera.kicker")}</p>
+            <h2>{t(locale, "hud.camera")}</h2>
+          </div>
+        </div>
+        <div className="camera-grid">
+          {CAMERA_PRESETS.map((preset) => (
+            <button
+              className={`camera-card ${cameraPreset === preset.id ? "is-selected" : ""}`}
+              key={preset.id}
+              type="button"
+              onClick={() => {
+                setCameraPreset(preset.id);
+                setCameraPickerOpen(false);
+              }}
+            >
+              <span>{preset.icon}</span>
+              <strong>{t(locale, preset.labelKey)}</strong>
+            </button>
+          ))}
+        </div>
+      </section>
+
+      {menuOpen ? (
+        <div
+          className="overlay-scrim"
+          aria-hidden="true"
+          onClick={() => setMenuOpen(false)}
+        />
+      ) : null}
+
+      <aside className={`menu-drawer ${menuOpen ? "is-open" : ""}`}>
+        <div className="panel-header">
+          <div>
+            <p className="panel-kicker">{t(locale, "menu.kicker")}</p>
+            <h2>{t(locale, "hud.menu")}</h2>
+          </div>
+          <button
+            className="ghost-icon-button"
+            type="button"
+            aria-label={t(locale, "panel.close")}
+            onClick={() => setMenuOpen(false)}
+          >
+            ×
+          </button>
+        </div>
+
+        <MenuSection title={t(locale, "section.analysis.title")}>
+          <div className="inline-actions">
+            <button
+              className="primary-button"
+              type="button"
+              disabled={session.moveEntries.length === 0}
+              onClick={() => void enterAnalysis()}
+            >
+              {analysisProgress ? t(locale, "analysis.running") : t(locale, "analysis.open")}
+            </button>
+            <button
+              className="ghost-button"
+              type="button"
+              disabled={session.moveEntries.length === 0}
+              onClick={() => void runAnalysis()}
+            >
+              {t(locale, "panel.analysis.run")}
+            </button>
+          </div>
+          {analysisProgress ? (
+            <p className="muted-copy">
+              {t(locale, "section.analysis.subtitle.progress", {
+                completed: analysisProgress.completed,
+                total: analysisProgress.total,
+              })}
+            </p>
+          ) : null}
+          <AnalysisSummaryView summary={session.analysisSummary} locale={locale} />
+        </MenuSection>
+
+        <MenuSection title={t(locale, "menu.settings")}>
+          <div className="settings-stack">
+            <div className="settings-group">
+              <h3>{t(locale, "menu.animation")}</h3>
+              <div className="chip-row">
+                {(["normal", "reduced", "off"] as const).map((mode) => (
+                  <ChipButton
+                    key={mode}
+                    active={session.settings.animationMode === mode}
+                    onClick={() => void setAnimationMode(mode)}
+                  >
+                    {t(locale, `animation.${mode}`)}
+                  </ChipButton>
+                ))}
+              </div>
+            </div>
+
+            <div className="settings-group">
+              <h3>{t(locale, "menu.defaultView")}</h3>
+              <div className="chip-row">
+                {(["3d", "2d"] as const).map((mode) => (
+                  <ChipButton
+                    key={mode}
+                    active={session.settings.defaultViewMode === mode}
+                    onClick={() => void setDefaultViewMode(mode)}
+                  >
+                    {t(locale, mode === "3d" ? "view.3d" : "view.2d")}
+                  </ChipButton>
+                ))}
+              </div>
+            </div>
+
+            <div className="settings-group">
+              <h3>{t(locale, "panel.themes.title")}</h3>
+              <div className="theme-grid">
+                {themes.map((option) => (
+                  <button
+                    className={`theme-card ${session.settings.themeId === option.id ? "is-selected" : ""}`}
+                    key={option.id}
+                    type="button"
+                    onClick={() => void setTheme(option.id)}
+                  >
+                    <strong>{option.label}</strong>
+                    <span className="theme-swatch-row">
+                      <i style={{ background: option.boardLight }} />
+                      <i style={{ background: option.boardDark }} />
+                      <i style={{ background: option.highlightPrimary }} />
+                    </span>
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <div className="settings-group">
+              <h3>{t(locale, "panel.language.title")}</h3>
+              <div className="chip-row">
+                {locales.map((option) => (
+                  <ChipButton
+                    key={option}
+                    active={session.settings.locale === option}
+                    onClick={() => void setLocale(option)}
+                  >
+                    {getLocaleLabel(option)}
+                  </ChipButton>
+                ))}
+              </div>
+            </div>
+
+            <div className="inline-actions">
+              <button className="ghost-button" type="button" onClick={() => void toggleOrientation()}>
+                {t(locale, "hud.flip")}
+              </button>
+            </div>
+          </div>
+        </MenuSection>
+
+        <MenuSection title={t(locale, "section.library.title")}>
+          {autosave ? (
+            <article className="save-row">
+              <div>
+                <strong>{t(locale, "panel.saveLoad.autosave")}</strong>
+                <span>{autosaveTimestamp}</span>
+              </div>
+              <div className="save-row__actions">
+                <button className="ghost-button" type="button" onClick={() => void restoreAutosave()}>
+                  {t(locale, "save.restore")}
+                </button>
+              </div>
+            </article>
+          ) : null}
+
+          <div className="inline-actions">
+            <button className="primary-button" type="button" onClick={() => void createManualSave()}>
+              {t(locale, "panel.saveLoad.create")}
+            </button>
+            <button className="ghost-button" type="button" onClick={() => fileInputRef.current?.click()}>
+              {t(locale, "hud.import")}
+            </button>
+            <button className="ghost-button" type="button" onClick={exportPgn}>
+              {t(locale, "hud.export")}
+            </button>
+          </div>
+
+          <div className="save-list">
+            {saveSlots.map((save) => (
+              <article className="save-row" key={save.id}>
+                <div>
+                  <strong>{save.label}</strong>
+                  <span>{formatRelativeTimestamp(save.updatedAt, locale)}</span>
+                </div>
+                <div className="save-row__actions">
+                  <button className="ghost-button" type="button" onClick={() => void loadManualSave(save.id!)}>
+                    {t(locale, "panel.saveLoad.load")}
+                  </button>
+                  <button className="ghost-button" type="button" onClick={() => void deleteManualSave(save.id!)}>
+                    {t(locale, "panel.saveLoad.delete")}
+                  </button>
+                </div>
+              </article>
+            ))}
+            {saveSlots.length === 0 ? <p className="muted-copy">{t(locale, "panel.saveLoad.empty")}</p> : null}
+          </div>
+        </MenuSection>
+      </aside>
+
+      {newGameOpen ? (
+        <div
+          className="overlay-scrim"
+          aria-hidden="true"
+          onClick={() => setNewGameOpen(false)}
+        />
+      ) : null}
+
+      <section className={`new-game-sheet ${newGameOpen ? "is-open" : ""}`}>
+        <div className="sheet-handle" />
+        <div className="panel-header panel-header--sheet">
+          <div>
+            <p className="panel-kicker">{t(locale, "newGame.kicker")}</p>
+            <h2>{t(locale, "panel.newGame.title")}</h2>
+          </div>
+        </div>
+
+        <div className="settings-group">
+          <h3>{t(locale, "newGame.color")}</h3>
+          <div className="chip-row chip-row--three">
+            {(["white", "random", "black"] as const).map((colorChoice) => (
+              <ChipButton
+                key={colorChoice}
+                active={newGameColor === colorChoice}
+                onClick={() => setNewGameColor(colorChoice)}
+              >
+                {t(locale, `newGame.color.${colorChoice}`)}
+              </ChipButton>
+            ))}
+          </div>
+        </div>
+
+        <div className="settings-group">
+          <h3>{t(locale, "newGame.level")}</h3>
+          <div className="slider-block">
+            <strong>{getDifficultyPreset(newGameDifficultyId).label}</strong>
+            <input
+              aria-label={t(locale, "newGame.level")}
+              max={difficultyPresets.length - 1}
+              min={0}
+              type="range"
+              value={selectedDifficultyIndex}
+              onChange={(event) => {
+                const index = Number(event.target.value);
+                setNewGameDifficultyId(difficultyPresets[index]?.id ?? difficultyPresets[0].id);
+              }}
+            />
+            <div className="slider-labels">
+              {difficultyPresets.map((preset) => (
+                <span key={preset.id}>{preset.label}</span>
+              ))}
+            </div>
+          </div>
+        </div>
+
+        <div className="settings-group">
+          <h3>{t(locale, "panel.clock.title")}</h3>
+          <div className="chip-row chip-row--wrap">
+            {NEW_GAME_CLOCK_PRESETS.map((preset) => (
+              <ChipButton
+                key={getClockKey(preset)}
+                active={selectedClockKey === getClockKey(preset)}
+                onClick={() => setSelectedClockKey(getClockKey(preset))}
+              >
+                {formatClockPresetLabel(preset, locale)}
+              </ChipButton>
+            ))}
+            <ChipButton active={selectedClockKey === "custom"} onClick={() => setSelectedClockKey("custom")}>
+              {t(locale, "panel.clock.custom")}
+            </ChipButton>
+          </div>
+          {selectedClockKey === "custom" ? (
+            <div className="custom-clock">
+              <label>
+                {t(locale, "panel.clock.minutes")}
+                <input value={customMinutes} onChange={(event) => setCustomMinutes(event.target.value)} />
+              </label>
+              <label>
+                {t(locale, "panel.clock.increment")}
+                <input value={customIncrement} onChange={(event) => setCustomIncrement(event.target.value)} />
+              </label>
+            </div>
+          ) : null}
+        </div>
+
+        <button className="primary-button primary-button--full" type="button" onClick={() => void applyNewGame()}>
+          {t(locale, "panel.newGame.confirm")}
+        </button>
+      </section>
+
+      {pendingPromotion ? (
+        <section className="promotion-popup" aria-label={t(locale, "promotion.title")}>
+          <p className="panel-kicker">{t(locale, "promotion.title")}</p>
+          <div className="promotion-options">
+            {PROMOTION_CHOICES.map((piece) => (
+              <button
+                className="promotion-option"
+                key={piece}
+                type="button"
+                onClick={() => void confirmPromotion(piece)}
+              >
+                <span>{getPromotionGlyph(piece, session.playerColor)}</span>
+                <small>{t(locale, getPromotionKey(piece))}</small>
+              </button>
+            ))}
+          </div>
+        </section>
+      ) : null}
+
+      {replacePromptOpen ? (
+        <>
+          <div className="overlay-scrim overlay-scrim--strong" aria-hidden="true" />
+          <section className="dialog-card">
+            <h2>{t(locale, "confirm.newGame.title")}</h2>
+            <p>{t(locale, "confirm.newGame.body")}</p>
+            <div className="inline-actions">
+              <button className="ghost-button" type="button" onClick={() => setReplacePromptOpen(false)}>
+                {t(locale, "confirm.newGame.keep")}
+              </button>
+              <button className="ghost-button" type="button" onClick={() => { setReplacePromptOpen(false); setNewGameOpen(false); }}>
+                {t(locale, "confirm.newGame.cancel")}
+              </button>
+              <button className="primary-button" type="button" onClick={() => void applyNewGame(true)}>
+                {t(locale, "confirm.newGame.replace")}
+              </button>
+            </div>
+          </section>
+        </>
+      ) : null}
+
+      {resultModalOpen ? (
+        <>
+          <div className="overlay-scrim overlay-scrim--strong" aria-hidden="true" />
+          <section className="result-modal">
+            <p className="panel-kicker">{t(locale, "result.kicker")}</p>
+            <h2>{t(locale, getFriendlyResultKey(session))}</h2>
+            <p className="muted-copy">{t(locale, getResultStatusKey(session.snapshot.status))}</p>
+            <div className="inline-actions">
+              <button className="primary-button" type="button" onClick={() => void enterAnalysis()}>
+                {t(locale, "analysis.open")}
+              </button>
+              <button className="ghost-button" type="button" onClick={openNewGameSheet}>
+                {t(locale, "hud.newGame")}
+              </button>
+              <button
+                className="ghost-button"
+                type="button"
+                onClick={() => {
+                  setResultModalOpen(false);
+                  setMenuOpen(true);
+                }}
+              >
+                {t(locale, "hud.menu")}
+              </button>
+            </div>
+          </section>
+        </>
+      ) : null}
+
+      {restoreNotice || transientError || lastError ? (
+        <div className={`toast ${!restoreNotice && (transientError || lastError) ? "is-error" : ""}`}>
+          {restoreNotice ?? transientError ?? lastError}
+        </div>
+      ) : null}
+
+      {!booted ? <div className="boot-scrim">{t(locale, "status.loading")}</div> : null}
+
       <input
         hidden
         ref={fileInputRef}
@@ -574,58 +920,268 @@ function App() {
   );
 }
 
-interface ClockTrayProps {
-  color: Color;
-  locale: Locale;
-  isPlayer: boolean;
-  isActive: boolean;
+interface ClockSideState {
+  label: string;
+  subtitle: string;
   time: number;
+  active: boolean;
+  thinking: boolean;
 }
 
-function ClockTray({ color, locale, isPlayer, isActive, time }: ClockTrayProps) {
+function ClockPill({ side, collapsed }: { side: ClockSideState; collapsed: boolean }) {
   return (
-    <article className={`clock-tray ${isActive ? "is-active" : ""}`}>
-      <div className="clock-tray__identity">
-        <span>{t(locale, color === "w" ? "hud.side.white" : "hud.side.black")}</span>
-        <strong>{isPlayer ? t(locale, "hud.you") : t(locale, "hud.localAi")}</strong>
+    <article className={`clock-pill ${side.active ? "is-active" : ""} ${collapsed ? "is-collapsed" : ""}`}>
+      <div className="clock-pill__dot" aria-hidden="true" />
+      <div className="clock-pill__copy">
+        {!collapsed ? <span>{side.subtitle}</span> : null}
+        <strong>{formatClock(side.time)}</strong>
+        {!collapsed ? <small className={side.thinking ? "is-thinking" : ""}>{side.label}</small> : null}
       </div>
-      <time className="clock-tray__time">{formatClock(time)}</time>
     </article>
   );
 }
 
-interface AccordionSectionProps {
-  title: string;
-  summary: string;
-  open: boolean;
-  onToggle: () => void;
-  children: ReactNode;
-  meta?: ReactNode;
+function ActionButton({
+  icon,
+  label,
+  compact,
+  disabled,
+  loading,
+  onClick,
+}: {
+  icon: string;
+  label: string;
+  compact: boolean;
+  disabled?: boolean;
+  loading?: boolean;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      className={`action-pill ${compact ? "is-compact" : ""}`}
+      aria-label={label}
+      disabled={disabled}
+      title={label}
+      type="button"
+      onClick={onClick}
+    >
+      <span aria-hidden="true">{loading ? "…" : icon}</span>
+      {!compact ? <strong>{label}</strong> : null}
+    </button>
+  );
 }
 
-function AccordionSection({ title, summary, open, onToggle, children, meta }: AccordionSectionProps) {
+function MenuSection({ title, children }: { title: string; children: ReactNode }) {
   return (
-    <section className={`section-card ${open ? "is-open" : ""}`}>
-      <button
-        className="section-card__header"
-        type="button"
-        aria-expanded={open}
-        onClick={onToggle}
-      >
-        <div className="section-card__copy">
-          <span className="section-card__title">{title}</span>
-          <strong>{summary}</strong>
-        </div>
-        <div className="section-card__meta">
-          {meta}
-          <span className="section-chevron" aria-hidden="true">
-            {open ? "−" : "+"}
-          </span>
-        </div>
-      </button>
-      {open ? <div className="section-card__body">{children}</div> : null}
+    <section className="menu-section">
+      <h2>{title}</h2>
+      {children}
     </section>
   );
+}
+
+function ChipButton({
+  active,
+  children,
+  onClick,
+}: {
+  active: boolean;
+  children: ReactNode;
+  onClick: () => void;
+}) {
+  return (
+    <button className={`chip-button ${active ? "is-active" : ""}`} type="button" onClick={onClick}>
+      {children}
+    </button>
+  );
+}
+
+function EvalBar({
+  evaluation,
+  locale,
+}: {
+  evaluation: PositionEvaluation | null;
+  locale: GameSession["settings"]["locale"];
+}) {
+  const score = normalizeEvaluationScore(evaluation);
+  const percentage = clamp(50 + score / 18, 6, 94);
+  const label = formatEvaluationLabel(evaluation, locale);
+
+  return (
+    <aside className="eval-bar" aria-label={t(locale, "analysis.eval")}>
+      <div className="eval-bar__track">
+        <div className="eval-bar__fill" style={{ height: `${percentage}%` }} />
+      </div>
+      <strong>{label}</strong>
+    </aside>
+  );
+}
+
+function buildClockSide(color: Color, session: GameSession, locale: GameSession["settings"]["locale"]): ClockSideState {
+  const isPlayer = color === session.playerColor;
+
+  return {
+    label: isPlayer ? t(locale, "hud.you") : t(locale, "hud.localAi"),
+    subtitle: isPlayer ? t(locale, "hud.player") : `${t(locale, "hud.engine")} · ${getDifficultyPreset(session.settings.difficultyId).label}`,
+    time: color === "w" ? session.snapshot.clockState.whiteMs : session.snapshot.clockState.blackMs,
+    active: session.snapshot.clockState.activeColor === color,
+    thinking:
+      !isPlayer &&
+      session.snapshot.clockState.activeColor === color &&
+      session.snapshot.status === "active",
+  };
+}
+
+function syncNewGameForm(
+  clockConfig: ClockConfig,
+  difficultyId: string,
+  setDifficultyId: (value: string) => void,
+  setClockKey: (value: string) => void,
+  setMinutes: (value: string) => void,
+  setIncrement: (value: string) => void,
+) {
+  setDifficultyId(difficultyId);
+  setMinutes(String(Math.max(0, Math.round(clockConfig.baseMs / 60_000))));
+  setIncrement(String(Math.max(0, Math.round(clockConfig.incrementMs / 1_000))));
+
+  const preset = NEW_GAME_CLOCK_PRESETS.find((option) => getClockKey(option) === getClockKey(clockConfig));
+  setClockKey(preset ? getClockKey(preset) : "custom");
+}
+
+function resolveSheetClockConfig(
+  selectedClockKey: string,
+  customMinutes: string,
+  customIncrement: string,
+  locale: GameSession["settings"]["locale"],
+): ClockConfig {
+  if (selectedClockKey !== "custom") {
+    return NEW_GAME_CLOCK_PRESETS.find((preset) => getClockKey(preset) === selectedClockKey) ?? NEW_GAME_CLOCK_PRESETS[1];
+  }
+
+  const minutes = Math.max(0, Number(customMinutes) || 0);
+  const increment = Math.max(0, Number(customIncrement) || 0);
+
+  return {
+    enabled: minutes > 0,
+    label: minutes > 0 ? `${minutes} + ${increment}` : t(locale, "clock.none"),
+    baseMs: minutes * 60_000,
+    incrementMs: increment * 1_000,
+  };
+}
+
+function getClockKey(clockConfig: ClockConfig): string {
+  return `${clockConfig.enabled ? "on" : "off"}:${clockConfig.baseMs}:${clockConfig.incrementMs}`;
+}
+
+function formatClockPresetLabel(clockConfig: ClockConfig, locale: GameSession["settings"]["locale"]): string {
+  return clockConfig.enabled ? clockConfig.label : t(locale, "clock.none");
+}
+
+function getStatusKey(
+  phase: GameSession["snapshot"]["status"] | "booting" | "ready" | "thinking" | "analyzing" | "error",
+) {
+  if (phase === "booting") {
+    return "status.loading";
+  }
+  if (phase === "thinking") {
+    return "status.thinking";
+  }
+  if (phase === "analyzing") {
+    return "status.analyzing";
+  }
+  if (phase === "error") {
+    return "status.error";
+  }
+  return "status.ready";
+}
+
+function isTerminalStatus(status: GameSession["snapshot"]["status"]): boolean {
+  return status !== "idle" && status !== "active";
+}
+
+function getFriendlyResultKey(session: GameSession): TranslationKey {
+  if (session.snapshot.status === "checkmate") {
+    return session.snapshot.sideToMove === session.playerColor ? "result.loss" : "result.win";
+  }
+
+  if (session.snapshot.status === "timeout") {
+    return session.snapshot.clockState.expiredColor === session.playerColor ? "result.loss" : "result.win";
+  }
+
+  return "result.drawFriendly";
+}
+
+function getResultStatusKey(status: GameSession["snapshot"]["status"]): TranslationKey {
+  switch (status) {
+    case "checkmate":
+      return "result.checkmate";
+    case "stalemate":
+      return "result.stalemate";
+    case "draw":
+      return "result.draw";
+    case "threefold":
+      return "result.threefold";
+    case "insufficient":
+      return "result.insufficient";
+    case "timeout":
+      return "result.timeout";
+    default:
+      return "result.active";
+  }
+}
+
+function getEvaluationForPly(
+  evaluationsByPly: Record<number, PositionEvaluation> | undefined,
+  ply: number,
+): PositionEvaluation | null {
+  return evaluationsByPly?.[ply] ?? null;
+}
+
+function normalizeEvaluationScore(evaluation: PositionEvaluation | null): number {
+  if (!evaluation) {
+    return 0;
+  }
+  if (evaluation.scoreMate !== null) {
+    return evaluation.scoreMate > 0 ? 900 : -900;
+  }
+  return clamp(evaluation.scoreCp ?? 0, -900, 900);
+}
+
+function formatEvaluationLabel(
+  evaluation: PositionEvaluation | null,
+  locale: GameSession["settings"]["locale"],
+): string {
+  if (!evaluation) {
+    return t(locale, "analysis.evalNeutral");
+  }
+  if (evaluation.scoreMate !== null) {
+    return `M${Math.abs(evaluation.scoreMate)}`;
+  }
+
+  const value = (evaluation.scoreCp ?? 0) / 100;
+  return `${value >= 0 ? "+" : ""}${value.toFixed(1)}`;
+}
+
+function getPromotionGlyph(piece: PieceSymbol, color: Color): string {
+  const glyphs: Record<Color, Record<PieceSymbol, string>> = {
+    w: { p: "♙", n: "♘", b: "♗", r: "♖", q: "♕", k: "♔" },
+    b: { p: "♟", n: "♞", b: "♝", r: "♜", q: "♛", k: "♚" },
+  };
+
+  return glyphs[color][piece];
+}
+
+function getPromotionKey(piece: (typeof PROMOTION_CHOICES)[number]): TranslationKey {
+  switch (piece) {
+    case "q":
+      return "promotion.q";
+    case "r":
+      return "promotion.r";
+    case "b":
+      return "promotion.b";
+    default:
+      return "promotion.n";
+  }
 }
 
 export default App;

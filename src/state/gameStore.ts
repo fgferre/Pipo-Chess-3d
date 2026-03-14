@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import type { Square } from "chess.js";
+import type { PieceSymbol, Square } from "chess.js";
 import { getDifficultyPreset } from "../data/difficulties";
 import { buildAnalysisPayload } from "../game/analysis";
 import {
@@ -33,10 +33,13 @@ import {
 } from "../persistence/db";
 import type {
   AutosaveRecord,
+  CameraPreset,
   ClockConfig,
   EnginePhase,
   GameSession,
   Locale,
+  NewGameOptions,
+  PendingPromotion,
   SaveSlotRecord,
 } from "../types/game";
 import { fenToPieces } from "../utils/board";
@@ -59,19 +62,31 @@ interface GameStore {
   selectedSquare: Square | null;
   legalTargets: Square[];
   hintMove: HintMove | null;
+  pendingPromotion: PendingPromotion | null;
+  analysisCursor: number | null;
+  analysisAutoplay: boolean;
   analysisProgress: { completed: number; total: number; currentPly: number } | null;
+  cameraPreset: CameraPreset;
+  restoreNotice: string | null;
   lastError: string | null;
   bootstrap: () => Promise<void>;
   selectSquare: (square: Square) => Promise<void>;
+  confirmPromotion: (piece: PieceSymbol) => Promise<void>;
   requestHint: () => Promise<void>;
   undo: () => Promise<void>;
   redo: () => Promise<void>;
-  newGame: () => Promise<void>;
+  newGame: (options?: NewGameOptions) => Promise<void>;
   setDifficulty: (difficultyId: string) => Promise<void>;
   setTheme: (themeId: string) => Promise<void>;
   setLocale: (locale: Locale) => Promise<void>;
   toggleOrientation: () => Promise<void>;
   setClockConfig: (clockConfig: ClockConfig) => Promise<void>;
+  setAnimationMode: (mode: GameSession["settings"]["animationMode"]) => Promise<void>;
+  setDefaultViewMode: (mode: GameSession["settings"]["defaultViewMode"]) => Promise<void>;
+  setCameraPreset: (preset: CameraPreset) => void;
+  setAnalysisCursor: (cursor: number | null) => void;
+  setAnalysisAutoplay: (enabled: boolean) => void;
+  clearRestoreNotice: () => void;
   createManualSave: () => Promise<void>;
   loadManualSave: (id: number) => Promise<void>;
   restoreAutosave: () => Promise<void>;
@@ -97,7 +112,12 @@ export const useGameStore = create<GameStore>((set, get) => ({
   selectedSquare: null,
   legalTargets: [],
   hintMove: null,
+  pendingPromotion: null,
+  analysisCursor: null,
+  analysisAutoplay: false,
   analysisProgress: null,
+  cameraPreset: "classic",
+  restoreNotice: null,
   lastError: null,
 
   bootstrap: async () => {
@@ -111,96 +131,107 @@ export const useGameStore = create<GameStore>((set, get) => ({
     }
 
     bootstrapPromise = (async () => {
-    if (!subscribedToEngine) {
-      engineClient.subscribe((event) => {
-        if (event.type === "status") {
-          const phaseMap: Record<typeof event.phase, EnginePhase> = {
-            loading: "booting",
-            ready: "ready",
-            thinking: "thinking",
-            analyzing: "analyzing",
-            error: "error",
-          };
+      if (!subscribedToEngine) {
+        engineClient.subscribe((event) => {
+          if (event.type === "status") {
+            const phaseMap: Record<typeof event.phase, EnginePhase> = {
+              loading: "booting",
+              ready: "ready",
+              thinking: "thinking",
+              analyzing: "analyzing",
+              error: "error",
+            };
 
-          set({
-            enginePhase: phaseMap[event.phase],
-            engineMessage: event.message ?? "",
-          });
-        }
-
-        if (event.type === "analysisProgress") {
-          if (activeAnalysisSignature !== getAnalysisSignature(get().session)) {
-            return;
+            set({
+              enginePhase: phaseMap[event.phase],
+              engineMessage: event.message ?? "",
+            });
           }
 
-          set({
-            analysisProgress: {
-              completed: event.completed,
-              total: event.total,
-              currentPly: event.currentPly,
-            },
-          });
-        }
-      });
-      subscribedToEngine = true;
-    }
+          if (event.type === "analysisProgress") {
+            if (activeAnalysisSignature !== getAnalysisSignature(get().session)) {
+              return;
+            }
 
-    const defaults = createDefaultSettings();
-    let liveSession = createNewSession(defaults);
-    let autosave: AutosaveRecord | null = null;
-    let saveSlots: SaveSlotRecord[] = [];
-    let lastError: string | null = null;
-
-    try {
-      const bootstrapData = await loadBootstrapData();
-      const settings = bootstrapData.settings ?? defaults;
-      autosave = bootstrapData.autosave;
-      saveSlots = bootstrapData.saves;
-
-      if (autosave) {
-        try {
-          liveSession = resumePersistedSession(hydrateSession(autosave.session, settings));
-        } catch (error) {
-          autosave = null;
-          liveSession = createNewSession(settings);
-          lastError = normalizeErrorMessage(error, t(settings.locale, "save.restoreError"));
-          await clearAutosave().catch(() => undefined);
-        }
-      } else {
-        liveSession = createNewSession(settings);
+            set({
+              analysisProgress: {
+                completed: event.completed,
+                total: event.total,
+                currentPly: event.currentPly,
+              },
+            });
+          }
+        });
+        subscribedToEngine = true;
       }
-    } catch (error) {
-      liveSession = createNewSession(defaults);
-      autosave = null;
-      saveSlots = [];
-      lastError = normalizeErrorMessage(error, t(defaults.locale, "save.restoreError"));
-    }
 
-    set({
-      booted: true,
-      session: liveSession,
-      autosave,
-      saveSlots,
-      enginePhase: "booting",
-      engineMessage: t(liveSession.settings.locale, "engine.prewarm"),
-      lastError,
-    });
+      const defaults = createDefaultSettings();
+      let liveSession = createNewSession(defaults);
+      let autosave: AutosaveRecord | null = null;
+      let saveSlots: SaveSlotRecord[] = [];
+      let lastError: string | null = null;
+      let restoreNotice: string | null = null;
 
-    await persistLiveSettings(get, set);
+      try {
+        const bootstrapData = await loadBootstrapData();
+        const settings = bootstrapData.settings ?? defaults;
+        autosave = bootstrapData.autosave;
+        saveSlots = bootstrapData.saves;
 
-    try {
-      await engineClient.init();
+        if (autosave) {
+          try {
+            liveSession = resumePersistedSession(hydrateSession(autosave.session, settings));
+            restoreNotice = t(liveSession.settings.locale, "toast.autosaveRestored");
+          } catch (error) {
+            autosave = null;
+            liveSession = createNewSession(settings);
+            lastError = normalizeErrorMessage(error, t(settings.locale, "save.restoreError"));
+            await clearAutosave().catch(() => undefined);
+          }
+        } else {
+          liveSession = createNewSession(settings);
+        }
+      } catch (error) {
+        liveSession = createNewSession(defaults);
+        autosave = null;
+        saveSlots = [];
+        lastError = normalizeErrorMessage(error, t(defaults.locale, "save.restoreError"));
+      }
+
       set({
-        enginePhase: "ready",
-        engineMessage: t(get().session.settings.locale, "engine.ready"),
+        booted: true,
+        session: liveSession,
+        autosave,
+        saveSlots,
+        selectedSquare: null,
+        legalTargets: [],
+        hintMove: null,
+        pendingPromotion: null,
+        analysisCursor: null,
+        analysisAutoplay: false,
+        analysisProgress: null,
+        cameraPreset: getDefaultCameraPreset(liveSession),
+        restoreNotice,
+        enginePhase: "booting",
+        engineMessage: t(liveSession.settings.locale, "engine.prewarm"),
+        lastError,
       });
-    } catch (error) {
-      set({
-        enginePhase: "error",
-        engineMessage: t(get().session.settings.locale, "engine.error"),
-        lastError: normalizeErrorMessage(error, t(get().session.settings.locale, "engine.error")),
-      });
-    }
+
+      await persistLiveSettings(get, set);
+
+      try {
+        await engineClient.init();
+        set({
+          enginePhase: "ready",
+          engineMessage: t(get().session.settings.locale, "engine.ready"),
+        });
+      } catch (error) {
+        set({
+          enginePhase: "error",
+          engineMessage: t(get().session.settings.locale, "engine.error"),
+          lastError: normalizeErrorMessage(error, t(get().session.settings.locale, "engine.error")),
+        });
+      }
     })();
 
     try {
@@ -212,9 +243,14 @@ export const useGameStore = create<GameStore>((set, get) => ({
 
   selectSquare: async (square) => {
     const state = get();
-    const { session, selectedSquare, legalTargets } = state;
+    const { session, selectedSquare, legalTargets, analysisCursor, pendingPromotion } = state;
 
-    if (session.snapshot.sideToMove !== session.playerColor || session.snapshot.status !== "active" && session.snapshot.status !== "idle") {
+    if (
+      analysisCursor !== null ||
+      pendingPromotion ||
+      session.snapshot.sideToMove !== session.playerColor ||
+      (session.snapshot.status !== "active" && session.snapshot.status !== "idle")
+    ) {
       return;
     }
 
@@ -237,34 +273,21 @@ export const useGameStore = create<GameStore>((set, get) => ({
         movingPiece?.type === "p" &&
         ((movingPiece.color === "w" && square.endsWith("8")) ||
           (movingPiece.color === "b" && square.endsWith("1")));
-      const nextSession = applyPlayerMove(
-        session,
-        selectedSquare,
-        square,
-        isPromotion ? "q" : undefined,
-      );
 
-      if (!nextSession) {
+      if (isPromotion) {
+        set({
+          pendingPromotion: {
+            from: selectedSquare,
+            to: square,
+          },
+          selectedSquare: null,
+          legalTargets: [],
+          hintMove: null,
+        });
         return;
       }
 
-      await interruptEngineWork();
-      activeAnalysisSignature = null;
-      set({
-        session: nextSession,
-        selectedSquare: null,
-        legalTargets: [],
-        hintMove: null,
-        analysisProgress: null,
-        lastError: null,
-      });
-
-      if (nextSession.snapshot.sideToMove === "b" && nextSession.snapshot.status === "active") {
-        await runEngineMove((partial) => set(partial), get);
-      } else {
-        await persistLiveAutosave(get, set);
-      }
-
+      await commitPlayerMove(set, get, selectedSquare, square);
       return;
     }
 
@@ -284,10 +307,27 @@ export const useGameStore = create<GameStore>((set, get) => ({
     });
   },
 
-  requestHint: async () => {
-    const { session } = get();
+  confirmPromotion: async (piece) => {
+    if (!["q", "r", "b", "n"].includes(piece)) {
+      return;
+    }
 
-    if (session.snapshot.sideToMove !== session.playerColor) {
+    const { pendingPromotion } = get();
+    if (!pendingPromotion) {
+      return;
+    }
+
+    await commitPlayerMove(set, get, pendingPromotion.from, pendingPromotion.to, piece);
+  },
+
+  requestHint: async () => {
+    const { session, analysisCursor, pendingPromotion } = get();
+
+    if (
+      analysisCursor !== null ||
+      pendingPromotion ||
+      session.snapshot.sideToMove !== session.playerColor
+    ) {
       return;
     }
 
@@ -326,7 +366,11 @@ export const useGameStore = create<GameStore>((set, get) => ({
       selectedSquare: null,
       legalTargets: [],
       hintMove: null,
+      pendingPromotion: null,
+      analysisCursor: null,
+      analysisAutoplay: false,
       analysisProgress: null,
+      restoreNotice: null,
       lastError: null,
     });
     await persistLiveAutosave(get, set);
@@ -341,33 +385,66 @@ export const useGameStore = create<GameStore>((set, get) => ({
       selectedSquare: null,
       legalTargets: [],
       hintMove: null,
+      pendingPromotion: null,
+      analysisCursor: null,
+      analysisAutoplay: false,
       analysisProgress: null,
+      restoreNotice: null,
       lastError: null,
     });
     await persistLiveAutosave(get, set);
 
-    if (nextSession.snapshot.sideToMove === "b" && nextSession.snapshot.status === "active") {
+    if (
+      nextSession.snapshot.sideToMove !== nextSession.playerColor &&
+      nextSession.snapshot.status === "active"
+    ) {
       await runEngineMove((partial) => set(partial), get);
     }
   },
 
-  newGame: async () => {
+  newGame: async (options) => {
     await interruptEngineWork();
     activeAnalysisSignature = null;
-    const nextSession = createNewSession(get().session.settings);
+    const currentSession = get().session;
+    const playerColor = resolveNewGamePlayerColor(options?.playerColor ?? "white");
+    const nextSettings: GameSession["settings"] = {
+      ...currentSession.settings,
+      difficultyId: options?.difficultyId ?? currentSession.settings.difficultyId,
+      clockConfig: options?.clockConfig ?? currentSession.settings.clockConfig,
+      orientation: playerColor === "b" ? "black" : "white",
+    };
+    const nextSession = createNewSession(nextSettings, { playerColor });
+
     set({
       session: nextSession,
       selectedSquare: null,
       legalTargets: [],
       hintMove: null,
+      pendingPromotion: null,
+      analysisCursor: null,
+      analysisAutoplay: false,
       analysisProgress: null,
+      cameraPreset: getDefaultCameraPreset(nextSession),
+      restoreNotice: null,
       lastError: null,
     });
+
     try {
       await engineClient.newGame();
     } catch (error) {
       setStoreError(set, nextSession.settings.locale, error, "engine.error");
     }
+
+    await persistLiveSettings(get, set);
+
+    if (
+      nextSession.snapshot.sideToMove !== nextSession.playerColor &&
+      (nextSession.snapshot.status === "active" || nextSession.snapshot.status === "idle")
+    ) {
+      await runEngineMove((partial) => set(partial), get);
+      return;
+    }
+
     await persistLiveAutosave(get, set);
   },
 
@@ -422,6 +499,79 @@ export const useGameStore = create<GameStore>((set, get) => ({
     await persistLiveAutosave(get, set);
   },
 
+  setAnimationMode: async (mode) => {
+    const nextSession = setSessionSettings(get().session, {
+      ...get().session.settings,
+      animationMode: mode,
+    });
+    set({ session: nextSession, lastError: null });
+    await persistLiveSettings(get, set);
+    await persistLiveAutosave(get, set);
+  },
+
+  setDefaultViewMode: async (mode) => {
+    const nextSession = setSessionSettings(get().session, {
+      ...get().session.settings,
+      defaultViewMode: mode,
+    });
+    set({
+      session: nextSession,
+      cameraPreset: mode === "2d" ? "2d" : "classic",
+      lastError: null,
+    });
+    await persistLiveSettings(get, set);
+    await persistLiveAutosave(get, set);
+  },
+
+  setCameraPreset: (preset) => {
+    set({ cameraPreset: preset });
+  },
+
+  setAnalysisCursor: (cursor) => {
+    if (cursor === null) {
+      set({
+        analysisCursor: null,
+        analysisAutoplay: false,
+        selectedSquare: null,
+        legalTargets: [],
+        hintMove: null,
+      });
+      return;
+    }
+
+    const total = get().session.moveEntries.length;
+    const clampedCursor = Math.min(Math.max(0, cursor), total);
+    set({
+      analysisCursor: clampedCursor,
+      selectedSquare: null,
+      legalTargets: [],
+      hintMove: null,
+    });
+  },
+
+  setAnalysisAutoplay: (enabled) => {
+    if (!enabled) {
+      set({ analysisAutoplay: false });
+      return;
+    }
+
+    const total = get().session.moveEntries.length;
+    if (total === 0) {
+      set({ analysisAutoplay: false });
+      return;
+    }
+
+    const currentCursor = get().analysisCursor ?? total;
+    set({
+      analysisCursor: currentCursor >= total ? 0 : currentCursor,
+      analysisAutoplay: true,
+    });
+  },
+
+  clearRestoreNotice: () => {
+    set({ restoreNotice: null });
+  },
+
   createManualSave: async () => {
     const state = get();
     const label = `${t(state.session.settings.locale, "save.labelPrefix")} ${String(
@@ -455,7 +605,12 @@ export const useGameStore = create<GameStore>((set, get) => ({
         selectedSquare: null,
         legalTargets: [],
         hintMove: null,
+        pendingPromotion: null,
+        analysisCursor: null,
+        analysisAutoplay: false,
         analysisProgress: null,
+        cameraPreset: getDefaultCameraPreset(nextSession),
+        restoreNotice: null,
         lastError: null,
       });
       await persistLiveAutosave(get, set);
@@ -480,7 +635,12 @@ export const useGameStore = create<GameStore>((set, get) => ({
         selectedSquare: null,
         legalTargets: [],
         hintMove: null,
+        pendingPromotion: null,
+        analysisCursor: null,
+        analysisAutoplay: false,
         analysisProgress: null,
+        cameraPreset: getDefaultCameraPreset(nextSession),
+        restoreNotice: t(nextSession.settings.locale, "toast.autosaveRestored"),
         lastError: null,
       });
       await persistLiveAutosave(get, set);
@@ -515,7 +675,12 @@ export const useGameStore = create<GameStore>((set, get) => ({
       selectedSquare: null,
       legalTargets: [],
       hintMove: null,
+      pendingPromotion: null,
+      analysisCursor: nextSession.moveEntries.length,
+      analysisAutoplay: false,
       analysisProgress: null,
+      cameraPreset: getDefaultCameraPreset(nextSession),
+      restoreNotice: null,
       lastError: null,
     });
     await persistLiveAutosave(get, set);
@@ -524,17 +689,18 @@ export const useGameStore = create<GameStore>((set, get) => ({
 
   runAnalysis: async () => {
     const session = get().session;
+    if (session.moveEntries.length === 0) {
+      return;
+    }
+
     const signature = getAnalysisSignature(session);
     activeAnalysisSignature = signature;
     set({
-      analysisProgress:
-        session.moveEntries.length > 0
-          ? {
-              completed: 0,
-              total: session.moveEntries.length,
-              currentPly: 0,
-            }
-          : null,
+      analysisProgress: {
+        completed: 0,
+        total: session.moveEntries.length,
+        currentPly: 0,
+      },
       lastError: null,
     });
 
@@ -584,7 +750,11 @@ export const useGameStore = create<GameStore>((set, get) => ({
 
   tickLiveClock: () => {
     const state = get();
-    if (!state.booted || !state.session.settings.clockConfig.enabled) {
+    if (
+      !state.booted ||
+      state.analysisCursor !== null ||
+      !state.session.settings.clockConfig.enabled
+    ) {
       return;
     }
 
@@ -598,6 +768,46 @@ export const useGameStore = create<GameStore>((set, get) => ({
     });
   },
 }));
+
+async function commitPlayerMove(
+  set: (partial: Partial<GameStore>) => void,
+  get: () => GameStore,
+  from: Square,
+  to: Square,
+  promotion?: PieceSymbol,
+): Promise<void> {
+  const session = get().session;
+  const nextSession = applyPlayerMove(session, from, to, promotion);
+
+  if (!nextSession) {
+    return;
+  }
+
+  await interruptEngineWork();
+  activeAnalysisSignature = null;
+  set({
+    session: nextSession,
+    selectedSquare: null,
+    legalTargets: [],
+    hintMove: null,
+    pendingPromotion: null,
+    analysisCursor: null,
+    analysisAutoplay: false,
+    analysisProgress: null,
+    restoreNotice: null,
+    lastError: null,
+  });
+
+  if (
+    nextSession.snapshot.sideToMove !== nextSession.playerColor &&
+    nextSession.snapshot.status === "active"
+  ) {
+    await runEngineMove(set, get);
+    return;
+  }
+
+  await persistLiveAutosave(get, set);
+}
 
 async function runEngineMove(
   set: (partial: Partial<GameStore>) => void,
@@ -621,6 +831,7 @@ async function runEngineMove(
       hintMove: null,
       selectedSquare: null,
       legalTargets: [],
+      pendingPromotion: null,
       lastError: null,
     });
 
@@ -681,6 +892,22 @@ function getPositionSignature(session: GameSession): string {
 
 function getAnalysisSignature(session: GameSession): string {
   return session.snapshot.pgn;
+}
+
+function getDefaultCameraPreset(session: GameSession): CameraPreset {
+  return session.settings.defaultViewMode === "2d" ? "2d" : "classic";
+}
+
+function resolveNewGamePlayerColor(choice: NewGameOptions["playerColor"]): "w" | "b" {
+  if (choice === "black") {
+    return "b";
+  }
+
+  if (choice === "random") {
+    return Math.random() < 0.5 ? "w" : "b";
+  }
+
+  return "w";
 }
 
 function normalizeErrorMessage(error: unknown, fallback: string): string {

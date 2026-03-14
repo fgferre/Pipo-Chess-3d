@@ -1,6 +1,7 @@
 import { useEffect, useEffectEvent, useRef } from "react";
 import type { Square } from "chess.js";
 import { ChessStage } from "../scene/ChessStage";
+import { useGameStore } from "../state/gameStore";
 import type { GameSession, ThemeDefinition } from "../types/game";
 
 interface ChessSceneProps {
@@ -23,6 +24,7 @@ export function ChessScene({
   const containerRef = useRef<HTMLDivElement | null>(null);
   const stageRef = useRef<ChessStage | null>(null);
   const handleSquareSelect = useEffectEvent(onSquareSelect);
+  const cameraPreset = useGameStore((state) => state.cameraPreset);
 
   useEffect(() => {
     if (!containerRef.current) {
@@ -87,10 +89,8 @@ export function ChessScene({
   }, [session.settings.animationMode]);
 
   useEffect(() => {
-    stageRef.current?.setCameraPreset(
-      session.settings.defaultViewMode === "2d" ? "2d" : "classic",
-    );
-  }, [session.settings.defaultViewMode]);
+    stageRef.current?.setCameraPreset(cameraPreset);
+  }, [cameraPreset]);
 
   return (
     <div

@@ -59,21 +59,21 @@ O `file:src/App.tsx` atual é desktop-first com layout accordion. Este ticket re
 
 ## Critérios de aceite
 
-- [ ] Canvas 3D ocupa 100% da viewport em mobile e desktop.
-- [ ] TopBar renderiza com glassmorphism, retrátil, mostrando relógios e estado da IA.
-- [ ] BottomBar renderiza com glassmorphism, retrátil, com todas as ações (Nova Partida, Desfazer, Refazer, Dica, Câmera, Menu).
-- [ ] HistoryPanel desliza da borda direita e mostra a lista de jogadas.
-- [ ] NewGameSheet sobe como bottom sheet com configuração de cor, nível e tempo.
-- [ ] Escolher **Pretas** ou **Aleatório** no `NewGameSheet` realmente afeta a partida iniciada; se o jogador começar de pretas, a IA faz a primeira jogada.
-- [ ] Iniciar nova partida com uma ativa exibe confirmação antes de substituir a atual.
-- [ ] PromotionPopup aparece acima do peão com 4 opções de peça e a escolha do jogador determina a promoção final.
-- [ ] ResultModal aparece no fim da partida com resultado e opções.
-- [ ] MenuDrawer dá acesso a Configurações (temas, animações, idioma, view mode padrão), Partidas Salvas e Análise.
-- [ ] EvalBar aparece no modo análise na lateral esquerda com avaliação da posição.
-- [ ] Os controles do modo análise navegam a partida e mantêm tabuleiro, histórico e avaliação sincronizados.
-- [ ] CameraPresetPicker lista os 4 presets de câmera.
-- [ ] Preferências de animação (Normal/Reduzido/Desligado) e view mode padrão (3D/2D) são configuráveis e persistem.
-- [ ] Ao restaurar autosave, a UI mostra um aviso discreto de restauração da partida em andamento.
-- [ ] Layout é mobile-first e funciona em desktop.
-- [ ] Todas as interações existentes (hint, undo, redo, new game, save, load, export, import, analysis) continuam funcionando.
-- [ ] MoveList e AnalysisSummaryView são realocados sem alteração funcional.
+- [x] Canvas 3D ocupa 100% da viewport em mobile e desktop.
+- [x] TopBar renderiza com glassmorphism, retrátil, mostrando relógios e estado da IA.
+- [x] BottomBar renderiza com glassmorphism, retrátil, com todas as ações (Nova Partida, Desfazer, Refazer, Dica, Câmera, Menu).
+- [x] HistoryPanel desliza da borda direita e mostra a lista de jogadas.
+- [x] NewGameSheet sobe como bottom sheet com configuração de cor, nível e tempo.
+- [x] Escolher **Pretas** ou **Aleatório** no `NewGameSheet` realmente afeta a partida iniciada; se o jogador começar de pretas, a IA faz a primeira jogada.
+- [x] Iniciar nova partida com uma ativa exibe confirmação antes de substituir a atual.
+- [x] PromotionPopup aparece acima do peão com 4 opções de peça e a escolha do jogador determina a promoção final.
+- [x] ResultModal aparece no fim da partida com resultado e opções.
+- [x] MenuDrawer dá acesso a Configurações (temas, animações, idioma, view mode padrão), Partidas Salvas e Análise.
+- [x] EvalBar aparece no modo análise na lateral esquerda com avaliação da posição.
+- [x] Os controles do modo análise navegam a partida e mantêm tabuleiro, histórico e avaliação sincronizados.
+- [x] CameraPresetPicker lista os 4 presets de câmera.
+- [x] Preferências de animação (Normal/Reduzido/Desligado) e view mode padrão (3D/2D) são configuráveis e persistem.
+- [x] Ao restaurar autosave, a UI mostra um aviso discreto de restauração da partida em andamento.
+- [x] Layout é mobile-first e funciona em desktop.
+- [x] Todas as interações existentes (hint, undo, redo, new game, save, load, export, import, analysis) continuam funcionando.
+- [x] MoveList e AnalysisSummaryView são realocados sem alteração funcional.

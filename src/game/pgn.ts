@@ -1,24 +1,33 @@
-import { Chess } from "chess.js";
+import { Chess, type Color } from "chess.js";
 import { getDifficultyPreset } from "../data/difficulties";
 import type { AppSettings, ClockConfig } from "../types/game";
 
 const VERSION = "0.1.0";
 
-export function applyPipoHeaders(chess: Chess, settings: AppSettings): void {
+export function applyPipoHeaders(
+  chess: Chess,
+  settings: AppSettings,
+  playerColor: Color = "w",
+): void {
   const difficulty = getDifficultyPreset(settings.difficultyId);
   const today = new Date().toISOString().slice(0, 10);
   const clock = settings.clockConfig;
+  const playerLabel = playerColor === "w" ? "Player" : `Stockfish ${difficulty.label}`;
+  const engineLabel = playerColor === "b" ? "Player" : `Stockfish ${difficulty.label}`;
 
   chess.setHeader("Event", "Pipo Chess 3D");
   chess.setHeader("Site", "Browser");
   chess.setHeader("Date", today);
-  chess.setHeader("White", "Player");
-  chess.setHeader("Black", `Stockfish ${difficulty.label}`);
+  chess.setHeader("White", playerLabel);
+  chess.setHeader("Black", engineLabel);
   chess.setHeader("Result", inferPgnResult(chess));
   chess.setHeader("PipoDifficulty", settings.difficultyId);
   chess.setHeader("PipoTheme", settings.themeId);
   chess.setHeader("PipoLocale", settings.locale);
   chess.setHeader("PipoOrientation", settings.orientation);
+  chess.setHeader("PipoAnimationMode", settings.animationMode);
+  chess.setHeader("PipoDefaultViewMode", settings.defaultViewMode);
+  chess.setHeader("PipoPlayerColor", playerColor);
   chess.setHeader("PipoClockEnabled", String(clock.enabled));
   chess.setHeader("PipoClockLabel", clock.label);
   chess.setHeader("PipoClockBaseMs", String(clock.baseMs));
@@ -26,15 +35,15 @@ export function applyPipoHeaders(chess: Chess, settings: AppSettings): void {
   chess.setHeader("PipoVersion", VERSION);
 }
 
-export function buildPgn(chess: Chess, settings: AppSettings): string {
-  applyPipoHeaders(chess, settings);
+export function buildPgn(chess: Chess, settings: AppSettings, playerColor: Color = "w"): string {
+  applyPipoHeaders(chess, settings, playerColor);
   return chess.pgn({ newline: "\n", maxWidth: 100 });
 }
 
 export function extractSettingsFromHeaders(
   headers: Record<string, string>,
   fallback: AppSettings,
-): AppSettings {
+): { settings: AppSettings; playerColor: Color } {
   const baseMs = Number(headers.PipoClockBaseMs);
   const incrementMs = Number(headers.PipoClockIncrementMs);
   const enabled =
@@ -50,12 +59,20 @@ export function extractSettingsFromHeaders(
   };
 
   return {
-    ...fallback,
-    difficultyId: headers.PipoDifficulty || fallback.difficultyId,
-    themeId: headers.PipoTheme || fallback.themeId,
-    locale: headers.PipoLocale === "en" ? "en" : fallback.locale,
-    orientation: headers.PipoOrientation === "black" ? "black" : fallback.orientation,
-    clockConfig,
+    settings: {
+      ...fallback,
+      difficultyId: headers.PipoDifficulty || fallback.difficultyId,
+      themeId: headers.PipoTheme || fallback.themeId,
+      locale: headers.PipoLocale === "en" ? "en" : fallback.locale,
+      orientation: headers.PipoOrientation === "black" ? "black" : fallback.orientation,
+      animationMode:
+        headers.PipoAnimationMode === "reduced" || headers.PipoAnimationMode === "off"
+          ? headers.PipoAnimationMode
+          : fallback.animationMode,
+      defaultViewMode: headers.PipoDefaultViewMode === "2d" ? "2d" : fallback.defaultViewMode,
+      clockConfig,
+    },
+    playerColor: headers.PipoPlayerColor === "b" ? "b" : "w",
   };
 }
 

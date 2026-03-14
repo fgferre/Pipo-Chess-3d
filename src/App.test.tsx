@@ -25,6 +25,11 @@ const engineClientMock = {
     result: "active",
     centipawnLossBySide: { w: 22, b: 13 },
     tagsByPly: { 1: "best" },
+    evaluationsByPly: {
+      0: { scoreCp: 12, scoreMate: null },
+      1: { scoreCp: 24, scoreMate: null },
+      2: { scoreCp: 10, scoreMate: null },
+    },
     criticalMoments: [
       {
         ply: 1,
@@ -88,13 +93,13 @@ describe("App integration", () => {
     });
   });
 
-  it("persists theme, locale, and autosave state", async () => {
+  it("persists theme, locale, and autosave state from the overlay shell", async () => {
     const { default: App } = await import("./App");
     const { loadBootstrapData } = await import("./persistence/db");
     render(<App />);
 
     await screen.findByText("Pipo Chess 3D");
-    fireEvent.click(screen.getByRole("button", { name: /Partida/i }));
+    fireEvent.click(screen.getByRole("button", { name: "Menu" }));
     fireEvent.click(await screen.findByRole("button", { name: "Emerald" }));
     fireEvent.click(await screen.findByRole("button", { name: "English" }));
     fireEvent.click(screen.getByText("Square e2"));
@@ -113,7 +118,7 @@ describe("App integration", () => {
     });
   });
 
-  it("ignores a stale engine response after resetting the board", async () => {
+  it("ignores a stale engine response after confirming a replacement game", async () => {
     let resolveSearch:
       | ((value: {
           bestMove: string;
@@ -143,8 +148,9 @@ describe("App integration", () => {
       expect(engineClientMock.search).toHaveBeenCalledTimes(1);
     });
 
-    fireEvent.click(screen.getByRole("button", { name: /Partida/i }));
-    fireEvent.click(screen.getByRole("button", { name: "Começar agora" }));
+    fireEvent.click(screen.getByRole("button", { name: "Nova partida" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Começar agora" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Iniciar nova" }));
 
     await waitFor(() => {
       expect(engineClientMock.newGame).toHaveBeenCalledTimes(1);
@@ -166,16 +172,24 @@ describe("App integration", () => {
     });
   });
 
-  it("renders an analysis summary from the mocked engine", async () => {
+  it("runs analysis from the menu drawer and renders the mocked summary", async () => {
     const { default: App } = await import("./App");
     render(<App />);
 
     await screen.findByText("Pipo Chess 3D");
-    fireEvent.click(screen.getByRole("button", { name: /Análise/i }));
+    fireEvent.click(screen.getByText("Square e2"));
+    fireEvent.click(screen.getByText("Square e4"));
+
+    await waitFor(() => {
+      expect(engineClientMock.search).toHaveBeenCalledTimes(1);
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Menu" }));
     fireEvent.click(screen.getByRole("button", { name: "Gerar análise" }));
 
     await waitFor(() => {
       expect(engineClientMock.analyzeGame).toHaveBeenCalledTimes(1);
+      expect(screen.getByText("Momentos críticos")).toBeInTheDocument();
     });
   });
 });

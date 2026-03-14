@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, render, waitFor } from "@testing-library/react";
 import { themes } from "../data/themes";
 import { createNewSession } from "../game/gameService";
+import { useGameStore } from "../state/gameStore";
 import { ChessScene } from "./ChessScene";
 
 const stageInstances: Array<{
@@ -33,17 +34,16 @@ vi.mock("../scene/ChessStage", () => ({
 describe("ChessScene", () => {
   beforeEach(() => {
     stageInstances.length = 0;
+    useGameStore.setState({ cameraPreset: "classic" });
   });
 
   afterEach(() => {
     cleanup();
   });
 
-  it("maps defaultViewMode to the stage camera preset with minimal wiring", async () => {
-    const session2d = createNewSession({
-      ...createNewSession().settings,
-      defaultViewMode: "2d",
-    });
+  it("maps the store camera preset to the stage with minimal wiring", async () => {
+    const session2d = createNewSession();
+    useGameStore.setState({ cameraPreset: "2d" });
     const { rerender } = render(
       <ChessScene
         session={session2d}
@@ -66,6 +66,7 @@ describe("ChessScene", () => {
         defaultViewMode: "3d" as const,
       },
     };
+    useGameStore.setState({ cameraPreset: "classic" });
 
     rerender(
       <ChessScene

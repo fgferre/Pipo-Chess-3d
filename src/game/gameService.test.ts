@@ -30,4 +30,16 @@ describe("gameService", () => {
 
     expect(session.snapshot.status).toBe("threefold");
   });
+
+  it("supports games where the player starts with black and the engine moves first", () => {
+    let session = createNewSession(createNewSession().settings, { playerColor: "b" });
+
+    expect(session.playerColor).toBe("b");
+    expect(session.snapshot.sideToMove).toBe("w");
+
+    session = applyEngineMove(session, "e2e4");
+
+    expect(session.snapshot.sideToMove).toBe("b");
+    expect(session.snapshot.moveList[0]?.uci).toBe("e2e4");
+  });
 });

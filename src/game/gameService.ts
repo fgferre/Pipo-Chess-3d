@@ -13,7 +13,7 @@ import type {
 } from "../types/game";
 import { buildPgn, extractSettingsFromHeaders } from "./pgn";
 
-const PLAYER_COLOR: Color = "w";
+const DEFAULT_PLAYER_COLOR: Color = "w";
 const START_FEN = new Chess().fen();
 
 export function createDefaultSettings(): AppSettings {
@@ -23,16 +23,25 @@ export function createDefaultSettings(): AppSettings {
     locale: "pt-BR",
     orientation: "white",
     clockConfig: defaultClockConfig,
-    animationMode: 'normal',
-    defaultViewMode: '3d',
+    animationMode: "normal",
+    defaultViewMode: "3d",
   };
 }
 
-export function createNewSession(settings: AppSettings = createDefaultSettings()): GameSession {
+export function createNewSession(
+  settings: AppSettings = createDefaultSettings(),
+  options: { playerColor?: Color } = {},
+): GameSession {
   const normalized = normalizeSettings(settings);
   const chess = new Chess();
 
-  return buildSessionFromChess(chess, normalized, [], createInitialClockState(normalized.clockConfig));
+  return buildSessionFromChess(
+    chess,
+    normalized,
+    [],
+    options.playerColor ?? DEFAULT_PLAYER_COLOR,
+    createInitialClockState(normalized.clockConfig),
+  );
 }
 
 export function hydrateSession(session: GameSession, fallbackSettings: AppSettings): GameSession {
@@ -47,6 +56,7 @@ export function hydrateSession(session: GameSession, fallbackSettings: AppSettin
     chess,
     normalized,
     session.redoStack,
+    session.playerColor ?? DEFAULT_PLAYER_COLOR,
     session.snapshot.clockState,
     session.analysisSummary,
   );
@@ -55,13 +65,14 @@ export function hydrateSession(session: GameSession, fallbackSettings: AppSettin
 export function sessionFromPgn(pgn: string, fallbackSettings: AppSettings): GameSession {
   const chess = new Chess();
   chess.loadPgn(pgn, { newlineChar: "\n" });
-  const settings = extractSettingsFromHeaders(chess.getHeaders(), normalizeSettings(fallbackSettings));
+  const restored = extractSettingsFromHeaders(chess.getHeaders(), normalizeSettings(fallbackSettings));
 
   return buildSessionFromChess(
     chess,
-    settings,
+    restored.settings,
     [],
-    createInitialClockState(settings.clockConfig, chess.turn()),
+    restored.playerColor,
+    createInitialClockState(restored.settings.clockConfig, chess.turn()),
   );
 }
 
@@ -72,6 +83,7 @@ export function setSessionSettings(session: GameSession, settings: AppSettings):
     chess,
     normalizeSettings(settings),
     session.redoStack,
+    session.playerColor,
     session.snapshot.clockState,
     session.analysisSummary,
   );
@@ -109,6 +121,7 @@ export function applyPlayerMove(
     chess,
     session.settings,
     [],
+    session.playerColor,
     finalizeClockForPosition(chess, nextClockState),
     session.analysisSummary,
   );
@@ -122,6 +135,7 @@ export function applyEngineMove(
   const chess = replayMoveEntries(session.moveEntries);
   const clockState = tickClock(session.snapshot.clockState, timestamp);
   const normalized = normalizeUci(bestMove);
+  const mover = session.snapshot.sideToMove;
 
   chess.move({
     from: normalized.from,
@@ -129,11 +143,12 @@ export function applyEngineMove(
     promotion: normalized.promotion,
   });
 
-  const nextClockState = commitMoveOnClock(clockState, "b", session.settings.clockConfig, timestamp);
+  const nextClockState = commitMoveOnClock(clockState, mover, session.settings.clockConfig, timestamp);
   return buildSessionFromChess(
     chess,
     session.settings,
     [],
+    session.playerColor,
     finalizeClockForPosition(chess, nextClockState),
     session.analysisSummary,
   );
@@ -144,7 +159,7 @@ export function undoTurn(session: GameSession): GameSession {
     return session;
   }
 
-  const removeCount = session.snapshot.sideToMove === PLAYER_COLOR ? 2 : 1;
+  const removeCount = session.snapshot.sideToMove === session.playerColor ? 2 : 1;
   const removed = session.moveEntries.slice(-removeCount);
   const remaining = session.moveEntries.slice(0, Math.max(0, session.moveEntries.length - removeCount));
   const chess = replayMoveEntries(remaining);
@@ -153,6 +168,7 @@ export function undoTurn(session: GameSession): GameSession {
     chess,
     session.settings,
     [removed, ...session.redoStack],
+    session.playerColor,
     createInitialClockState(session.settings.clockConfig, chess.turn()),
     session.analysisSummary,
   );
@@ -171,6 +187,7 @@ export function redoTurn(session: GameSession): GameSession {
     chess,
     session.settings,
     rest,
+    session.playerColor,
     createInitialClockState(session.settings.clockConfig, chess.turn()),
     session.analysisSummary,
   );
@@ -190,7 +207,23 @@ export function withClockState(session: GameSession, clockState: ClockState): Ga
     chess,
     session.settings,
     session.redoStack,
+    session.playerColor,
     finalizeClockForPosition(chess, clockState),
+    session.analysisSummary,
+  );
+}
+
+export function deriveSessionAtPly(session: GameSession, ply: number): GameSession {
+  const clampedPly = Math.min(Math.max(0, ply), session.moveEntries.length);
+  const moveEntries = session.moveEntries.slice(0, clampedPly);
+  const chess = replayMoveEntries(moveEntries);
+
+  return buildSessionFromChess(
+    chess,
+    session.settings,
+    [],
+    session.playerColor,
+    createInitialClockState(session.settings.clockConfig, chess.turn()),
     session.analysisSummary,
   );
 }
@@ -245,18 +278,19 @@ function buildSessionFromChess(
   chess: Chess,
   settings: AppSettings,
   redoStack: SerializableMove[][],
+  playerColor: Color,
   clockState: ClockState,
   analysisSummary?: GameSession["analysisSummary"],
 ): GameSession {
   const moveEntries = serializeHistory(chess);
-  const snapshot = buildSnapshot(chess, settings, moveEntries, redoStack, clockState);
+  const snapshot = buildSnapshot(chess, settings, moveEntries, redoStack, playerColor, clockState);
 
   return {
     snapshot,
     moveEntries,
     redoStack,
     settings,
-    playerColor: PLAYER_COLOR,
+    playerColor,
     analysisSummary,
   };
 }
@@ -266,11 +300,12 @@ function buildSnapshot(
   settings: AppSettings,
   moveEntries: SerializableMove[],
   redoStack: SerializableMove[][],
+  playerColor: Color,
   clockState: ClockState,
 ): GameSnapshot {
   return {
     fen: chess.fen(),
-    pgn: buildPgn(chess, settings),
+    pgn: buildPgn(chess, settings, playerColor),
     moveList: moveEntries,
     sideToMove: chess.turn(),
     status: deriveStatus(chess, clockState),
@@ -423,6 +458,7 @@ function markTimeout(session: GameSession, clockState: ClockState): GameSession 
     chess,
     session.settings,
     session.redoStack,
+    session.playerColor,
     clockState,
     session.analysisSummary,
   );
@@ -437,8 +473,8 @@ function normalizeSettings(settings: AppSettings): AppSettings {
     locale: settings.locale === "en" ? "en" : "pt-BR",
     orientation,
     clockConfig: normalizeClockConfig(settings.clockConfig),
-    animationMode: settings.animationMode ?? 'normal',
-    defaultViewMode: settings.defaultViewMode ?? '3d',
+    animationMode: settings.animationMode ?? "normal",
+    defaultViewMode: settings.defaultViewMode ?? "3d",
   };
 }
 

@@ -3,6 +3,8 @@ import type { Color, PieceSymbol, Square } from "chess.js";
 export type Locale = "pt-BR" | "en";
 export type Orientation = "white" | "black";
 export type EnginePhase = "booting" | "ready" | "thinking" | "analyzing" | "error";
+export type CameraPreset = "classic" | "side" | "topdown" | "2d";
+export type NewGameColorChoice = "white" | "black" | "random";
 
 export interface ClockConfig {
   enabled: boolean;
@@ -100,12 +102,18 @@ export interface CriticalMoment {
 
 export type MoveTag = "best" | "inaccuracy" | "mistake" | "blunder";
 
+export interface PositionEvaluation {
+  scoreCp: number | null;
+  scoreMate: number | null;
+}
+
 export interface AnalysisSummary {
   result: string;
   openingName?: string;
   criticalMoments: CriticalMoment[];
   centipawnLossBySide: Record<Color, number>;
   tagsByPly: Record<number, MoveTag>;
+  evaluationsByPly?: Record<number, PositionEvaluation>;
 }
 
 export interface AppSettings {
@@ -185,4 +193,10 @@ export interface PendingPromotion {
 export interface AnalysisCursorState {
   cursor: number | null;
   autoplay: boolean;
+}
+
+export interface NewGameOptions {
+  playerColor: NewGameColorChoice;
+  difficultyId: string;
+  clockConfig: ClockConfig;
 }

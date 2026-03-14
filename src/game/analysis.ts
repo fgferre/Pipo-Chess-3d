@@ -33,11 +33,19 @@ export function buildAnalysisSummary(
   evaluations: EvaluatedWorkItem[],
 ): AnalysisSummary {
   const tagsByPly: Record<number, MoveTag> = {};
+  const evaluationsByPly: AnalysisSummary["evaluationsByPly"] = {};
   const criticalMoments: AnalysisSummary["criticalMoments"] = [];
   const totals = {
     w: { loss: 0, count: 0 },
     b: { loss: 0, count: 0 },
   };
+
+  if (evaluations.length > 0) {
+    evaluationsByPly[0] = {
+      scoreCp: evaluations[0].before.scoreCp,
+      scoreMate: evaluations[0].before.mate,
+    };
+  }
 
   for (const evaluation of evaluations) {
     const beforeScore = normalizeScore(evaluation.before);
@@ -46,6 +54,10 @@ export function buildAnalysisSummary(
     const tag = classifyMove(evaluation.item.playedMoveUci === evaluation.before.bestMove, swingCp);
 
     tagsByPly[evaluation.item.ply] = tag;
+    evaluationsByPly[evaluation.item.ply] = {
+      scoreCp: evaluation.after.scoreCp,
+      scoreMate: evaluation.after.mate,
+    };
     totals[evaluation.item.mover].loss += swingCp;
     totals[evaluation.item.mover].count += 1;
 
@@ -71,6 +83,7 @@ export function buildAnalysisSummary(
       b: totals.b.count === 0 ? 0 : Math.round(totals.b.loss / totals.b.count),
     },
     tagsByPly,
+    evaluationsByPly,
   };
 }
 

@@ -1,4 +1,4 @@
-# Plano de execucao - UI glassmorphism mobile-first
+# Plano de execucao - UI glassmorphism mobile-first — done
 
 ## Ticket alvo
 
