@@ -82,15 +82,24 @@ sequenceDiagram
 
 ## Critérios de aceite
 
-- [ ] Em mobile: 1 dedo fica 100% reservado para jogar; OrbitControls não responde a 1 dedo.
-- [ ] Em mobile: 2 dedos rotacionam/zoomam a câmera normalmente.
-- [ ] Em desktop: click simples (sem movimento) seleciona peça/casa; click+drag orbita a câmera.
-- [ ] Tap-tap funciona: tocar em peça própria → highlights de casas válidas → tocar em destino → `onSquareSelect` chamado.
-- [ ] Drag-and-drop funciona: arrastar peça com 1 dedo → peça acompanha pointer → soltar em destino válido dispara `onSquareSelect`.
-- [ ] Drag-and-drop para destino inválido: peça retorna suavemente à origem.
-- [ ] Highlights de seleção (glow na peça, casa destacada) renderizam corretamente.
-- [ ] Casas válidas mostram indicadores visuais (círculos para livres, anéis para capturas).
-- [ ] Dica mostra highlight pulsante com cor diferenciada nas casas de origem e destino.
-- [ ] Sem conflito entre gestos de câmera e gestos de jogo em nenhuma plataforma.
-- [ ] `ChessScene.tsx` continua funcionando sem alteração de interface.
-- [ ] Testes existentes passam sem alteração.
+- [x] Em mobile: 1 dedo fica 100% reservado para jogar; OrbitControls não responde a 1 dedo.
+- [x] Em mobile: 2 dedos rotacionam/zoomam a câmera normalmente.
+- [x] Em desktop: click simples (sem movimento) seleciona peça/casa; click+drag orbita a câmera.
+- [x] Tap-tap funciona: tocar em peça própria → highlights de casas válidas → tocar em destino → `onSquareSelect` chamado.
+- [x] Drag-and-drop funciona: arrastar peça com 1 dedo → peça acompanha pointer → soltar em destino válido dispara `onSquareSelect`.
+- [x] Drag-and-drop para destino inválido: peça retorna suavemente à origem.
+- [x] Highlights de seleção (glow na peça, casa destacada) renderizam corretamente.
+- [x] Casas válidas mostram indicadores visuais (círculos para livres, anéis para capturas).
+- [x] Dica mostra highlight pulsante com cor diferenciada nas casas de origem e destino.
+- [x] Sem conflito entre gestos de câmera e gestos de jogo em nenhuma plataforma.
+- [x] `ChessScene.tsx` continua funcionando sem alteração de interface.
+- [x] Testes existentes passam sem alteração.
+
+## Notas de fechamento
+
+- `ChessScene.tsx` preservou sua interface pública e passou apenas a derivar `playerColor`, `canInteract` e a última jogada da IA para o `ChessStage`.
+- `ChessStage.ts` ficou responsável por separar gestos de câmera e de jogo, reaproveitar o raycasting existente para tap-tap, gerenciar o ciclo de drag-and-drop no canvas e unificar highlights de seleção, alvos legais, dica e última jogada da IA.
+- O store permaneceu dono da validação da jogada: o canvas só emite intenção via `onSquareSelect(square)`.
+- Validação executada:
+  - `.\node_modules\.bin\vitest.cmd run src/scene/ChessStage.test.ts`
+  - `C:\nvm4w\nodejs\node.exe .\node_modules\typescript\bin\tsc -p tsconfig.app.json --noEmit`

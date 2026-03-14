@@ -47,15 +47,37 @@ export function ChessScene({
   }, []);
 
   useEffect(() => {
+    const lastMoveEntry = session.moveEntries.at(-1);
+    const canInteract =
+      session.snapshot.sideToMove === session.playerColor &&
+      (session.snapshot.status === "active" || session.snapshot.status === "idle");
+
     stageRef.current?.update({
       fen: session.snapshot.fen,
       orientation: session.settings.orientation,
       theme,
+      playerColor: session.playerColor,
+      canInteract,
+      lastMove:
+        lastMoveEntry && lastMoveEntry.color !== session.playerColor
+          ? { from: lastMoveEntry.from, to: lastMoveEntry.to }
+          : null,
       selectedSquare,
       legalTargets,
       hintMove,
     });
-  }, [hintMove, legalTargets, selectedSquare, session.settings.orientation, session.snapshot.fen, theme]);
+  }, [
+    hintMove,
+    legalTargets,
+    selectedSquare,
+    session.moveEntries,
+    session.playerColor,
+    session.settings.orientation,
+    session.snapshot.fen,
+    session.snapshot.sideToMove,
+    session.snapshot.status,
+    theme,
+  ]);
 
   return (
     <div

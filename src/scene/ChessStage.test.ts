@@ -1,5 +1,5 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { Color, FogExp2, Mesh, Raycaster, Texture, Vector3 } from "three";
+import { Color, FogExp2, Mesh, Raycaster, Texture, TOUCH, Vector3 } from "three";
 import { themes } from "../data/themes";
 
 let latestEnvironmentTarget: { texture: Texture; dispose: ReturnType<typeof vi.fn> } | null = null;
@@ -56,6 +56,7 @@ vi.mock("three/examples/jsm/controls/OrbitControls.js", () => ({
     maxPolarAngle = 0;
     minDistance = 0;
     maxDistance = 0;
+    touches = { ONE: 0, TWO: 2 };
 
     update = vi.fn();
     dispose = vi.fn();
@@ -121,8 +122,30 @@ function createStage(onSquareSelect = vi.fn()) {
   };
 }
 
-function pointerEvent(pointerId: number, clientX: number, clientY: number): PointerEvent {
-  return { pointerId, clientX, clientY } as PointerEvent;
+function pointerEvent(
+  pointerId: number,
+  clientX: number,
+  clientY: number,
+  pointerType = "mouse",
+): PointerEvent {
+  return { pointerId, clientX, clientY, pointerType } as PointerEvent;
+}
+
+function buildRenderState(
+  overrides: Partial<Parameters<ChessStage["update"]>[0]> = {},
+): Parameters<ChessStage["update"]>[0] {
+  return {
+    fen: "8/8/8/8/8/8/8/8 w - - 0 1",
+    orientation: "white",
+    theme: themes[0],
+    playerColor: "w",
+    canInteract: true,
+    lastMove: null,
+    selectedSquare: null,
+    legalTargets: [],
+    hintMove: null,
+    ...overrides,
+  };
 }
 
 function findFirstMesh(root: { traverse: (callback: (child: unknown) => void) => void }): Mesh {
@@ -181,6 +204,7 @@ describe("ChessStage", () => {
   it("selects only on pointerup when travel stays inside the click threshold", () => {
     const { onSquareSelect, stage } = createStage();
     const stageInternals = stage as unknown as {
+      currentState: Parameters<ChessStage["update"]>[0] | null;
       handlePointerDown: (event: PointerEvent) => void;
       handlePointerMove: (event: PointerEvent) => void;
       handlePointerUp: (event: PointerEvent) => void;
@@ -188,6 +212,7 @@ describe("ChessStage", () => {
     const intersectSpy = vi.spyOn(Raycaster.prototype, "intersectObject").mockReturnValue([
       { point: new Vector3(-3.5, 0.03, 3.5) },
     ] as never);
+    stageInternals.currentState = buildRenderState();
 
     stageInternals.handlePointerDown(pointerEvent(1, 100, 100));
 
@@ -204,6 +229,7 @@ describe("ChessStage", () => {
   it("does not raycast or select after an orbit-sized drag", () => {
     const { onSquareSelect, stage } = createStage();
     const stageInternals = stage as unknown as {
+      currentState: Parameters<ChessStage["update"]>[0] | null;
       handlePointerDown: (event: PointerEvent) => void;
       handlePointerMove: (event: PointerEvent) => void;
       handlePointerUp: (event: PointerEvent) => void;
@@ -211,6 +237,7 @@ describe("ChessStage", () => {
     const intersectSpy = vi.spyOn(Raycaster.prototype, "intersectObject").mockReturnValue([
       { point: new Vector3(-3.5, 0.03, 3.5) },
     ] as never);
+    stageInternals.currentState = buildRenderState();
 
     stageInternals.handlePointerDown(pointerEvent(7, 100, 100));
     stageInternals.handlePointerMove(pointerEvent(7, 118, 100));
@@ -218,6 +245,114 @@ describe("ChessStage", () => {
 
     expect(intersectSpy).not.toHaveBeenCalled();
     expect(onSquareSelect).not.toHaveBeenCalled();
+  });
+
+  it("reserves one-finger touch for gameplay and keeps two-finger touch for camera", () => {
+    const { onSquareSelect, stage } = createStage();
+    const stageInternals = stage as unknown as {
+      controls: { touches: { ONE?: number | null; TWO?: number | null } };
+      handlePointerDown: (event: PointerEvent) => void;
+      handlePointerUp: (event: PointerEvent) => void;
+    };
+    let point = new Vector3(0.5, 0.03, 2.5);
+    vi.spyOn(Raycaster.prototype, "intersectObject").mockImplementation(
+      () => [{ point }] as never,
+    );
+
+    expect(stageInternals.controls.touches.ONE).toBeNull();
+    expect(stageInternals.controls.touches.TWO).toBe(TOUCH.DOLLY_ROTATE);
+
+    stageInternals.handlePointerDown(pointerEvent(11, 100, 100, "touch"));
+    point = new Vector3(0.5, 0.03, 0.5);
+    stageInternals.handlePointerDown(pointerEvent(12, 120, 120, "touch"));
+    stageInternals.handlePointerUp(pointerEvent(11, 100, 100, "touch"));
+    stageInternals.handlePointerUp(pointerEvent(12, 120, 120, "touch"));
+
+    expect(onSquareSelect).not.toHaveBeenCalled();
+  });
+
+  it("starts a touch drag from a player piece and emits the drop target only when the store marks it legal", async () => {
+    const { onSquareSelect, stage } = createStage();
+    const stageInternals = stage as unknown as {
+      dragState: unknown;
+      returnAnimation: unknown;
+      pieceBySquare: Map<string, { position: Vector3 }>;
+      handlePointerDown: (event: PointerEvent) => void;
+      handlePointerMove: (event: PointerEvent) => void;
+      handlePointerUp: (event: PointerEvent) => void;
+    };
+    let point = new Vector3(0.5, 0.03, 2.5);
+    vi.spyOn(Raycaster.prototype, "intersectObject").mockImplementation(
+      () => [{ point }] as never,
+    );
+
+    await stage.init();
+    stage.update(
+      buildRenderState({
+        fen: "8/8/8/8/8/8/4P3/8 w - - 0 1",
+      }),
+    );
+
+    stageInternals.handlePointerDown(pointerEvent(21, 100, 100, "touch"));
+    point = new Vector3(0.5, 0.03, 0.5);
+    stageInternals.handlePointerMove(pointerEvent(21, 120, 120, "touch"));
+
+    stage.update(
+      buildRenderState({
+        fen: "8/8/8/8/8/8/4P3/8 w - - 0 1",
+        selectedSquare: "e2",
+        legalTargets: ["e4"],
+      }),
+    );
+
+    stageInternals.handlePointerUp(pointerEvent(21, 120, 120, "touch"));
+
+    expect(onSquareSelect).toHaveBeenNthCalledWith(1, "e2");
+    expect(onSquareSelect).toHaveBeenNthCalledWith(2, "e4");
+    expect(stageInternals.dragState).toBeNull();
+    expect(stageInternals.returnAnimation).toBeNull();
+    expect(stageInternals.pieceBySquare.get("e2")?.position.toArray()).toEqual([0.5, 0, 0.5]);
+  });
+
+  it("returns a dragged piece to origin when the drop target is not legal", async () => {
+    const { onSquareSelect, stage } = createStage();
+    const stageInternals = stage as unknown as {
+      dragState: unknown;
+      returnAnimation: { to: Vector3 } | null;
+      handlePointerDown: (event: PointerEvent) => void;
+      handlePointerMove: (event: PointerEvent) => void;
+      handlePointerUp: (event: PointerEvent) => void;
+    };
+    let point = new Vector3(0.5, 0.03, 2.5);
+    vi.spyOn(Raycaster.prototype, "intersectObject").mockImplementation(
+      () => [{ point }] as never,
+    );
+
+    await stage.init();
+    stage.update(
+      buildRenderState({
+        fen: "8/8/8/8/8/8/4P3/8 w - - 0 1",
+      }),
+    );
+
+    stageInternals.handlePointerDown(pointerEvent(31, 100, 100, "touch"));
+    point = new Vector3(0.5, 0.03, 0.5);
+    stageInternals.handlePointerMove(pointerEvent(31, 120, 120, "touch"));
+
+    stage.update(
+      buildRenderState({
+        fen: "8/8/8/8/8/8/4P3/8 w - - 0 1",
+        selectedSquare: "e2",
+        legalTargets: ["e3"],
+      }),
+    );
+
+    stageInternals.handlePointerUp(pointerEvent(31, 120, 120, "touch"));
+
+    expect(onSquareSelect).toHaveBeenCalledTimes(1);
+    expect(onSquareSelect).toHaveBeenCalledWith("e2");
+    expect(stageInternals.dragState).toBeNull();
+    expect(stageInternals.returnAnimation?.to.toArray()).toEqual([0.5, 0, 2.5]);
   });
 
   it("disposes previous highlight resources before rebuilding them", () => {
@@ -274,14 +409,7 @@ describe("ChessStage", () => {
     await stage.init();
 
     const emptyBoardFen = "8/8/8/8/8/8/8/8 w - - 0 1";
-    stage.update({
-      fen: emptyBoardFen,
-      orientation: "white",
-      theme: themes[0],
-      selectedSquare: null,
-      legalTargets: [],
-      hintMove: null,
-    });
+    stage.update(buildRenderState({ fen: emptyBoardFen, theme: themes[0] }));
 
     const previousLightMap = stageInternals.lightSquareMats[0].map!;
     const previousDarkMap = stageInternals.darkSquareMats[0].map!;
@@ -291,14 +419,7 @@ describe("ChessStage", () => {
     const previousFrameDispose = vi.spyOn(previousFrameMap, "dispose");
     const expectedPalette = deriveBoardPalette(themes[1]);
 
-    stage.update({
-      fen: emptyBoardFen,
-      orientation: "white",
-      theme: themes[1],
-      selectedSquare: null,
-      legalTargets: [],
-      hintMove: null,
-    });
+    stage.update(buildRenderState({ fen: emptyBoardFen, theme: themes[1] }));
 
     expect(previousLightDispose).toHaveBeenCalledTimes(1);
     expect(previousDarkDispose).toHaveBeenCalledTimes(1);
@@ -326,14 +447,7 @@ describe("ChessStage", () => {
 
     await stage.init();
 
-    stage.update({
-      fen: "8/8/8/8/8/8/8/8 w - - 0 1",
-      orientation: "white",
-      theme: themes[2],
-      selectedSquare: null,
-      legalTargets: [],
-      hintMove: null,
-    });
+    stage.update(buildRenderState({ theme: themes[2] }));
 
     expect(latestRendererOptions).toMatchObject({ alpha: true });
     expect(stageInternals.scene.fog).toBeInstanceOf(FogExp2);

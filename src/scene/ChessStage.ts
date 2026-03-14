@@ -22,24 +22,32 @@ import {
   BoxGeometry,
   PlaneGeometry,
   CylinderGeometry,
+  CircleGeometry,
   LatheGeometry,
+  RingGeometry,
   SphereGeometry,
   ExtrudeGeometry,
   Vector2,
+  Vector3,
   Raycaster,
   Shape,
   CanvasTexture,
   RepeatWrapping,
+  TOUCH,
 } from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import { RoomEnvironment } from "three/examples/jsm/environments/RoomEnvironment.js";
 import { RoundedBoxGeometry } from "three/examples/jsm/geometries/RoundedBoxGeometry.js";
-import type { Square } from "chess.js";
+import type { Color as PieceColor, Square } from "chess.js";
 import type { Orientation, ThemeDefinition } from "../types/game";
 import { fenToPieces, squareToCoords } from "../utils/board";
 
 const SEGMENTS = 64;
 const CLICK_THRESHOLD_PX = 6;
+const DRAG_LIFT_Y = 1.1;
+const RETURN_DURATION_MS = 160;
+const LAST_MOVE_HIGHLIGHT_MS = 1800;
+const HINT_HIGHLIGHT_MS = 4200;
 const files = ["a", "b", "c", "d", "e", "f", "g", "h"] as const;
 const BOARD_TEXTURE_VARIATIONS = 4;
 
@@ -76,6 +84,9 @@ interface RenderState extends HighlightState {
   fen: string;
   orientation: Orientation;
   theme: ThemeDefinition;
+  playerColor: PieceColor;
+  canInteract: boolean;
+  lastMove: { from: Square; to: Square } | null;
 }
 
 interface WoodPalette {
@@ -97,6 +108,35 @@ interface WoodMaterialTuning {
   metalness: number;
   clearcoat: number;
   clearcoatRoughness: number;
+}
+
+interface BoardIntersection {
+  square: Square | null;
+  localPoint: Vector3;
+}
+
+interface AnimatedHighlight {
+  mesh: Mesh;
+  material: MeshStandardMaterial;
+  mode: "static" | "pulse" | "timed";
+  baseOpacity: number;
+  startedAt: number;
+  durationMs?: number;
+  phaseOffset?: number;
+}
+
+interface DragState {
+  pointerId: number;
+  sourceSquare: Square;
+  piece: Group;
+}
+
+interface ReturnAnimation {
+  piece: Group;
+  from: Vector3;
+  to: Vector3;
+  startedAt: number;
+  durationMs: number;
 }
 
 export function resolveSquareFromBoardPoint(localX: number, localZ: number): Square | null {
@@ -545,21 +585,47 @@ function createHighlight(
   color: string,
   opacity: number,
   y = 0.05,
-): Mesh {
-  const mesh = new Mesh(
-    new PlaneGeometry(0.9, 0.9),
-    new MeshStandardMaterial({
-      color,
-      transparent: true,
-      opacity,
-      emissive: new Color(color),
-      emissiveIntensity: 0.18,
-    }),
-  );
+  size = 0.9,
+): { mesh: Mesh; material: MeshStandardMaterial } {
+  const material = new MeshStandardMaterial({
+    color,
+    transparent: true,
+    opacity,
+    emissive: new Color(color),
+    emissiveIntensity: 0.18,
+  });
+  const mesh = new Mesh(new PlaneGeometry(size, size), material);
   const { x, z } = squareToCoords(square);
   mesh.rotation.x = -Math.PI / 2;
   mesh.position.set(x, y, z);
-  return mesh;
+  return { mesh, material };
+}
+
+function createTargetIndicator(
+  square: Square,
+  color: string,
+  opacity: number,
+  occupied: boolean,
+): { mesh: Mesh; material: MeshStandardMaterial } {
+  const material = new MeshStandardMaterial({
+    color,
+    transparent: true,
+    opacity,
+    emissive: new Color(color),
+    emissiveIntensity: occupied ? 0.28 : 0.18,
+  });
+  const geometry = occupied
+    ? new RingGeometry(0.24, 0.42, 32)
+    : new CircleGeometry(0.24, 32);
+  const mesh = new Mesh(geometry, material);
+  const { x, z } = squareToCoords(square);
+  mesh.rotation.x = -Math.PI / 2;
+  mesh.position.set(x, 0.075, z);
+  return { mesh, material };
+}
+
+function easeOutCubic(progress: number): number {
+  return 1 - Math.pow(1 - clampUnit(progress), 3);
 }
 
 function collectMeshResources(
@@ -643,12 +709,28 @@ export class ChessStage {
   private disposed = false;
   private paused = false;
   private activePointerId: number | null = null;
+  private activePointerType = "";
+  private readonly touchPointerIds = new Set<number>();
+  private multiTouchGesture = false;
   private pointerMaxTravel = 0;
+  private pointerDownSquare: Square | null = null;
+  private pointerDownOwnPieceSquare: Square | null = null;
+  private dragState: DragState | null = null;
+  private returnAnimation: ReturnAnimation | null = null;
+  private readonly pieceBySquare = new Map<Square, Group>();
+  private animatedHighlights: AnimatedHighlight[] = [];
+  private selectedPiece: Group | null = null;
+  private readonly selectedPieceHighlightMaterials: Material[] = [];
   private currentFen = "";
   private currentThemeId = "";
   private currentOrientation: Orientation = "white";
   private currentHighlightKey = "";
   private currentState: RenderState | null = null;
+  private activeHintKey = "";
+  private suppressedHintKey = "";
+  private hintAnimationStartedAt = 0;
+  private activeLastMoveKey = "";
+  private lastMoveAnimationStartedAt = 0;
 
   constructor(container: HTMLDivElement, onSquareSelect: (square: Square) => void) {
     this.container = container;
@@ -680,6 +762,8 @@ export class ChessStage {
     this.controls.maxPolarAngle = Math.PI / 2 - 0.05;
     this.controls.minDistance = 8;
     this.controls.maxDistance = 50;
+    this.controls.touches.ONE = null;
+    this.controls.touches.TWO = TOUCH.DOLLY_ROTATE;
 
     this.scene.fog = new FogExp2(0x050508, 0.012);
 
@@ -749,6 +833,19 @@ export class ChessStage {
       this.root.rotation.y = state.orientation === "black" ? Math.PI : 0;
     }
 
+    const hintKey = state.hintMove ? `${state.hintMove.from}-${state.hintMove.to}` : "";
+    if (hintKey !== this.activeHintKey) {
+      this.activeHintKey = hintKey;
+      this.hintAnimationStartedAt = hintKey ? performance.now() : 0;
+      this.suppressedHintKey = "";
+    }
+
+    const lastMoveKey = state.lastMove ? `${state.lastMove.from}-${state.lastMove.to}` : "";
+    if (lastMoveKey !== this.activeLastMoveKey) {
+      this.activeLastMoveKey = lastMoveKey;
+      this.lastMoveAnimationStartedAt = lastMoveKey ? performance.now() : 0;
+    }
+
     if (state.theme.id !== this.currentThemeId) {
       this.currentThemeId = state.theme.id;
       this.applyTheme(state.theme);
@@ -764,7 +861,10 @@ export class ChessStage {
       state.legalTargets.join(","),
       state.hintMove?.from ?? "",
       state.hintMove?.to ?? "",
+      state.lastMove?.from ?? "",
+      state.lastMove?.to ?? "",
       state.theme.id,
+      this.suppressedHintKey,
     ].join("|");
 
     if (highlightKey !== this.currentHighlightKey) {
@@ -796,8 +896,12 @@ export class ChessStage {
     }
 
     this.disposed = true;
-    this.activePointerId = null;
-    this.pointerMaxTravel = 0;
+    this.touchPointerIds.clear();
+    this.multiTouchGesture = false;
+    this.clearDragState();
+    this.returnAnimation = null;
+    this.clearSelectedPieceHighlight();
+    this.resetPointerTracking();
     cancelAnimationFrame(this.animationFrame);
     this.resizeObserver.disconnect();
     this.controls.dispose();
@@ -808,6 +912,7 @@ export class ChessStage {
     window.removeEventListener("pointercancel", this.handlePointerCancel);
 
     this.disposeHighlights();
+    this.pieceBySquare.clear();
     this.pieceGroup.clear();
 
     const geometries = new Set<BufferGeometry>();
@@ -1018,6 +1123,9 @@ export class ChessStage {
       if (this.disposed || this.paused) {
         return;
       }
+      const now = performance.now();
+      this.updateReturnAnimation(now);
+      this.updateAnimatedHighlights(now);
       this.controls.update();
       this.renderer.render(this.scene, this.camera);
       this.animationFrame = requestAnimationFrame(tick);
@@ -1027,17 +1135,29 @@ export class ChessStage {
   }
 
   private rebuildPieces(): void {
-    if (!this.currentState) return;
+    if (!this.currentState) {
+      return;
+    }
 
+    this.clearDragState();
+    this.returnAnimation = null;
+    this.clearSelectedPieceHighlight();
+    this.pieceBySquare.clear();
     this.pieceGroup.clear();
+
     const pieces = fenToPieces(this.currentState.fen);
 
     for (const piece of pieces) {
       const prototype = this.prototypes.get(piece.type);
-      if (!prototype) continue;
+      if (!prototype) {
+        continue;
+      }
 
       const clone = prototype.clone(true);
       clone.name = `${piece.color}-${piece.type}-${piece.square}`;
+      clone.userData.square = piece.square;
+      clone.userData.color = piece.color;
+      clone.userData.type = piece.type;
       const { x, z } = squareToCoords(piece.square);
       clone.position.set(x, 0, z);
       clone.scale.setScalar(0.5);
@@ -1049,40 +1169,109 @@ export class ChessStage {
       const pieceMat = piece.color === "w" ? this.lightPieceMat : this.darkPieceMat;
 
       clone.traverse((child) => {
-        if (!(child instanceof Mesh)) return;
+        if (!(child instanceof Mesh)) {
+          return;
+        }
         if (child.name === "felt") {
           child.material = this.feltMat;
+          child.userData.baseMaterial = this.feltMat;
         } else if (child.name === "eye") {
           child.material = this.eyeMat;
+          child.userData.baseMaterial = this.eyeMat;
         } else {
           child.material = pieceMat;
+          child.userData.baseMaterial = pieceMat;
         }
       });
 
+      this.pieceBySquare.set(piece.square, clone);
       this.pieceGroup.add(clone);
+    }
+
+    if (this.currentState.selectedSquare) {
+      this.applySelectedPieceHighlight(
+        this.currentState.selectedSquare,
+        this.currentState.theme.highlightPrimary,
+      );
     }
   }
 
   private updateHighlights(state: RenderState): void {
     this.disposeHighlights();
+    this.clearSelectedPieceHighlight();
 
     if (state.selectedSquare) {
-      this.highlightGroup.add(
+      this.addAnimatedHighlight(
         createHighlight(state.selectedSquare, state.theme.highlightPrimary, 0.46),
+        "static",
+        0.46,
       );
+      this.applySelectedPieceHighlight(state.selectedSquare, state.theme.highlightPrimary);
     }
 
     state.legalTargets.forEach((target) => {
-      this.highlightGroup.add(
-        createHighlight(target, state.theme.highlightSecondary, 0.28),
+      this.addAnimatedHighlight(
+        createTargetIndicator(
+          target,
+          state.theme.highlightSecondary,
+          0.34,
+          this.pieceBySquare.has(target),
+        ),
+        "static",
+        0.34,
       );
     });
 
-    if (state.hintMove) {
-      this.highlightGroup.add(
-        createHighlight(state.hintMove.to, state.theme.highlightPrimary, 0.55, 0.1),
+    if (state.hintMove && this.activeHintKey !== this.suppressedHintKey) {
+      const hintColor = shiftHex(
+        mixHex(state.theme.highlightPrimary, state.theme.highlightSecondary, 0.4),
+        0.08,
+        0.06,
+      );
+      this.addAnimatedHighlight(
+        createHighlight(state.hintMove.from, hintColor, 0.42, 0.1, 0.92),
+        "pulse",
+        0.42,
+        {
+          durationMs: HINT_HIGHLIGHT_MS,
+          startedAt: this.hintAnimationStartedAt,
+        },
+      );
+      this.addAnimatedHighlight(
+        createHighlight(state.hintMove.to, hintColor, 0.56, 0.11, 0.92),
+        "pulse",
+        0.56,
+        {
+          durationMs: HINT_HIGHLIGHT_MS,
+          phaseOffset: Math.PI / 4,
+          startedAt: this.hintAnimationStartedAt,
+        },
       );
     }
+
+    if (state.lastMove) {
+      const lastMoveColor = mixHex(state.theme.highlightSecondary, "#ffffff", 0.12);
+      this.addAnimatedHighlight(
+        createHighlight(state.lastMove.from, lastMoveColor, 0.28, 0.08, 0.88),
+        "timed",
+        0.28,
+        {
+          durationMs: LAST_MOVE_HIGHLIGHT_MS,
+          startedAt: this.lastMoveAnimationStartedAt,
+        },
+      );
+      this.addAnimatedHighlight(
+        createHighlight(state.lastMove.to, lastMoveColor, 0.4, 0.09, 0.88),
+        "timed",
+        0.4,
+        {
+          durationMs: LAST_MOVE_HIGHLIGHT_MS,
+          startedAt: this.lastMoveAnimationStartedAt,
+        },
+      );
+    }
+
+    this.updateAnimatedHighlights(performance.now());
   }
 
   private applyTheme(theme: ThemeDefinition): void {
@@ -1141,9 +1330,142 @@ export class ChessStage {
   private disposeHighlights(): void {
     disposeObjectResources(this.highlightGroup);
     this.highlightGroup.clear();
+    this.animatedHighlights = [];
   }
 
-  private resolveSquareFromPointerEvent(event: PointerEvent): Square | null {
+  private addAnimatedHighlight(
+    highlight: { mesh: Mesh; material: MeshStandardMaterial },
+    mode: AnimatedHighlight["mode"],
+    baseOpacity: number,
+    options: Partial<Pick<AnimatedHighlight, "durationMs" | "phaseOffset" | "startedAt">> = {},
+  ): void {
+    this.highlightGroup.add(highlight.mesh);
+    this.animatedHighlights.push({
+      mesh: highlight.mesh,
+      material: highlight.material,
+      mode,
+      baseOpacity,
+      startedAt: options.startedAt ?? performance.now(),
+      durationMs: options.durationMs,
+      phaseOffset: options.phaseOffset,
+    });
+  }
+
+  private updateAnimatedHighlights(now: number): void {
+    for (const highlight of this.animatedHighlights) {
+      let opacity = highlight.baseOpacity;
+
+      if (highlight.mode === "pulse") {
+        const elapsed = now - highlight.startedAt;
+        const duration = highlight.durationMs ?? HINT_HIGHLIGHT_MS;
+        const fade = clampUnit(1 - elapsed / duration);
+        const pulse = 0.65 + 0.35 * (0.5 + 0.5 * Math.sin(elapsed * 0.012 + (highlight.phaseOffset ?? 0)));
+        opacity = highlight.baseOpacity * pulse * fade;
+      }
+
+      if (highlight.mode === "timed") {
+        const elapsed = now - highlight.startedAt;
+        const duration = highlight.durationMs ?? LAST_MOVE_HIGHLIGHT_MS;
+        opacity = highlight.baseOpacity * clampUnit(1 - elapsed / duration);
+      }
+
+      highlight.material.opacity = opacity;
+      highlight.mesh.visible = opacity > 0.01;
+    }
+  }
+
+  private applySelectedPieceHighlight(square: Square, color: string): void {
+    const piece = this.pieceBySquare.get(square);
+    if (!piece) {
+      return;
+    }
+
+    this.clearSelectedPieceHighlight();
+    this.selectedPiece = piece;
+
+    piece.traverse((child) => {
+      if (!(child instanceof Mesh) || child.name === "felt" || child.name === "eye") {
+        return;
+      }
+
+      const baseMaterial = child.userData.baseMaterial;
+      if (!(baseMaterial instanceof MeshPhysicalMaterial)) {
+        return;
+      }
+
+      const highlightMaterial = baseMaterial.clone();
+      highlightMaterial.emissive = new Color(color);
+      highlightMaterial.emissiveIntensity = 0.48;
+      child.material = highlightMaterial;
+      this.selectedPieceHighlightMaterials.push(highlightMaterial);
+    });
+  }
+
+  private clearSelectedPieceHighlight(): void {
+    if (this.selectedPiece) {
+      this.selectedPiece.traverse((child) => {
+        if (!(child instanceof Mesh)) {
+          return;
+        }
+
+        const baseMaterial = child.userData.baseMaterial;
+        if (baseMaterial instanceof Material) {
+          child.material = baseMaterial;
+        }
+      });
+    }
+
+    this.selectedPiece = null;
+    while (this.selectedPieceHighlightMaterials.length > 0) {
+      this.selectedPieceHighlightMaterials.pop()?.dispose();
+    }
+  }
+
+  private updateReturnAnimation(now: number): void {
+    if (!this.returnAnimation) {
+      return;
+    }
+
+    const progress = clampUnit((now - this.returnAnimation.startedAt) / this.returnAnimation.durationMs);
+    this.returnAnimation.piece.position.lerpVectors(
+      this.returnAnimation.from,
+      this.returnAnimation.to,
+      easeOutCubic(progress),
+    );
+
+    if (progress >= 1) {
+      this.returnAnimation = null;
+    }
+  }
+
+  private startReturnAnimation(piece: Group, sourceSquare: Square): void {
+    const { x, z } = squareToCoords(sourceSquare);
+    this.returnAnimation = {
+      piece,
+      from: piece.position.clone(),
+      to: new Vector3(x, 0, z),
+      startedAt: performance.now(),
+      durationMs: RETURN_DURATION_MS,
+    };
+  }
+
+  private clearDragState(): void {
+    this.dragState = null;
+  }
+
+  private isTouchPointer(event: PointerEvent): boolean {
+    return event.pointerType === "touch";
+  }
+
+  private isDraggablePieceSquare(square: Square | null): square is Square {
+    if (!square || !this.currentState?.canInteract) {
+      return false;
+    }
+
+    return this.pieceBySquare.get(square)?.userData.color === this.currentState.playerColor;
+  }
+
+  private resolveBoardIntersection(event: PointerEvent): BoardIntersection | null {
     const rect = this.renderer.domElement.getBoundingClientRect();
     this.pointer.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
     this.pointer.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
@@ -1155,7 +1477,104 @@ export class ChessStage {
     }
 
     const localPoint = this.root.worldToLocal(intersections[0].point.clone());
-    return resolveSquareFromBoardPoint(localPoint.x, localPoint.z);
+    return {
+      square: resolveSquareFromBoardPoint(localPoint.x, localPoint.z),
+      localPoint,
+    };
+  }
+
+  private updateDragPosition(event: PointerEvent): void {
+    if (!this.dragState) {
+      return;
+    }
+
+    const intersection = this.resolveBoardIntersection(event);
+    if (!intersection) {
+      return;
+    }
+
+    this.dragState.piece.position.set(intersection.localPoint.x, DRAG_LIFT_Y, intersection.localPoint.z);
+  }
+
+  private beginPieceDrag(event: PointerEvent, sourceSquare: Square): void {
+    const piece = this.pieceBySquare.get(sourceSquare);
+    if (!piece) {
+      return;
+    }
+
+    if (this.returnAnimation?.piece === piece) {
+      this.returnAnimation = null;
+    }
+
+    this.dragState = {
+      pointerId: event.pointerId,
+      sourceSquare,
+      piece,
+    };
+    piece.position.y = DRAG_LIFT_Y;
+
+    if (this.currentState?.selectedSquare !== sourceSquare) {
+      this.onSquareSelect(sourceSquare);
+    }
+
+    this.updateDragPosition(event);
+  }
+
+  private finishPieceDrag(event: PointerEvent): boolean {
+    if (!this.dragState) {
+      return false;
+    }
+
+    const { piece, sourceSquare } = this.dragState;
+    const targetSquare = this.resolveBoardIntersection(event)?.square ?? null;
+    const canDrop =
+      !!targetSquare &&
+      this.currentState?.selectedSquare === sourceSquare &&
+      this.currentState.legalTargets.includes(targetSquare);
+
+    this.clearDragState();
+
+    if (canDrop && targetSquare) {
+      const { x, z } = squareToCoords(targetSquare);
+      piece.position.set(x, 0, z);
+      this.onSquareSelect(targetSquare);
+      return true;
+    }
+
+    this.startReturnAnimation(piece, sourceSquare);
+    return true;
+  }
+
+  private dismissHintHighlights(): void {
+    if (!this.currentState?.hintMove || !this.activeHintKey) {
+      return;
+    }
+
+    this.suppressedHintKey = this.activeHintKey;
+    this.currentHighlightKey = [
+      this.currentState.selectedSquare ?? "",
+      this.currentState.legalTargets.join(","),
+      this.currentState.hintMove?.from ?? "",
+      this.currentState.hintMove?.to ?? "",
+      this.currentState.lastMove?.from ?? "",
+      this.currentState.lastMove?.to ?? "",
+      this.currentState.theme.id,
+      this.suppressedHintKey,
+    ].join("|");
+    this.updateHighlights(this.currentState);
+  }
+
+  private cancelGamePointerGesture(): void {
+    if (this.dragState) {
+      this.startReturnAnimation(this.dragState.piece, this.dragState.sourceSquare);
+      this.clearDragState();
+    }
+
+    this.resetPointerTracking();
+  }
+
+  private resolveSquareFromPointerEvent(event: PointerEvent): Square | null {
+    return this.resolveBoardIntersection(event)?.square ?? null;
   }
 
   private updatePointerTravel(event: PointerEvent): number {
@@ -1167,13 +1586,41 @@ export class ChessStage {
 
   private resetPointerTracking(): void {
     this.activePointerId = null;
+    this.activePointerType = "";
     this.pointerMaxTravel = 0;
+    this.pointerDownSquare = null;
+    this.pointerDownOwnPieceSquare = null;
   }
 
   private handlePointerDown = (event: PointerEvent) => {
+    this.dismissHintHighlights();
+
+    if (this.isTouchPointer(event)) {
+      this.touchPointerIds.add(event.pointerId);
+      if (this.touchPointerIds.size > 1) {
+        this.multiTouchGesture = true;
+        this.cancelGamePointerGesture();
+        return;
+      }
+    }
+
+    if (this.multiTouchGesture) {
+      return;
+    }
+
     this.activePointerId = event.pointerId;
+    this.activePointerType = event.pointerType ?? "";
     this.pointerDownPosition.set(event.clientX, event.clientY);
     this.pointerMaxTravel = 0;
+    this.pointerDownSquare = null;
+    this.pointerDownOwnPieceSquare = null;
+
+    if (this.activePointerType === "touch") {
+      this.pointerDownSquare = this.resolveSquareFromPointerEvent(event);
+      this.pointerDownOwnPieceSquare = this.isDraggablePieceSquare(this.pointerDownSquare)
+        ? this.pointerDownSquare
+        : null;
+    }
   };
 
   private handlePointerMove = (event: PointerEvent) => {
@@ -1181,31 +1628,83 @@ export class ChessStage {
       return;
     }
 
-    this.updatePointerTravel(event);
+    const maxTravel = this.updatePointerTravel(event);
+
+    if (this.dragState) {
+      this.updateDragPosition(event);
+      return;
+    }
+
+    if (
+      this.activePointerType === "touch" &&
+      !this.multiTouchGesture &&
+      maxTravel > CLICK_THRESHOLD_PX &&
+      this.pointerDownOwnPieceSquare
+    ) {
+      this.beginPieceDrag(event, this.pointerDownOwnPieceSquare);
+    }
   };
 
   private handlePointerUp = (event: PointerEvent) => {
+    const isTouch = this.isTouchPointer(event);
+    if (isTouch) {
+      this.touchPointerIds.delete(event.pointerId);
+    }
+
     if (event.pointerId !== this.activePointerId) {
+      if (isTouch && this.touchPointerIds.size === 0) {
+        this.multiTouchGesture = false;
+      }
+      return;
+    }
+
+    if (this.dragState) {
+      this.finishPieceDrag(event);
+      this.resetPointerTracking();
+      if (isTouch && this.touchPointerIds.size === 0) {
+        this.multiTouchGesture = false;
+      }
       return;
     }
 
     const maxTravel = this.updatePointerTravel(event);
+    const shouldSelect =
+      this.currentState?.canInteract &&
+      !this.multiTouchGesture &&
+      maxTravel <= CLICK_THRESHOLD_PX;
+    const square = shouldSelect ? this.resolveSquareFromPointerEvent(event) : null;
     this.resetPointerTracking();
-    if (maxTravel > CLICK_THRESHOLD_PX) {
-      return;
+
+    if (isTouch && this.touchPointerIds.size === 0) {
+      this.multiTouchGesture = false;
     }
 
-    const square = this.resolveSquareFromPointerEvent(event);
     if (square) {
       this.onSquareSelect(square);
     }
   };
 
   private handlePointerCancel = (event: PointerEvent) => {
+    const isTouch = this.isTouchPointer(event);
+    if (isTouch) {
+      this.touchPointerIds.delete(event.pointerId);
+    }
+
     if (event.pointerId !== this.activePointerId) {
+      if (isTouch && this.touchPointerIds.size === 0) {
+        this.multiTouchGesture = false;
+      }
       return;
     }
 
+    if (this.dragState) {
+      this.startReturnAnimation(this.dragState.piece, this.dragState.sourceSquare);
+      this.clearDragState();
+    }
     this.resetPointerTracking();
+
+    if (isTouch && this.touchPointerIds.size === 0) {
+      this.multiTouchGesture = false;
+    }
   };
 }
