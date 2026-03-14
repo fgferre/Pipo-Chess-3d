@@ -1,8 +1,9 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { Mesh, Raycaster, Texture, Vector3 } from "three";
+import { Color, FogExp2, Mesh, Raycaster, Texture, Vector3 } from "three";
 import { themes } from "../data/themes";
 
 let latestEnvironmentTarget: { texture: Texture; dispose: ReturnType<typeof vi.fn> } | null = null;
+let latestRendererOptions: Record<string, unknown> | null = null;
 
 vi.mock("three", async () => {
   const actual = await vi.importActual<typeof import("three")>("three");
@@ -14,6 +15,10 @@ vi.mock("three", async () => {
     outputColorSpace = actual.SRGBColorSpace;
     toneMapping = actual.ACESFilmicToneMapping;
     toneMappingExposure = 1;
+
+    constructor(options: Record<string, unknown> = {}) {
+      latestRendererOptions = options;
+    }
 
     setPixelRatio = vi.fn();
     setSize = vi.fn();
@@ -158,6 +163,7 @@ afterEach(() => {
   stages.splice(0).forEach((stage) => stage.dispose());
   document.body.innerHTML = "";
   latestEnvironmentTarget = null;
+  latestRendererOptions = null;
   vi.restoreAllMocks();
 });
 
@@ -308,6 +314,31 @@ describe("ChessStage", () => {
     );
     expect(stageInternals.frameMats[0].userData.boardPalette).toMatchObject(
       expectedPalette.frame,
+    );
+  });
+
+  it("keeps the renderer transparent while applying canvasFog to the stage atmosphere", async () => {
+    const { stage } = createStage();
+    const stageInternals = stage as unknown as {
+      scene: { fog: FogExp2 | null };
+      update: (state: unknown) => void;
+    };
+
+    await stage.init();
+
+    stage.update({
+      fen: "8/8/8/8/8/8/8/8 w - - 0 1",
+      orientation: "white",
+      theme: themes[2],
+      selectedSquare: null,
+      legalTargets: [],
+      hintMove: null,
+    });
+
+    expect(latestRendererOptions).toMatchObject({ alpha: true });
+    expect(stageInternals.scene.fog).toBeInstanceOf(FogExp2);
+    expect(stageInternals.scene.fog?.color.getHexString()).toBe(
+      new Color(themes[2].canvasFog).getHexString(),
     );
   });
 

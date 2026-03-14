@@ -38,13 +38,21 @@ A validação do `ChessStage` encontrou dois pontos menores que não bloqueiam o
 
 ## Critérios de aceite
 
-- [ ] A estratégia de background do `ChessStage` fica explícita e visualmente coerente com o baseline do mockup e com o shell atual do app.
-- [ ] O comportamento de fundo não fica mais ambíguo como detalhe acidental do renderer/canvas.
-- [ ] `file:src/scene/ChessStage.test.ts` passa a fazer parte formal da entrega do projeto.
-- [ ] A cobertura adicionada para o `ChessStage` permanece alinhada com os comportamentos já validados.
-- [ ] Não há regressão funcional nem visual introduzida por esse fechamento de housekeeping.
-- [ ] Diagnósticos estáticos permanecem limpos.
+- [x] A estratégia de background do `ChessStage` fica explícita e visualmente coerente com o baseline do mockup e com o shell atual do app.
+- [x] O comportamento de fundo não fica mais ambíguo como detalhe acidental do renderer/canvas.
+- [x] `file:src/scene/ChessStage.test.ts` passa a fazer parte formal da entrega do projeto.
+- [x] A cobertura adicionada para o `ChessStage` permanece alinhada com os comportamentos já validados.
+- [x] Não há regressão funcional nem visual introduzida por esse fechamento de housekeeping.
+- [x] Diagnósticos estáticos permanecem limpos.
 
 ## Nota
 
 Este ticket é deliberadamente pequeno. Ele não reabre decisões de arquitetura; apenas fecha pendências menores identificadas durante a revisão do port visual para deixar a base do canvas premium mais sólida antes das próximas camadas do MVP.
+
+## Notas de fechamento
+
+- O backdrop visual ficou explicitamente delegado ao shell/wrapper do stage, usando `theme.backdrop` e `theme.canvasFog`, enquanto o `ChessStage` mantém canvas transparente e continua dono apenas da atmosfera interna da cena.
+- `file:src/scene/ChessStage.test.ts` permaneceu no fluxo normal de teste do projeto e recebeu cobertura explícita para o contrato de canvas transparente + `canvasFog`.
+- Validação executada:
+  - `node_modules/.bin/vitest.cmd run src/scene/ChessStage.test.ts`
+  - `node_modules/.bin/eslint.cmd src/components/ChessScene.tsx src/scene/ChessStage.ts src/scene/ChessStage.test.ts`

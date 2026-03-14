@@ -2,7 +2,7 @@
 
 ## Ticket alvo
 
-- `Docs/Tickets/Housekeeping_do_ChessStage_—_background_do_stage_e_versionamento_do_teste.md`
+- `Docs/Tickets/Housekeeping_do_ChessStage_—_background_do_stage_e_versionamento_do_teste - done.md`
 
 ## Referencias obrigatorias
 

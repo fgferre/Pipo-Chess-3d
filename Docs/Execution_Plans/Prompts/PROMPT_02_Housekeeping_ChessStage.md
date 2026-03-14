@@ -4,7 +4,7 @@ Antes de editar qualquer arquivo, leia nesta ordem:
 
 1. `Docs/Execution_Plans/EXECUTION_PROTOCOL.md`
 2. `Docs/Execution_Plans/02_Housekeeping_ChessStage.md`
-3. `Docs/Tickets/Housekeeping_do_ChessStage_—_background_do_stage_e_versionamento_do_teste.md`
+3. `Docs/Tickets/Housekeeping_do_ChessStage_—_background_do_stage_e_versionamento_do_teste - done.md`
 4. `Docs/Specs/Core_Flows_—_Pipo_Chess_3d.md`
 5. `Docs/Specs/Tech_Plan_—_Pipo_Chess_3d.md`
 6. `src/scene/ChessStage.ts`

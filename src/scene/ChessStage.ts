@@ -654,6 +654,8 @@ export class ChessStage {
     this.container = container;
     this.onSquareSelect = onSquareSelect;
 
+    // The shell owns the backdrop gradient; the stage keeps a transparent canvas and
+    // handles only in-scene atmosphere such as fog, felt, lighting, and materials.
     this.renderer = new WebGLRenderer({
       antialias: true,
       alpha: true,

@@ -57,5 +57,14 @@ export function ChessScene({
     });
   }, [hintMove, legalTargets, selectedSquare, session.settings.orientation, session.snapshot.fen, theme]);
 
-  return <div className="board-shell" ref={containerRef} />;
+  return (
+    <div
+      className="board-shell"
+      ref={containerRef}
+      style={{
+        backgroundColor: theme.canvasFog,
+        backgroundImage: theme.backdrop,
+      }}
+    />
+  );
 }
