@@ -15,6 +15,21 @@ Ler sempre nesta ordem:
 
 Os planos abaixo nao substituem os tickets nem os specs. Eles descrevem a sequencia de acoes recomendada para executar cada ticket de forma aderente ao estado atual do projeto e com o menor retrabalho possivel.
 
+## Ciclo recomendado por fase
+
+Para cada ticket:
+
+1. executar a fase com o prompt de execucao correspondente
+2. revisar a entrega com `Docs/Execution_Plans/REVIEW_PROTOCOL.md`
+   o revisor deve inferir a implementacao da fase a partir do repo e dos arquivos implicados pelo plano e ticket
+3. o revisor deve corrigir bugs e gaps razoaveis, revalidar e so parar se houver desvio de produto ou mudanca de escopo
+4. decidir se:
+   - pode marcar `done`
+   - precisa correcao
+   - precisa bug ticket
+   - precisa alinhamento de produto
+5. so entao seguir para a proxima fase
+
 ## Ordem recomendada
 
 1. `01_Alinhar_tematizacao_board_3d.md`
@@ -59,6 +74,7 @@ graph TD
 4. Se a implementacao encontrada exigir mudar produto, parar e alinhar antes de seguir.
 5. Se a implementacao divergir apenas do detalhe tecnico do Tech Plan, registrar a divergencia, revisar impacto nos tickets seguintes e so entao continuar.
 6. Nenhum ticket deve ser dado como concluido sem validacao local proporcional ao risco: teste unitario, smoke test visual e checagem estatica quando aplicavel.
+7. Sempre que possivel, rodar uma conversa de review separada usando `Docs/Execution_Plans/REVIEW_PROTOCOL.md`.
 
 ## Observacoes sobre o estado atual do codigo
 

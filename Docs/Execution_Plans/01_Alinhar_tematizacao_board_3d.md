@@ -2,7 +2,7 @@
 
 ## Ticket alvo
 
-- `Docs/Tickets/Alinhar_tematização_do_tabuleiro_3D_ao_mockup_sem_regressão_visual.md`
+- `Docs/Tickets/Alinhar_tematização_do_tabuleiro_3D_ao_mockup_sem_regressão_visual - done.md`
 
 ## Referencias obrigatorias
 

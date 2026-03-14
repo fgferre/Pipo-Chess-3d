@@ -4,7 +4,7 @@ Antes de editar qualquer arquivo, leia nesta ordem:
 
 1. `Docs/Execution_Plans/EXECUTION_PROTOCOL.md`
 2. `Docs/Execution_Plans/01_Alinhar_tematizacao_board_3d.md`
-3. `Docs/Tickets/Alinhar_tematização_do_tabuleiro_3D_ao_mockup_sem_regressão_visual.md`
+3. `Docs/Tickets/Alinhar_tematização_do_tabuleiro_3D_ao_mockup_sem_regressão_visual - done.md`
 4. `Docs/Specs/Epic_Brief_—_Pipo_Chess_3d.md`
 5. `Docs/Specs/Core_Flows_—_Pipo_Chess_3d.md`
 6. `Docs/Specs/Tech_Plan_—_Pipo_Chess_3d.md`
