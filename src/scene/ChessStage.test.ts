@@ -1,5 +1,6 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { Mesh, Raycaster, Texture, Vector3 } from "three";
+import { themes } from "../data/themes";
 
 let latestEnvironmentTarget: { texture: Texture; dispose: ReturnType<typeof vi.fn> } | null = null;
 
@@ -61,7 +62,7 @@ vi.mock("three/examples/jsm/controls/OrbitControls.js", () => ({
   },
 }));
 
-import { ChessStage, resolveSquareFromBoardPoint } from "./ChessStage";
+import { ChessStage, deriveBoardPalette, resolveSquareFromBoardPoint } from "./ChessStage";
 
 const stages: ChessStage[] = [];
 
@@ -142,13 +143,15 @@ beforeAll(() => {
 });
 
 beforeEach(() => {
-  vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockImplementation((contextId) => {
+  const getContextMock = ((contextId: string) => {
     if (contextId === "2d") {
       return createCanvasContextMock();
     }
 
     return null;
-  });
+  }) as HTMLCanvasElement["getContext"];
+
+  vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockImplementation(getContextMock);
 });
 
 afterEach(() => {
@@ -242,6 +245,70 @@ describe("ChessStage", () => {
 
     expect(geometryDispose).toHaveBeenCalledTimes(1);
     expect(materialDispose).toHaveBeenCalledTimes(1);
+  });
+
+  it("applies boardLight, boardDark, and boardFrame to the premium board materials", async () => {
+    const { stage } = createStage();
+    const stageInternals = stage as unknown as {
+      lightSquareMats: Array<{
+        map: Texture | null;
+        userData: { boardPalette?: unknown };
+      }>;
+      darkSquareMats: Array<{
+        map: Texture | null;
+        userData: { boardPalette?: unknown };
+      }>;
+      frameMats: Array<{
+        map: Texture | null;
+        userData: { boardPalette?: unknown };
+      }>;
+      update: (state: unknown) => void;
+    };
+
+    await stage.init();
+
+    const emptyBoardFen = "8/8/8/8/8/8/8/8 w - - 0 1";
+    stage.update({
+      fen: emptyBoardFen,
+      orientation: "white",
+      theme: themes[0],
+      selectedSquare: null,
+      legalTargets: [],
+      hintMove: null,
+    });
+
+    const previousLightMap = stageInternals.lightSquareMats[0].map!;
+    const previousDarkMap = stageInternals.darkSquareMats[0].map!;
+    const previousFrameMap = stageInternals.frameMats[0].map!;
+    const previousLightDispose = vi.spyOn(previousLightMap, "dispose");
+    const previousDarkDispose = vi.spyOn(previousDarkMap, "dispose");
+    const previousFrameDispose = vi.spyOn(previousFrameMap, "dispose");
+    const expectedPalette = deriveBoardPalette(themes[1]);
+
+    stage.update({
+      fen: emptyBoardFen,
+      orientation: "white",
+      theme: themes[1],
+      selectedSquare: null,
+      legalTargets: [],
+      hintMove: null,
+    });
+
+    expect(previousLightDispose).toHaveBeenCalledTimes(1);
+    expect(previousDarkDispose).toHaveBeenCalledTimes(1);
+    expect(previousFrameDispose).toHaveBeenCalledTimes(1);
+    expect(stageInternals.lightSquareMats[0].map).not.toBe(previousLightMap);
+    expect(stageInternals.darkSquareMats[0].map).not.toBe(previousDarkMap);
+    expect(stageInternals.frameMats[0].map).not.toBe(previousFrameMap);
+    expect(stageInternals.lightSquareMats[0].userData.boardPalette).toMatchObject(
+      expectedPalette.lightSquares,
+    );
+    expect(stageInternals.darkSquareMats[0].userData.boardPalette).toMatchObject(
+      expectedPalette.darkSquares,
+    );
+    expect(stageInternals.frameMats[0].userData.boardPalette).toMatchObject(
+      expectedPalette.frame,
+    );
   });
 
   it("releases stage-owned resources during final disposal", async () => {

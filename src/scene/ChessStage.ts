@@ -41,6 +41,30 @@ import { fenToPieces, squareToCoords } from "../utils/board";
 const SEGMENTS = 64;
 const CLICK_THRESHOLD_PX = 6;
 const files = ["a", "b", "c", "d", "e", "f", "g", "h"] as const;
+const BOARD_TEXTURE_VARIATIONS = 4;
+
+const DEFAULT_BOARD_PALETTE = {
+  lightSquares: { baseHex: "#e0b576", veinHex: "#a36d26", isKnotty: false },
+  darkSquares: { baseHex: "#5c2e16", veinHex: "#1a0b05", isKnotty: true },
+  frame: { baseHex: "#361a0d", veinHex: "#0a0402", isKnotty: true },
+  groutHex: "#050505",
+} satisfies BoardMaterialPalette;
+
+const SQUARE_WOOD_MATERIAL = {
+  bumpScale: 0.01,
+  roughness: 0.4,
+  metalness: 0.0,
+  clearcoat: 0.2,
+  clearcoatRoughness: 0.3,
+} as const;
+
+const FRAME_WOOD_MATERIAL = {
+  bumpScale: 0.012,
+  roughness: 0.5,
+  metalness: 0.02,
+  clearcoat: 0.1,
+  clearcoatRoughness: 0.3,
+} as const;
 
 interface HighlightState {
   selectedSquare: Square | null;
@@ -54,6 +78,27 @@ interface RenderState extends HighlightState {
   theme: ThemeDefinition;
 }
 
+interface WoodPalette {
+  baseHex: string;
+  veinHex: string;
+  isKnotty: boolean;
+}
+
+interface BoardMaterialPalette {
+  lightSquares: WoodPalette;
+  darkSquares: WoodPalette;
+  frame: WoodPalette;
+  groutHex: string;
+}
+
+interface WoodMaterialTuning {
+  bumpScale: number;
+  roughness: number;
+  metalness: number;
+  clearcoat: number;
+  clearcoatRoughness: number;
+}
+
 export function resolveSquareFromBoardPoint(localX: number, localZ: number): Square | null {
   const fileIndex = Math.floor(localX + 4);
   const rank = 8 - Math.floor(localZ + 4);
@@ -63,6 +108,49 @@ export function resolveSquareFromBoardPoint(localX: number, localZ: number): Squ
   }
 
   return `${files[fileIndex]}${rank}` as Square;
+}
+
+function clampUnit(value: number): number {
+  return Math.min(1, Math.max(0, value));
+}
+
+function mixHex(startHex: string, endHex: string, amount: number): string {
+  const color = new Color(startHex);
+  color.lerp(new Color(endHex), clampUnit(amount));
+  return `#${color.getHexString()}`;
+}
+
+function shiftHex(hex: string, saturationDelta: number, lightnessDelta: number): string {
+  const color = new Color(hex);
+  const hsl = { h: 0, s: 0, l: 0 };
+  color.getHSL(hsl);
+  color.setHSL(
+    hsl.h,
+    clampUnit(hsl.s + saturationDelta),
+    clampUnit(hsl.l + lightnessDelta),
+  );
+  return `#${color.getHexString()}`;
+}
+
+export function deriveBoardPalette(theme: ThemeDefinition): BoardMaterialPalette {
+  return {
+    lightSquares: {
+      baseHex: shiftHex(mixHex(theme.boardLight, "#f6e3bf", 0.14), 0.04, 0.03),
+      veinHex: shiftHex(mixHex(theme.boardLight, theme.boardDark, 0.52), 0.08, -0.16),
+      isKnotty: false,
+    },
+    darkSquares: {
+      baseHex: shiftHex(mixHex(theme.boardDark, theme.boardFrame, 0.18), 0.03, -0.02),
+      veinHex: shiftHex(mixHex(theme.boardFrame, "#050302", 0.62), 0.04, -0.08),
+      isKnotty: true,
+    },
+    frame: {
+      baseHex: shiftHex(mixHex(theme.boardFrame, theme.boardDark, 0.1), 0.03, -0.02),
+      veinHex: shiftHex(mixHex(theme.boardFrame, "#050302", 0.7), 0.05, -0.1),
+      isKnotty: true,
+    },
+    groutHex: mixHex(theme.boardFrame, "#050505", 0.74),
+  };
 }
 
 // ─── Wood Texture Generator ────────────────────────────────────────────────
@@ -121,6 +209,45 @@ function createWoodTexture(
   texture.wrapT = RepeatWrapping;
   texture.colorSpace = SRGBColorSpace;
   return texture;
+}
+
+function collectMaterialTextures(
+  material: MeshPhysicalMaterial | MeshStandardMaterial,
+): Set<Texture> {
+  const textures = new Set<Texture>();
+
+  if (material.map) {
+    textures.add(material.map);
+  }
+  if ("bumpMap" in material && material.bumpMap) {
+    textures.add(material.bumpMap);
+  }
+
+  return textures;
+}
+
+function applyWoodMaterialTheme(
+  renderer: WebGLRenderer,
+  material: MeshPhysicalMaterial,
+  role: keyof Omit<BoardMaterialPalette, "groutHex">,
+  palette: WoodPalette,
+  tuning: WoodMaterialTuning,
+): void {
+  const previousTextures = collectMaterialTextures(material);
+  const texture = createWoodTexture(renderer, palette.baseHex, palette.veinHex, palette.isKnotty);
+
+  material.map = texture;
+  material.bumpMap = texture;
+  material.bumpScale = tuning.bumpScale;
+  material.roughness = tuning.roughness;
+  material.metalness = tuning.metalness;
+  material.clearcoat = tuning.clearcoat;
+  material.clearcoatRoughness = tuning.clearcoatRoughness;
+  material.userData.boardRole = role;
+  material.userData.boardPalette = { ...palette };
+  material.needsUpdate = true;
+
+  previousTextures.forEach((previousTexture) => previousTexture.dispose());
 }
 
 // ─── Piece Prototype Builders ──────────────────────────────────────────────
@@ -499,6 +626,9 @@ export class ChessStage {
     new PlaneGeometry(8, 8),
     new MeshStandardMaterial({ transparent: true, opacity: 0 }),
   );
+  private readonly lightSquareMats: MeshPhysicalMaterial[] = [];
+  private readonly darkSquareMats: MeshPhysicalMaterial[] = [];
+  private readonly frameMats: MeshPhysicalMaterial[] = [];
   private readonly prototypes = new Map<string, Group>();
   private readonly resizeObserver: ResizeObserver;
   private readonly eyeMat: MeshPhysicalMaterial;
@@ -507,6 +637,7 @@ export class ChessStage {
   private darkPieceMat!: MeshPhysicalMaterial;
   private feltMat!: MeshStandardMaterial;
   private accentMat!: MeshPhysicalMaterial;
+  private groutMat!: MeshStandardMaterial;
   private environmentTarget: WebGLRenderTarget | null = null;
   private animationFrame = 0;
   private disposed = false;
@@ -763,39 +894,38 @@ export class ChessStage {
   }
 
   private buildBoard(): void {
-    const numVariations = 4;
+    this.lightSquareMats.length = 0;
+    this.darkSquareMats.length = 0;
+    this.frameMats.length = 0;
+
     const lightMats: MeshPhysicalMaterial[] = [];
     const darkMats: MeshPhysicalMaterial[] = [];
 
     this.feltMat = new MeshStandardMaterial({ color: 0x081c0c, roughness: 1.0 });
 
-    for (let i = 0; i < numVariations; i++) {
-      const texLight = createWoodTexture(this.renderer, "#e0b576", "#a36d26", false);
-      const texDark = createWoodTexture(this.renderer, "#5c2e16", "#1a0b05", true);
+    for (let i = 0; i < BOARD_TEXTURE_VARIATIONS; i++) {
+      const lightMat = new MeshPhysicalMaterial();
+      const darkMat = new MeshPhysicalMaterial();
 
-      lightMats.push(
-        new MeshPhysicalMaterial({
-          map: texLight,
-          bumpMap: texLight,
-          bumpScale: 0.01,
-          roughness: 0.4,
-          metalness: 0.0,
-          clearcoat: 0.2,
-          clearcoatRoughness: 0.3,
-        }),
+      applyWoodMaterialTheme(
+        this.renderer,
+        lightMat,
+        "lightSquares",
+        DEFAULT_BOARD_PALETTE.lightSquares,
+        SQUARE_WOOD_MATERIAL,
+      );
+      applyWoodMaterialTheme(
+        this.renderer,
+        darkMat,
+        "darkSquares",
+        DEFAULT_BOARD_PALETTE.darkSquares,
+        SQUARE_WOOD_MATERIAL,
       );
 
-      darkMats.push(
-        new MeshPhysicalMaterial({
-          map: texDark,
-          bumpMap: texDark,
-          bumpScale: 0.01,
-          roughness: 0.4,
-          metalness: 0.0,
-          clearcoat: 0.2,
-          clearcoatRoughness: 0.3,
-        }),
-      );
+      lightMats.push(lightMat);
+      darkMats.push(darkMat);
+      this.lightSquareMats.push(lightMat);
+      this.darkSquareMats.push(darkMat);
     }
 
     const squareGeo = new RoundedBoxGeometry(0.98, 0.5, 0.98, 6, 0.06);
@@ -822,23 +952,25 @@ export class ChessStage {
     // Grout
     const grout = new Mesh(
       new BoxGeometry(7.9, 0.45, 7.9),
-      new MeshStandardMaterial({ color: 0x050505, roughness: 1.0 }),
+      (this.groutMat = new MeshStandardMaterial({
+        color: DEFAULT_BOARD_PALETTE.groutHex,
+        roughness: 1.0,
+      })),
     );
     grout.position.set(0, -0.25, 0);
     grout.castShadow = true;
     grout.receiveShadow = true;
     this.boardGroup.add(grout);
 
-    // Dark border wood texture
-    const texBorder = createWoodTexture(this.renderer, "#361a0d", "#0a0402", true);
-    const baseMat = new MeshPhysicalMaterial({
-      map: texBorder,
-      bumpMap: texBorder,
-      bumpScale: 0.012,
-      roughness: 0.5,
-      metalness: 0.02,
-      clearcoat: 0.1,
-    });
+    const baseMat = new MeshPhysicalMaterial();
+    applyWoodMaterialTheme(
+      this.renderer,
+      baseMat,
+      "frame",
+      DEFAULT_BOARD_PALETTE.frame,
+      FRAME_WOOD_MATERIAL,
+    );
+    this.frameMats.push(baseMat);
 
     const border1 = new Mesh(new RoundedBoxGeometry(9.2, 0.3, 9.2, 5, 0.1), baseMat);
     border1.position.set(0, -0.4, 0);
@@ -952,8 +1084,40 @@ export class ChessStage {
   }
 
   private applyTheme(theme: ThemeDefinition): void {
+    const boardPalette = deriveBoardPalette(theme);
+
     if (this.scene.fog instanceof FogExp2) {
       this.scene.fog.color.set(theme.canvasFog);
+    }
+    this.lightSquareMats.forEach((material) =>
+      applyWoodMaterialTheme(
+        this.renderer,
+        material,
+        "lightSquares",
+        boardPalette.lightSquares,
+        SQUARE_WOOD_MATERIAL,
+      ),
+    );
+    this.darkSquareMats.forEach((material) =>
+      applyWoodMaterialTheme(
+        this.renderer,
+        material,
+        "darkSquares",
+        boardPalette.darkSquares,
+        SQUARE_WOOD_MATERIAL,
+      ),
+    );
+    this.frameMats.forEach((material) =>
+      applyWoodMaterialTheme(
+        this.renderer,
+        material,
+        "frame",
+        boardPalette.frame,
+        FRAME_WOOD_MATERIAL,
+      ),
+    );
+    if (this.groutMat) {
+      this.groutMat.color.set(boardPalette.groutHex);
     }
     if (this.accentMat) {
       this.accentMat.color.set(theme.canvasAccent);
