@@ -794,12 +794,13 @@ describe("ChessStage", () => {
     const spots = stageInternals.scene.children.filter((child) => child instanceof SpotLight);
     const rim = stageInternals.scene.children.find((child) => child instanceof DirectionalLight);
 
-    expect(stageInternals.renderer.toneMappingExposure).toBeCloseTo(1.0);
-    expect(hemi).toMatchObject({ intensity: 0.22 });
-    expect(spots).toHaveLength(2);
-    expect(spots[0]).toMatchObject({ castShadow: true, intensity: 460 });
-    expect(spots[1]).toMatchObject({ castShadow: false, intensity: 70 });
-    expect(rim).toMatchObject({ intensity: 1.1 });
+    expect(stageInternals.renderer.toneMappingExposure).toBeCloseTo(0.95);
+    expect(hemi).toMatchObject({ intensity: 0.04 });
+    expect(spots).toHaveLength(3);
+    expect(spots[0]).toMatchObject({ castShadow: true, intensity: 380 });
+    expect(spots[1]).toMatchObject({ castShadow: true, intensity: 100 });
+    expect(spots[2]).toMatchObject({ castShadow: false, intensity: 12 });
+    expect(rim).toMatchObject({ intensity: 0.8 });
   });
 
   it("releases stage-owned resources during final disposal", async () => {

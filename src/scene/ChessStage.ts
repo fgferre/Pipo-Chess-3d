@@ -62,19 +62,19 @@ const DEFAULT_BOARD_PALETTE = {
 } satisfies BoardMaterialPalette;
 
 const SQUARE_WOOD_MATERIAL = {
-  bumpScale: 0.01,
-  roughness: 0.4,
+  bumpScale: 0.015,
+  roughness: 0.65,
   metalness: 0.0,
-  clearcoat: 0.2,
-  clearcoatRoughness: 0.3,
+  clearcoat: 0.04,
+  clearcoatRoughness: 0.5,
 } as const;
 
 const FRAME_WOOD_MATERIAL = {
-  bumpScale: 0.012,
-  roughness: 0.5,
-  metalness: 0.02,
-  clearcoat: 0.1,
-  clearcoatRoughness: 0.3,
+  bumpScale: 0.015,
+  roughness: 0.6,
+  metalness: 0.0,
+  clearcoat: 0.06,
+  clearcoatRoughness: 0.4,
 } as const;
 
 const EMPTY_VIEWPORT_PADDING = {
@@ -526,6 +526,7 @@ function applyWoodMaterialTheme(
   material.metalness = tuning.metalness;
   material.clearcoat = tuning.clearcoat;
   material.clearcoatRoughness = tuning.clearcoatRoughness;
+  material.envMapIntensity = 0.25;
   material.userData.boardRole = role;
   material.userData.boardPalette = { ...palette };
   material.needsUpdate = true;
@@ -1261,7 +1262,7 @@ export class ChessStage {
     this.renderer.shadowMap.enabled = true;
     this.renderer.shadowMap.type = PCFSoftShadowMap;
     this.renderer.toneMapping = ACESFilmicToneMapping;
-    this.renderer.toneMappingExposure = 1.0;
+    this.renderer.toneMappingExposure = 0.95;
     this.renderer.domElement.className = "board-canvas";
     this.container.appendChild(this.renderer.domElement);
 
@@ -1309,27 +1310,28 @@ export class ChessStage {
 
   async init(): Promise<void> {
     const pmremGenerator = new PMREMGenerator(this.renderer);
-    this.environmentTarget = pmremGenerator.fromScene(new RoomEnvironment(), 0.02);
+    this.environmentTarget = pmremGenerator.fromScene(new RoomEnvironment(), 0.008);
     this.scene.environment = this.environmentTarget.texture;
     pmremGenerator.dispose();
 
     this.setupLighting();
     this.buildBoard();
 
-    // Placeholder piece materials — colors updated on first applyTheme()
     this.lightPieceMat = new MeshPhysicalMaterial({
-      color: 0xfffcf0,
-      roughness: 0.4,
+      color: 0xd8cebb,
+      roughness: 0.55,
       metalness: 0.0,
-      clearcoat: 0.1,
-      clearcoatRoughness: 0.3,
+      clearcoat: 0.08,
+      clearcoatRoughness: 0.4,
+      envMapIntensity: 0.25,
     });
     this.darkPieceMat = new MeshPhysicalMaterial({
-      color: 0x111111,
-      roughness: 0.35,
-      metalness: 0.02,
-      clearcoat: 0.15,
-      clearcoatRoughness: 0.2,
+      color: 0x0a0a0c,
+      roughness: 0.55,
+      metalness: 0.0,
+      clearcoat: 0.12,
+      clearcoatRoughness: 0.3,
+      envMapIntensity: 0.2,
     });
 
     const tempMat = new MeshPhysicalMaterial({ color: 0xffffff });
@@ -1762,36 +1764,57 @@ export class ChessStage {
   }
 
   private setupLighting(): void {
-    const hemi = new HemisphereLight(0xfff3e2, 0x02030a, 0.22);
+    // Minimal ambient — just enough to keep pure-black areas slightly visible
+    const hemi = new HemisphereLight(0xfff0d8, 0x0c0602, 0.04);
     this.scene.add(hemi);
 
-    const keyLight = new SpotLight(0xffebd2, 460);
-    keyLight.position.set(30, 24, 14);
-    keyLight.angle = Math.PI / 5;
-    keyLight.penumbra = 0.4;
+    // Primary key light — warm, front-right diagonal, low angle for long shadows
+    const keyLight = new SpotLight(0xffebd2, 380);
+    keyLight.position.set(22, 10, 20);
+    keyLight.angle = Math.PI / 5.5;
+    keyLight.penumbra = 0.3;
     keyLight.decay = 1.2;
     keyLight.distance = 150;
     keyLight.castShadow = true;
     keyLight.shadow.mapSize.width = 2048;
     keyLight.shadow.mapSize.height = 2048;
-    keyLight.shadow.camera.near = 10;
+    keyLight.shadow.camera.near = 5;
     keyLight.shadow.camera.far = 80;
-    keyLight.shadow.bias = -0.00035;
-    keyLight.shadow.normalBias = 0.004;
-    keyLight.shadow.radius = 1.4;
+    keyLight.shadow.bias = -0.0004;
+    keyLight.shadow.normalBias = 0.005;
+    keyLight.shadow.radius = 1.2;
     this.scene.add(keyLight);
 
-    const fillLight = new SpotLight(0x9cc3ff, 70);
-    fillLight.position.set(-18, 18, -24);
-    fillLight.angle = Math.PI / 2.8;
+    // Secondary shadow light — cooler, back-left diagonal, creates crossing shadows
+    const secondaryLight = new SpotLight(0xc8d8f0, 100);
+    secondaryLight.position.set(-20, 8, -18);
+    secondaryLight.angle = Math.PI / 4.5;
+    secondaryLight.penumbra = 0.5;
+    secondaryLight.decay = 1.3;
+    secondaryLight.distance = 120;
+    secondaryLight.castShadow = true;
+    secondaryLight.shadow.mapSize.width = 1024;
+    secondaryLight.shadow.mapSize.height = 1024;
+    secondaryLight.shadow.camera.near = 5;
+    secondaryLight.shadow.camera.far = 70;
+    secondaryLight.shadow.bias = -0.0004;
+    secondaryLight.shadow.normalBias = 0.005;
+    secondaryLight.shadow.radius = 1.5;
+    this.scene.add(secondaryLight);
+
+    // Soft fill — no shadows, just prevents the non-lit side from going pure black
+    const fillLight = new SpotLight(0x8ab0d8, 12);
+    fillLight.position.set(18, 8, -22);
+    fillLight.angle = Math.PI / 3;
     fillLight.penumbra = 0.9;
     fillLight.decay = 1.1;
-    fillLight.distance = 150;
+    fillLight.distance = 120;
     fillLight.castShadow = false;
     this.scene.add(fillLight);
 
-    const rimLight = new DirectionalLight(0xdfe8ff, 1.1);
-    rimLight.position.set(-12, 16, -26);
+    // Rim light — back edge definition
+    const rimLight = new DirectionalLight(0xdfe8ff, 0.8);
+    rimLight.position.set(-10, 12, -28);
     this.scene.add(rimLight);
   }
 
@@ -1897,9 +1920,11 @@ export class ChessStage {
 
     this.accentMat = new MeshPhysicalMaterial({
       color: 0xd4af37,
-      roughness: 0.1,
+      roughness: 0.2,
       metalness: 1.0,
-      clearcoat: 0.5,
+      clearcoat: 0.4,
+      clearcoatRoughness: 0.1,
+      envMapIntensity: 0.7,
     });
     const accent = new Mesh(new RoundedBoxGeometry(9.35, 0.12, 9.35, 3, 0.05), this.accentMat);
     accent.position.set(0, -0.35, 0);
@@ -2545,9 +2570,6 @@ export class ChessStage {
     }
     if (this.feltMat) {
       this.feltMat.color.set(theme.canvasFelt);
-    }
-    if (this.lightPieceMat) {
-      this.lightPieceMat.color.set(theme.whitePiece);
     }
     if (this.darkPieceMat) {
       this.darkPieceMat.color.set(theme.blackPiece);
