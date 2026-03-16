@@ -10,15 +10,12 @@ import {
   Mesh,
   Color,
   FogExp2,
-  HemisphereLight,
   SpotLight,
-  DirectionalLight,
-  PMREMGenerator,
+  HemisphereLight,
   Material,
   MeshPhysicalMaterial,
   MeshStandardMaterial,
   Texture,
-  WebGLRenderTarget,
   Sprite,
   SpriteMaterial,
   BoxGeometry,
@@ -38,7 +35,6 @@ import {
   TOUCH,
 } from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
-import { RoomEnvironment } from "three/examples/jsm/environments/RoomEnvironment.js";
 import { RoundedBoxGeometry } from "three/examples/jsm/geometries/RoundedBoxGeometry.js";
 import type { Color as PieceColor, PieceSymbol, Square } from "chess.js";
 import type { AppSettings, Orientation, SerializableMove, ThemeDefinition } from "../types/game";
@@ -526,7 +522,7 @@ function applyWoodMaterialTheme(
   material.metalness = tuning.metalness;
   material.clearcoat = tuning.clearcoat;
   material.clearcoatRoughness = tuning.clearcoatRoughness;
-  material.envMapIntensity = 0.25;
+  material.envMapIntensity = 0.0;
   material.userData.boardRole = role;
   material.userData.boardPalette = { ...palette };
   material.needsUpdate = true;
@@ -1208,7 +1204,6 @@ export class ChessStage {
   private feltMat!: MeshStandardMaterial;
   private accentMat!: MeshPhysicalMaterial;
   private groutMat!: MeshStandardMaterial;
-  private environmentTarget: WebGLRenderTarget | null = null;
   private animationFrame = 0;
   private disposed = false;
   private paused = false;
@@ -1262,7 +1257,7 @@ export class ChessStage {
     this.renderer.shadowMap.enabled = true;
     this.renderer.shadowMap.type = PCFSoftShadowMap;
     this.renderer.toneMapping = ACESFilmicToneMapping;
-    this.renderer.toneMappingExposure = 0.95;
+    this.renderer.toneMappingExposure = 0.8;
     this.renderer.domElement.className = "board-canvas";
     this.container.appendChild(this.renderer.domElement);
 
@@ -1309,29 +1304,24 @@ export class ChessStage {
   }
 
   async init(): Promise<void> {
-    const pmremGenerator = new PMREMGenerator(this.renderer);
-    this.environmentTarget = pmremGenerator.fromScene(new RoomEnvironment(), 0.008);
-    this.scene.environment = this.environmentTarget.texture;
-    pmremGenerator.dispose();
-
     this.setupLighting();
     this.buildBoard();
 
     this.lightPieceMat = new MeshPhysicalMaterial({
-      color: 0xd8cebb,
+      color: 0xd0c4b0,
       roughness: 0.55,
       metalness: 0.0,
       clearcoat: 0.08,
       clearcoatRoughness: 0.4,
-      envMapIntensity: 0.25,
+      envMapIntensity: 0.0,
     });
     this.darkPieceMat = new MeshPhysicalMaterial({
-      color: 0x0a0a0c,
+      color: 0x060608,
       roughness: 0.55,
       metalness: 0.0,
       clearcoat: 0.12,
       clearcoatRoughness: 0.3,
-      envMapIntensity: 0.2,
+      envMapIntensity: 0.0,
     });
 
     const tempMat = new MeshPhysicalMaterial({ color: 0xffffff });
@@ -1718,8 +1708,6 @@ export class ChessStage {
     this.root.remove(this.hitPlane);
 
     this.scene.environment = null;
-    this.environmentTarget?.dispose();
-    this.environmentTarget = null;
 
     this.renderer.dispose();
     if (domElement.parentElement === this.container) {
@@ -1764,58 +1752,52 @@ export class ChessStage {
   }
 
   private setupLighting(): void {
-    // Minimal ambient — just enough to keep pure-black areas slightly visible
-    const hemi = new HemisphereLight(0xfff0d8, 0x0c0602, 0.04);
-    this.scene.add(hemi);
+    // Jazz Club / Pub Atmosphere
+    
+    // Key Light - Warm overhead spot resembling a hanging lamp directly over the board
+    const overheadLamp = new SpotLight(0xffddaa, 650);
+    overheadLamp.position.set(0, 25, 0);
+    overheadLamp.angle = Math.PI / 4.5;
+    overheadLamp.penumbra = 0.8;
+    overheadLamp.decay = 1.8;
+    overheadLamp.distance = 100;
+    overheadLamp.castShadow = true;
+    overheadLamp.shadow.mapSize.width = 4096;
+    overheadLamp.shadow.mapSize.height = 4096;
+    overheadLamp.shadow.camera.near = 10;
+    overheadLamp.shadow.camera.far = 40;
+    overheadLamp.shadow.bias = -0.0001;
+    overheadLamp.shadow.normalBias = 0.002;
+    overheadLamp.shadow.radius = 2.5;
+    this.scene.add(overheadLamp);
 
-    // Primary key light — warm, front-right diagonal, low angle for long shadows
-    const keyLight = new SpotLight(0xffebd2, 380);
-    keyLight.position.set(22, 10, 20);
-    keyLight.angle = Math.PI / 5.5;
-    keyLight.penumbra = 0.3;
-    keyLight.decay = 1.2;
-    keyLight.distance = 150;
-    keyLight.castShadow = true;
-    keyLight.shadow.mapSize.width = 2048;
-    keyLight.shadow.mapSize.height = 2048;
-    keyLight.shadow.camera.near = 5;
-    keyLight.shadow.camera.far = 80;
-    keyLight.shadow.bias = -0.0004;
-    keyLight.shadow.normalBias = 0.005;
-    keyLight.shadow.radius = 1.2;
-    this.scene.add(keyLight);
+    // Rim Light - Cool blue/purple from the back to separate pieces from the dark background
+    const neonRim = new SpotLight(0x7050ff, 180);
+    neonRim.position.set(-15, 8, -25);
+    neonRim.angle = Math.PI / 3;
+    neonRim.penumbra = 0.9;
+    neonRim.decay = 1.4;
+    neonRim.distance = 120;
+    neonRim.castShadow = true;
+    neonRim.shadow.mapSize.width = 1024;
+    neonRim.shadow.mapSize.height = 1024;
+    neonRim.shadow.bias = -0.0005;
+    neonRim.shadow.radius = 3.0;
+    this.scene.add(neonRim);
 
-    // Secondary shadow light — cooler, back-left diagonal, creates crossing shadows
-    const secondaryLight = new SpotLight(0xc8d8f0, 100);
-    secondaryLight.position.set(-20, 8, -18);
-    secondaryLight.angle = Math.PI / 4.5;
-    secondaryLight.penumbra = 0.5;
-    secondaryLight.decay = 1.3;
-    secondaryLight.distance = 120;
-    secondaryLight.castShadow = true;
-    secondaryLight.shadow.mapSize.width = 1024;
-    secondaryLight.shadow.mapSize.height = 1024;
-    secondaryLight.shadow.camera.near = 5;
-    secondaryLight.shadow.camera.far = 70;
-    secondaryLight.shadow.bias = -0.0004;
-    secondaryLight.shadow.normalBias = 0.005;
-    secondaryLight.shadow.radius = 1.5;
-    this.scene.add(secondaryLight);
-
-    // Soft fill — no shadows, just prevents the non-lit side from going pure black
-    const fillLight = new SpotLight(0x8ab0d8, 12);
-    fillLight.position.set(18, 8, -22);
-    fillLight.angle = Math.PI / 3;
-    fillLight.penumbra = 0.9;
-    fillLight.decay = 1.1;
-    fillLight.distance = 120;
-    fillLight.castShadow = false;
-    this.scene.add(fillLight);
-
-    // Rim light — back edge definition
-    const rimLight = new DirectionalLight(0xdfe8ff, 0.8);
-    rimLight.position.set(-10, 12, -28);
-    this.scene.add(rimLight);
+    // Fill Light - Very low intensity, warm amber glow from the side (like a distant candle or bar light)
+    const ambientGlow = new SpotLight(0xffaa55, 60);
+    ambientGlow.position.set(20, 5, 10);
+    ambientGlow.angle = Math.PI / 2;
+    ambientGlow.penumbra = 1.0;
+    ambientGlow.decay = 1.5;
+    ambientGlow.distance = 80;
+    ambientGlow.castShadow = false;
+    this.scene.add(ambientGlow);
+    
+    // Environmental Ambient - almost pitch black but with a slight warm tint to not have 100% black shadows
+    const envLight = new HemisphereLight(0x221100, 0x050510, 0.4);
+    this.scene.add(envLight);
   }
 
   private buildBoard(): void {
@@ -1920,11 +1902,11 @@ export class ChessStage {
 
     this.accentMat = new MeshPhysicalMaterial({
       color: 0xd4af37,
-      roughness: 0.2,
+      roughness: 0.25,
       metalness: 1.0,
-      clearcoat: 0.4,
-      clearcoatRoughness: 0.1,
-      envMapIntensity: 0.7,
+      clearcoat: 0.3,
+      clearcoatRoughness: 0.15,
+      envMapIntensity: 0.0,
     });
     const accent = new Mesh(new RoundedBoxGeometry(9.35, 0.12, 9.35, 3, 0.05), this.accentMat);
     accent.position.set(0, -0.35, 0);

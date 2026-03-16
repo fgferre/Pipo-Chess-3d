@@ -1,7 +1,6 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   Color,
-  DirectionalLight,
   FogExp2,
   HemisphereLight,
   Mesh,
@@ -792,21 +791,18 @@ describe("ChessStage", () => {
 
     const hemi = stageInternals.scene.children.find((child) => child instanceof HemisphereLight);
     const spots = stageInternals.scene.children.filter((child) => child instanceof SpotLight);
-    const rim = stageInternals.scene.children.find((child) => child instanceof DirectionalLight);
 
-    expect(stageInternals.renderer.toneMappingExposure).toBeCloseTo(0.95);
-    expect(hemi).toMatchObject({ intensity: 0.04 });
+    expect(stageInternals.renderer.toneMappingExposure).toBeCloseTo(0.8);
+    expect(hemi).toMatchObject({ intensity: 0.4 });
     expect(spots).toHaveLength(3);
-    expect(spots[0]).toMatchObject({ castShadow: true, intensity: 380 });
-    expect(spots[1]).toMatchObject({ castShadow: true, intensity: 100 });
-    expect(spots[2]).toMatchObject({ castShadow: false, intensity: 12 });
-    expect(rim).toMatchObject({ intensity: 0.8 });
+    expect(spots[0]).toMatchObject({ castShadow: true, intensity: 650 });
+    expect(spots[1]).toMatchObject({ castShadow: true, intensity: 180 });
+    expect(spots[2]).toMatchObject({ castShadow: false, intensity: 60 });
   });
 
   it("releases stage-owned resources during final disposal", async () => {
     const { stage } = createStage();
     const stageInternals = stage as unknown as {
-      environmentTarget: { texture: Texture; dispose: ReturnType<typeof vi.fn> } | null;
       hitPlane: Mesh;
       lightPieceMat: { dispose: () => void };
       prototypes: Map<string, { traverse: (callback: (child: unknown) => void) => void }>;
@@ -814,7 +810,6 @@ describe("ChessStage", () => {
 
     await stage.init();
 
-    const environmentTarget = stageInternals.environmentTarget;
     const hitPlaneGeometryDispose = vi.spyOn(stageInternals.hitPlane.geometry, "dispose");
     const hitPlaneMaterialDispose = vi.spyOn(
       stageInternals.hitPlane.material as { dispose: () => void },
@@ -826,8 +821,6 @@ describe("ChessStage", () => {
 
     stage.dispose();
 
-    expect(environmentTarget).not.toBeNull();
-    expect(environmentTarget?.dispose).toHaveBeenCalledTimes(1);
     expect(hitPlaneGeometryDispose).toHaveBeenCalledTimes(1);
     expect(hitPlaneMaterialDispose).toHaveBeenCalledTimes(1);
     expect(lightPieceMatDispose).toHaveBeenCalledTimes(1);
