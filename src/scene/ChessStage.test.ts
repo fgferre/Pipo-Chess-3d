@@ -793,7 +793,7 @@ describe("ChessStage", () => {
     const spots = stageInternals.scene.children.filter((child) => child instanceof SpotLight);
 
     expect(stageInternals.renderer.toneMappingExposure).toBeCloseTo(0.8);
-    expect(hemi).toMatchObject({ intensity: 0.6 });
+    expect(hemi).toMatchObject({ intensity: 0.46 });
     expect(spots).toHaveLength(3);
     expect(spots[0]).toMatchObject({ castShadow: true, intensity: 650 });
     expect(spots[1]).toMatchObject({ castShadow: true, intensity: 180 });

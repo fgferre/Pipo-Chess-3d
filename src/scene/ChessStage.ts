@@ -525,7 +525,7 @@ function applyWoodMaterialTheme(
   material.metalness = tuning.metalness;
   material.clearcoat = tuning.clearcoat;
   material.clearcoatRoughness = tuning.clearcoatRoughness;
-  material.envMapIntensity = 0.1;
+  material.envMapIntensity = 0.03;
   material.userData.boardRole = role;
   material.userData.boardPalette = { ...palette };
   material.needsUpdate = true;
@@ -1322,7 +1322,7 @@ export class ChessStage {
       metalness: 0.0,
       clearcoat: 0.08,
       clearcoatRoughness: 0.4,
-      envMapIntensity: 0.15,
+      envMapIntensity: 0.05,
     });
     this.darkPieceMat = new MeshPhysicalMaterial({
       color: 0x060608,
@@ -1330,7 +1330,7 @@ export class ChessStage {
       metalness: 0.0,
       clearcoat: 0.12,
       clearcoatRoughness: 0.3,
-      envMapIntensity: 0.15,
+      envMapIntensity: 0.05,
     });
 
     const tempMat = new MeshPhysicalMaterial({ color: 0xffffff });
@@ -1783,7 +1783,7 @@ export class ChessStage {
     this.scene.add(overheadLamp);
 
     // Rim Light - Cool blue/purple from the back to separate pieces from the dark background
-    const neonRim = new SpotLight(0x7a8ab0, 180);
+    const neonRim = new SpotLight(0x7460e8, 180);
     neonRim.position.set(-15, 8, -25);
     neonRim.angle = Math.PI / 3;
     neonRim.penumbra = 0.9;
@@ -1807,7 +1807,7 @@ export class ChessStage {
     this.scene.add(ambientGlow);
     
     // Environmental Ambient - almost pitch black but with a slight warm tint to not have 100% black shadows
-    const envLight = new HemisphereLight(0x221100, 0x050510, 0.6);
+    const envLight = new HemisphereLight(0x221100, 0x050510, 0.46);
     this.scene.add(envLight);
   }
 
@@ -1917,7 +1917,7 @@ export class ChessStage {
       metalness: 1.0,
       clearcoat: 0.3,
       clearcoatRoughness: 0.15,
-      envMapIntensity: 0.2,
+      envMapIntensity: 0.07,
     });
     const accent = new Mesh(new RoundedBoxGeometry(9.35, 0.12, 9.35, 3, 0.05), this.accentMat);
     accent.position.set(0, -0.35, 0);
