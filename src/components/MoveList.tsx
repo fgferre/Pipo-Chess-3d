@@ -1,13 +1,15 @@
-import type { AnalysisSummary, SerializableMove } from "../types/game";
+import { t } from "../i18n";
+import type { AnalysisSummary, Locale, SerializableMove } from "../types/game";
 
 interface MoveListProps {
   moves: SerializableMove[];
+  locale: Locale;
   selectedPly?: number | null;
   onSelectPly?: (ply: number) => void;
   tagsByPly?: AnalysisSummary["tagsByPly"];
 }
 
-export function MoveList({ moves, selectedPly = null, onSelectPly, tagsByPly }: MoveListProps) {
+export function MoveList({ moves, locale, selectedPly = null, onSelectPly, tagsByPly }: MoveListProps) {
   const groupedMoves = [];
 
   for (let index = 0; index < moves.length; index += 2) {
@@ -25,12 +27,14 @@ export function MoveList({ moves, selectedPly = null, onSelectPly, tagsByPly }: 
           <span className="move-row__turn">{turn.turn}.</span>
           <MoveCell
             move={turn.white}
+            locale={locale}
             selectedPly={selectedPly}
             onSelectPly={onSelectPly}
             tag={turn.white ? tagsByPly?.[turn.white.ply] : undefined}
           />
           <MoveCell
             move={turn.black}
+            locale={locale}
             selectedPly={selectedPly}
             onSelectPly={onSelectPly}
             tag={turn.black ? tagsByPly?.[turn.black.ply] : undefined}
@@ -43,12 +47,13 @@ export function MoveList({ moves, selectedPly = null, onSelectPly, tagsByPly }: 
 
 interface MoveCellProps {
   move?: SerializableMove;
+  locale: Locale;
   selectedPly: number | null;
   onSelectPly?: (ply: number) => void;
   tag?: AnalysisSummary["tagsByPly"][number];
 }
 
-function MoveCell({ move, selectedPly, onSelectPly, tag }: MoveCellProps) {
+function MoveCell({ move, locale, selectedPly, onSelectPly, tag }: MoveCellProps) {
   if (!move) {
     return <span className="move-cell move-cell--empty" />;
   }
@@ -57,7 +62,7 @@ function MoveCell({ move, selectedPly, onSelectPly, tag }: MoveCellProps) {
   const content = (
     <>
       <span>{move.san}</span>
-      {tag ? <small className={`move-tag move-tag--${tag}`}>{tag}</small> : null}
+      {tag ? <small className={`move-tag move-tag--${tag}`}>{t(locale, `analysis.${tag}`)}</small> : null}
     </>
   );
 

@@ -11,9 +11,13 @@ describe("PGN headers", () => {
       orientation: "black",
       clockConfig: {
         enabled: true,
-        label: "15 + 10",
+        label: "15 min",
         baseMs: 900_000,
-        incrementMs: 10_000,
+        incrementMs: 0,
+      },
+      cameraSensitivity: {
+        rotate: 1.5,
+        zoom: 0.75,
       },
     });
 
@@ -24,9 +28,13 @@ describe("PGN headers", () => {
     expect(restored.settings.locale).toBe("en");
     expect(restored.settings.orientation).toBe("black");
     expect(restored.settings.clockConfig.baseMs).toBe(900_000);
-    expect(restored.settings.clockConfig.incrementMs).toBe(10_000);
+    expect(restored.settings.clockConfig.incrementMs).toBe(0);
     expect(restored.settings.animationMode).toBe(createNewSession().settings.animationMode);
     expect(restored.settings.defaultViewMode).toBe(createNewSession().settings.defaultViewMode);
+    expect(restored.settings.cameraSensitivity).toEqual({
+      rotate: 1.5,
+      zoom: 0.75,
+    });
   });
 
   it("falls back to the current clock config when custom clock headers are missing", () => {
@@ -35,7 +43,7 @@ describe("PGN headers", () => {
       locale: "en",
       clockConfig: {
         enabled: true,
-        label: "5 + 0",
+        label: "5 min",
         baseMs: 300_000,
         incrementMs: 0,
       },
@@ -49,6 +57,7 @@ describe("PGN headers", () => {
     expect(restored.snapshot.moveList).toHaveLength(4);
     expect(restored.settings.animationMode).toBe(fallback.animationMode);
     expect(restored.settings.defaultViewMode).toBe(fallback.defaultViewMode);
+    expect(restored.settings.cameraSensitivity).toEqual(fallback.cameraSensitivity);
   });
 
   it("retains fallback animationMode and defaultViewMode when PGN headers do not define them", () => {

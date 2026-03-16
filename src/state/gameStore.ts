@@ -43,7 +43,6 @@ import type {
   SaveSlotRecord,
 } from "../types/game";
 import { fenToPieces } from "../utils/board";
-import { downloadTextFile } from "../utils/files";
 import { engineClient } from "../engine/EngineClient";
 
 interface HintMove {
@@ -83,6 +82,7 @@ interface GameStore {
   setClockConfig: (clockConfig: ClockConfig) => Promise<void>;
   setAnimationMode: (mode: GameSession["settings"]["animationMode"]) => Promise<void>;
   setDefaultViewMode: (mode: GameSession["settings"]["defaultViewMode"]) => Promise<void>;
+  setCameraSensitivity: (cameraSensitivity: GameSession["settings"]["cameraSensitivity"]) => Promise<void>;
   setCameraPreset: (preset: CameraPreset) => void;
   setAnalysisCursor: (cursor: number | null) => void;
   setAnalysisAutoplay: (enabled: boolean) => void;
@@ -91,7 +91,6 @@ interface GameStore {
   loadManualSave: (id: number) => Promise<void>;
   restoreAutosave: () => Promise<void>;
   deleteManualSave: (id: number) => Promise<void>;
-  exportPgn: () => void;
   importPgnText: (pgn: string) => Promise<void>;
   runAnalysis: () => Promise<void>;
   persistCurrentAutosave: () => Promise<void>;
@@ -279,6 +278,7 @@ export const useGameStore = create<GameStore>((set, get) => ({
           pendingPromotion: {
             from: selectedSquare,
             to: square,
+            anchorSquare: square,
           },
           selectedSquare: null,
           legalTargets: [],
@@ -523,6 +523,16 @@ export const useGameStore = create<GameStore>((set, get) => ({
     await persistLiveAutosave(get, set);
   },
 
+  setCameraSensitivity: async (cameraSensitivity) => {
+    const nextSession = setSessionSettings(get().session, {
+      ...get().session.settings,
+      cameraSensitivity,
+    });
+    set({ session: nextSession, lastError: null });
+    await persistLiveSettings(get, set);
+    await persistLiveAutosave(get, set);
+  },
+
   setCameraPreset: (preset) => {
     set({ cameraPreset: preset });
   },
@@ -659,12 +669,6 @@ export const useGameStore = create<GameStore>((set, get) => ({
     }
   },
 
-  exportPgn: () => {
-    const state = get();
-    const filename = `pipo-chess-${new Date().toISOString().slice(0, 19).replaceAll(":", "-")}.pgn`;
-    downloadTextFile(filename, state.session.snapshot.pgn);
-  },
-
   importPgnText: async (pgn) => {
     await interruptEngineWork();
 
@@ -685,6 +689,10 @@ export const useGameStore = create<GameStore>((set, get) => ({
     });
     await persistLiveAutosave(get, set);
     await persistLiveSettings(get, set);
+
+    if (nextSession.moveEntries.length > 0) {
+      void get().runAnalysis();
+    }
   },
 
   runAnalysis: async () => {
@@ -814,17 +822,32 @@ async function runEngineMove(
   get: () => GameStore,
 ): Promise<void> {
   const state = get();
+  if (
+    state.session.snapshot.sideToMove === state.session.playerColor ||
+    state.session.snapshot.status !== "active"
+  ) {
+    return;
+  }
+
   const difficulty = getDifficultyPreset(state.session.settings.difficultyId);
   const signature = getPositionSignature(state.session);
 
   try {
     const result = await engineClient.search(state.session.snapshot.fen, difficulty);
     const currentSession = get().session;
-    if (getPositionSignature(currentSession) !== signature) {
+    if (
+      getPositionSignature(currentSession) !== signature ||
+      currentSession.snapshot.sideToMove === currentSession.playerColor ||
+      currentSession.snapshot.status !== "active" ||
+      currentSession.snapshot.clockState.expiredColor
+    ) {
       return;
     }
 
     const nextSession = applyEngineMove(currentSession, result.bestMove);
+    if (nextSession === currentSession) {
+      return;
+    }
 
     set({
       session: nextSession,
@@ -887,7 +910,7 @@ function resumePersistedSession(session: GameSession): GameSession {
 }
 
 function getPositionSignature(session: GameSession): string {
-  return `${session.snapshot.fen}|${session.moveEntries.length}|${session.settings.difficultyId}`;
+  return `${session.snapshot.fen}|${session.moveEntries.length}|${session.settings.difficultyId}|${session.snapshot.status}`;
 }
 
 function getAnalysisSignature(session: GameSession): string {

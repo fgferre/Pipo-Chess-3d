@@ -2,15 +2,13 @@ import type { ClockConfig } from "../types/game";
 
 export const clockPresets: ClockConfig[] = [
   { enabled: false, label: "No clock", baseMs: 0, incrementMs: 0 },
-  { enabled: true, label: "1 + 0", baseMs: 60_000, incrementMs: 0 },
-  { enabled: true, label: "3 + 2", baseMs: 180_000, incrementMs: 2_000 },
-  { enabled: true, label: "5 + 0", baseMs: 300_000, incrementMs: 0 },
-  { enabled: true, label: "10 + 5", baseMs: 600_000, incrementMs: 5_000 },
-  { enabled: true, label: "15 + 10", baseMs: 900_000, incrementMs: 10_000 },
-  { enabled: true, label: "30 + 0", baseMs: 1_800_000, incrementMs: 0 },
+  { enabled: true, label: "5 min", baseMs: 300_000, incrementMs: 0 },
+  { enabled: true, label: "10 min", baseMs: 600_000, incrementMs: 0 },
+  { enabled: true, label: "15 min", baseMs: 900_000, incrementMs: 0 },
+  { enabled: true, label: "30 min", baseMs: 1_800_000, incrementMs: 0 },
 ];
 
-export const defaultClockConfig = clockPresets[3];
+export const defaultClockConfig = clockPresets[2];
 
 export function normalizeClockConfig(config?: Partial<ClockConfig>): ClockConfig {
   if (!config) {
@@ -24,4 +22,3 @@ export function normalizeClockConfig(config?: Partial<ClockConfig>): ClockConfig
     incrementMs: config.incrementMs ?? defaultClockConfig.incrementMs,
   };
 }
-

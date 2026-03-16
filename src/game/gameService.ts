@@ -25,6 +25,10 @@ export function createDefaultSettings(): AppSettings {
     clockConfig: defaultClockConfig,
     animationMode: "normal",
     defaultViewMode: "3d",
+    cameraSensitivity: {
+      rotate: 1,
+      zoom: 1,
+    },
   };
 }
 
@@ -59,6 +63,7 @@ export function hydrateSession(session: GameSession, fallbackSettings: AppSettin
     session.playerColor ?? DEFAULT_PLAYER_COLOR,
     session.snapshot.clockState,
     session.analysisSummary,
+    session.moveEntries,
   );
 }
 
@@ -66,13 +71,14 @@ export function sessionFromPgn(pgn: string, fallbackSettings: AppSettings): Game
   const chess = new Chess();
   chess.loadPgn(pgn, { newlineChar: "\n" });
   const restored = extractSettingsFromHeaders(chess.getHeaders(), normalizeSettings(fallbackSettings));
+  const normalized = normalizeSettings(restored.settings);
 
   return buildSessionFromChess(
     chess,
-    restored.settings,
+    normalized,
     [],
     restored.playerColor,
-    createInitialClockState(restored.settings.clockConfig, chess.turn()),
+    createInitialClockState(normalized.clockConfig, chess.turn()),
   );
 }
 
@@ -86,6 +92,7 @@ export function setSessionSettings(session: GameSession, settings: AppSettings):
     session.playerColor,
     session.snapshot.clockState,
     session.analysisSummary,
+    session.moveEntries,
   );
 }
 
@@ -104,6 +111,7 @@ export function applyPlayerMove(
 ): GameSession | null {
   const chess = replayMoveEntries(session.moveEntries);
   const clockState = tickClock(session.snapshot.clockState, timestamp);
+  const beforeFen = chess.fen();
 
   if (clockState.expiredColor) {
     return markTimeout(session, clockState);
@@ -116,14 +124,20 @@ export function applyPlayerMove(
   }
 
   const nextClockState = commitMoveOnClock(clockState, result.color, session.settings.clockConfig, timestamp);
+  const finalizedClockState = finalizeClockForPosition(chess, nextClockState);
+  const nextMoveEntries = [
+    ...cloneMoveEntries(session.moveEntries),
+    createMoveEntry(result, beforeFen, chess.fen(), session.moveEntries.length + 1, finalizedClockState),
+  ];
 
   return buildSessionFromChess(
     chess,
     session.settings,
     [],
     session.playerColor,
-    finalizeClockForPosition(chess, nextClockState),
+    finalizedClockState,
     session.analysisSummary,
+    nextMoveEntries,
   );
 }
 
@@ -134,23 +148,37 @@ export function applyEngineMove(
 ): GameSession {
   const chess = replayMoveEntries(session.moveEntries);
   const clockState = tickClock(session.snapshot.clockState, timestamp);
+  const beforeFen = chess.fen();
   const normalized = normalizeUci(bestMove);
   const mover = session.snapshot.sideToMove;
 
-  chess.move({
+  if (clockState.expiredColor) {
+    return markTimeout(session, clockState);
+  }
+
+  const result = chess.move({
     from: normalized.from,
     to: normalized.to,
     promotion: normalized.promotion,
   });
+  if (!result) {
+    return session;
+  }
 
   const nextClockState = commitMoveOnClock(clockState, mover, session.settings.clockConfig, timestamp);
+  const finalizedClockState = finalizeClockForPosition(chess, nextClockState);
+  const nextMoveEntries = [
+    ...cloneMoveEntries(session.moveEntries),
+    createMoveEntry(result, beforeFen, chess.fen(), session.moveEntries.length + 1, finalizedClockState),
+  ];
   return buildSessionFromChess(
     chess,
     session.settings,
     [],
     session.playerColor,
-    finalizeClockForPosition(chess, nextClockState),
+    finalizedClockState,
     session.analysisSummary,
+    nextMoveEntries,
   );
 }
 
@@ -169,8 +197,9 @@ export function undoTurn(session: GameSession): GameSession {
     session.settings,
     [removed, ...session.redoStack],
     session.playerColor,
-    createInitialClockState(session.settings.clockConfig, chess.turn()),
+    getClockStateAtPly(remaining, session.settings.clockConfig, chess.turn()),
     session.analysisSummary,
+    remaining,
   );
 }
 
@@ -188,8 +217,9 @@ export function redoTurn(session: GameSession): GameSession {
     session.settings,
     rest,
     session.playerColor,
-    createInitialClockState(session.settings.clockConfig, chess.turn()),
+    getClockStateAtPly(combined, session.settings.clockConfig, chess.turn()),
     session.analysisSummary,
+    combined,
   );
 }
 
@@ -210,6 +240,7 @@ export function withClockState(session: GameSession, clockState: ClockState): Ga
     session.playerColor,
     finalizeClockForPosition(chess, clockState),
     session.analysisSummary,
+    session.moveEntries,
   );
 }
 
@@ -223,8 +254,9 @@ export function deriveSessionAtPly(session: GameSession, ply: number): GameSessi
     session.settings,
     [],
     session.playerColor,
-    createInitialClockState(session.settings.clockConfig, chess.turn()),
+    getClockStateAtPly(moveEntries, session.settings.clockConfig, chess.turn()),
     session.analysisSummary,
+    moveEntries,
   );
 }
 
@@ -281,8 +313,9 @@ function buildSessionFromChess(
   playerColor: Color,
   clockState: ClockState,
   analysisSummary?: GameSession["analysisSummary"],
+  moveEntriesOverride?: SerializableMove[],
 ): GameSession {
-  const moveEntries = serializeHistory(chess);
+  const moveEntries = moveEntriesOverride ? cloneMoveEntries(moveEntriesOverride) : serializeHistory(chess);
   const snapshot = buildSnapshot(chess, settings, moveEntries, redoStack, playerColor, clockState);
 
   return {
@@ -461,6 +494,7 @@ function markTimeout(session: GameSession, clockState: ClockState): GameSession 
     session.playerColor,
     clockState,
     session.analysisSummary,
+    session.moveEntries,
   );
 }
 
@@ -475,6 +509,7 @@ function normalizeSettings(settings: AppSettings): AppSettings {
     clockConfig: normalizeClockConfig(settings.clockConfig),
     animationMode: settings.animationMode ?? "normal",
     defaultViewMode: settings.defaultViewMode ?? "3d",
+    cameraSensitivity: normalizeCameraSensitivity(settings.cameraSensitivity),
   };
 }
 
@@ -488,4 +523,70 @@ function normalizeUci(uci: string): { from: Square; to: Square; promotion?: stri
 
 export function moveToUci(move: Move): string {
   return `${move.from}${move.to}${move.promotion ?? ""}`;
+}
+
+function cloneClockState(clockState: ClockState): ClockState {
+  return { ...clockState };
+}
+
+function cloneMoveEntry(move: SerializableMove): SerializableMove {
+  return {
+    ...move,
+    clockStateAfter: move.clockStateAfter ? cloneClockState(move.clockStateAfter) : undefined,
+  };
+}
+
+function cloneMoveEntries(moveEntries: SerializableMove[]): SerializableMove[] {
+  return moveEntries.map(cloneMoveEntry);
+}
+
+function createMoveEntry(
+  move: Move,
+  beforeFen: string,
+  afterFen: string,
+  ply: number,
+  clockStateAfter: ClockState,
+): SerializableMove {
+  return {
+    ply,
+    color: move.color,
+    piece: move.piece,
+    san: move.san,
+    uci: moveToUci(move),
+    from: move.from,
+    to: move.to,
+    beforeFen,
+    afterFen,
+    captured: move.captured,
+    promotion: move.promotion,
+    clockStateAfter: cloneClockState(clockStateAfter),
+  };
+}
+
+function getClockStateAtPly(
+  moveEntries: SerializableMove[],
+  clockConfig: ClockConfig,
+  activeColor: Color,
+): ClockState {
+  const lastClockState = moveEntries.at(-1)?.clockStateAfter;
+  if (!lastClockState) {
+    return createInitialClockState(clockConfig, activeColor);
+  }
+
+  if (lastClockState.expiredColor || !lastClockState.activeColor) {
+    return cloneClockState(lastClockState);
+  }
+
+  return resumeClock({
+    ...cloneClockState(lastClockState),
+    running: false,
+    lastTickAt: null,
+  });
+}
+
+function normalizeCameraSensitivity(settings?: Partial<AppSettings["cameraSensitivity"]>): AppSettings["cameraSensitivity"] {
+  return {
+    rotate: Math.min(1.75, Math.max(0.5, settings?.rotate ?? 1)),
+    zoom: Math.min(1.75, Math.max(0.5, settings?.zoom ?? 1)),
+  };
 }

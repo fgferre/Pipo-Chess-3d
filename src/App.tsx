@@ -7,10 +7,11 @@ import {
   useState,
   type ChangeEvent,
   type CSSProperties,
+  type Ref,
   type ReactNode,
 } from "react";
 import type { Color, PieceSymbol } from "chess.js";
-import { ChessScene } from "./components/ChessScene";
+import { ChessScene, type ViewportPadding } from "./components/ChessScene";
 import { MoveList } from "./components/MoveList";
 import { AnalysisSummaryView } from "./components/AnalysisSummaryView";
 import { clockPresets } from "./data/clocks";
@@ -27,18 +28,12 @@ import type {
   NewGameColorChoice,
   PositionEvaluation,
 } from "./types/game";
-import { clamp, formatClock, formatRelativeTimestamp } from "./utils/format";
-import { readTextFile } from "./utils/files";
+import { clamp, formatAbsoluteTimestamp, formatClock, formatRelativeTimestamp } from "./utils/format";
+import { exportTextContent, readTextFile, type ExportTextResult } from "./utils/files";
 
 type TranslationKey = Parameters<typeof t>[1];
 
-const NEW_GAME_CLOCK_PRESETS = [
-  clockPresets[0],
-  clockPresets[3],
-  clockPresets[4],
-  clockPresets[5],
-  clockPresets[6],
-];
+const NEW_GAME_CLOCK_PRESETS = clockPresets;
 const CAMERA_PRESETS: Array<{ id: CameraPreset; icon: string; labelKey: TranslationKey }> = [
   { id: "classic", icon: "◢", labelKey: "camera.classic" },
   { id: "side", icon: "▤", labelKey: "camera.side" },
@@ -46,6 +41,13 @@ const CAMERA_PRESETS: Array<{ id: CameraPreset; icon: string; labelKey: Translat
   { id: "2d", icon: "□", labelKey: "camera.2d" },
 ];
 const PROMOTION_CHOICES = ["q", "r", "b", "n"] as const;
+const EMPTY_VIEWPORT_PADDING: ViewportPadding = {
+  top: 0,
+  right: 0,
+  bottom: 0,
+  left: 0,
+};
+const EDGE_CAPTURE_TOLERANCE_PX = 32;
 
 function App() {
   const {
@@ -77,6 +79,7 @@ function App() {
     toggleOrientation,
     setAnimationMode,
     setDefaultViewMode,
+    setCameraSensitivity,
     setCameraPreset,
     setAnalysisCursor,
     setAnalysisAutoplay,
@@ -85,7 +88,6 @@ function App() {
     loadManualSave,
     restoreAutosave,
     deleteManualSave,
-    exportPgn,
     importPgnText,
     runAnalysis,
     persistCurrentAutosave,
@@ -104,8 +106,16 @@ function App() {
   const [selectedClockKey, setSelectedClockKey] = useState("custom");
   const [customMinutes, setCustomMinutes] = useState("10");
   const [customIncrement, setCustomIncrement] = useState("0");
+  const [transientNotice, setTransientNotice] = useState<string | null>(null);
   const [transientError, setTransientError] = useState<string | null>(null);
+  const [promotionAnchor, setPromotionAnchor] = useState<{ x: number; y: number } | null>(null);
+  const [viewportPadding, setViewportPadding] = useState<ViewportPadding>(EMPTY_VIEWPORT_PADDING);
+  const appShellRef = useRef<HTMLDivElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const topBarRef = useRef<HTMLElement | null>(null);
+  const bottomBarRef = useRef<HTMLElement | null>(null);
+  const historyPanelRef = useRef<HTMLElement | null>(null);
+  const evalBarRef = useRef<HTMLElement | null>(null);
   const lastFinishedGameRef = useRef<string | null>(null);
   const deferredMoves = useDeferredValue(session.snapshot.moveList);
   const locale = session.settings.locale;
@@ -117,6 +127,16 @@ function App() {
   const currentPly = analysisCursor ?? session.moveEntries.length;
   const currentEvaluation = getEvaluationForPly(session.analysisSummary?.evaluationsByPly, currentPly);
   const autosaveTimestamp = autosave ? formatRelativeTimestamp(autosave.updatedAt, locale) : null;
+  const gameLastMove = session.moveEntries.at(-1);
+  const analysisLastMove = analysisMode ? boardSession.moveEntries.at(-1) ?? null : null;
+  const boardLastMove =
+    analysisMode
+      ? analysisLastMove
+        ? { from: analysisLastMove.from, to: analysisLastMove.to }
+        : null
+      : gameLastMove && gameLastMove.color !== session.playerColor
+        ? { from: gameLastMove.from, to: gameLastMove.to }
+        : null;
   const topColor: Color = session.settings.orientation === "white" ? "b" : "w";
   const bottomColor: Color = session.settings.orientation === "white" ? "w" : "b";
   const isHintDisabled =
@@ -182,6 +202,21 @@ function App() {
   }, [clearRestoreNotice, restoreNotice]);
 
   useEffect(() => {
+    if (!transientNotice && !transientError) {
+      return;
+    }
+
+    const timeout = window.setTimeout(() => {
+      setTransientNotice(null);
+      setTransientError(null);
+    }, 3200);
+
+    return () => {
+      window.clearTimeout(timeout);
+    };
+  }, [transientError, transientNotice]);
+
+  useEffect(() => {
     if (!analysisAutoplay || analysisCursor === null) {
       return;
     }
@@ -207,6 +242,34 @@ function App() {
     setAnalysisAutoplay,
     setAnalysisCursor,
   ]);
+
+  useEffect(() => {
+    const shell = appShellRef.current;
+    if (!shell) {
+      return;
+    }
+
+    const updateViewportPadding = () => {
+      const nextPadding = measureViewportPadding(shell, [
+        topBarRef.current,
+        bottomBarRef.current,
+        historyOpen ? historyPanelRef.current : null,
+        analysisMode ? evalBarRef.current : null,
+      ]);
+      setViewportPadding((current) =>
+        areViewportPaddingsEqual(current, nextPadding) ? current : nextPadding,
+      );
+    };
+
+    updateViewportPadding();
+    const frame = window.requestAnimationFrame(updateViewportPadding);
+    window.addEventListener("resize", updateViewportPadding);
+
+    return () => {
+      window.cancelAnimationFrame(frame);
+      window.removeEventListener("resize", updateViewportPadding);
+    };
+  }, [analysisMode, bottomBarExpanded, historyOpen, topBarExpanded]);
 
   const persistOnPause = useEffectEvent(() => {
     void persistCurrentAutosave();
@@ -249,7 +312,9 @@ function App() {
       startTransition(() => {
         setHistoryOpen(true);
         setMenuOpen(false);
+        setBottomBarExpanded(true);
       });
+      setTransientNotice(null);
       setTransientError(null);
     } catch {
       setTransientError(t(locale, "save.importError"));
@@ -257,6 +322,56 @@ function App() {
       event.target.value = "";
     }
   };
+
+  const handleExportSession = useEffectEvent(async (targetSession: GameSession, label?: string) => {
+    try {
+      const result = await exportTextContent(
+        buildPgnFilename(label),
+        targetSession.snapshot.pgn,
+        label ? `${label} PGN` : "Pipo Chess 3D PGN",
+      );
+      if (result === "cancelled") {
+        return;
+      }
+
+      setTransientError(null);
+      setTransientNotice(t(locale, getExportToastKey(result)));
+    } catch {
+      setTransientNotice(null);
+      setTransientError(t(locale, "save.exportError"));
+    }
+  });
+
+  const openSavedAnalysis = useEffectEvent(
+    async (targetSession: GameSession, loader: () => Promise<void>) => {
+      await loader();
+      startTransition(() => {
+        setResultModalOpen(false);
+        setMenuOpen(false);
+        setCameraPickerOpen(false);
+        setHistoryOpen(true);
+        setBottomBarExpanded(true);
+      });
+      setAnalysisAutoplay(false);
+      setAnalysisCursor(targetSession.moveEntries.length);
+      if (!targetSession.analysisSummary && targetSession.moveEntries.length > 0) {
+        void runAnalysis();
+      }
+    },
+  );
+
+  const resumeSavedSession = useEffectEvent(async (loader: () => Promise<void>) => {
+    await loader();
+    startTransition(() => {
+      setResultModalOpen(false);
+      setMenuOpen(false);
+      setCameraPickerOpen(false);
+      setHistoryOpen(false);
+      setBottomBarExpanded(true);
+    });
+    setAnalysisAutoplay(false);
+    setAnalysisCursor(null);
+  });
 
   const openNewGameSheet = () => {
     startTransition(() => {
@@ -302,6 +417,8 @@ function App() {
   const enterAnalysis = async () => {
     startTransition(() => {
       setResultModalOpen(false);
+      setMenuOpen(false);
+      setCameraPickerOpen(false);
       setHistoryOpen(true);
       setBottomBarExpanded(true);
     });
@@ -316,7 +433,7 @@ function App() {
   const bottomSide = buildClockSide(bottomColor, session, locale);
 
   return (
-    <div className="app-shell" style={style}>
+    <div className="app-shell" ref={appShellRef} style={style}>
       <div className="canvas-backdrop" />
       <div className="backdrop-orb backdrop-orb--primary" />
       <div className="backdrop-orb backdrop-orb--secondary" />
@@ -326,6 +443,10 @@ function App() {
         <ChessScene
           session={boardSession}
           theme={theme}
+          interactionEnabled={!analysisMode}
+          viewportPadding={viewportPadding}
+          lastMove={boardLastMove}
+          promotionAnchorSquare={pendingPromotion?.anchorSquare ?? null}
           selectedSquare={analysisMode ? null : selectedSquare}
           legalTargets={analysisMode ? [] : legalTargets}
           hintMove={analysisMode ? null : hintMove}
@@ -335,9 +456,11 @@ function App() {
             }
             void selectSquare(square);
           }}
+          onPromotionAnchorChange={setPromotionAnchor}
         />
-        {analysisMode ? <div className="board-input-lock" aria-hidden="true" /> : null}
-        {analysisMode ? <EvalBar evaluation={currentEvaluation} locale={locale} /> : null}
+        {analysisMode ? (
+          <EvalBar elementRef={evalBarRef} evaluation={currentEvaluation} locale={locale} />
+        ) : null}
       </main>
 
       <button
@@ -353,7 +476,7 @@ function App() {
         <span>{analysisMode ? t(locale, "history.analysis") : "PGN"}</span>
       </button>
 
-      <section className={`top-bar ${topBarExpanded ? "is-expanded" : ""}`}>
+      <section className={`top-bar ${topBarExpanded ? "is-expanded" : ""}`} ref={topBarRef}>
         <button
           className="bar-toggle"
           type="button"
@@ -377,7 +500,7 @@ function App() {
         <ClockPill side={bottomSide} collapsed={!topBarExpanded} />
       </section>
 
-      <section className={`bottom-bar ${bottomBarExpanded ? "is-expanded" : ""}`}>
+      <section className={`bottom-bar ${bottomBarExpanded ? "is-expanded" : ""}`} ref={bottomBarRef}>
         <button
           className="bar-toggle"
           type="button"
@@ -476,33 +599,33 @@ function App() {
               loading={enginePhase === "thinking" && session.snapshot.sideToMove === session.playerColor}
               onClick={() => void requestHint()}
             />
-            <ActionButton
-              icon="🎥"
-              label={t(locale, "hud.camera")}
-              compact={!bottomBarExpanded}
-              onClick={() => {
-                startTransition(() => {
-                  setCameraPickerOpen((value) => !value);
-                  setMenuOpen(false);
-                });
-              }}
-            />
-            <ActionButton
-              icon="☰"
-              label={t(locale, "hud.menu")}
-              compact={!bottomBarExpanded}
-              onClick={() => {
-                startTransition(() => {
-                  setMenuOpen((value) => !value);
-                  setCameraPickerOpen(false);
-                });
-              }}
-            />
           </>
         )}
+        <ActionButton
+          icon="🎥"
+          label={t(locale, "hud.camera")}
+          compact={!bottomBarExpanded}
+          onClick={() => {
+            startTransition(() => {
+              setCameraPickerOpen((value) => !value);
+              setMenuOpen(false);
+            });
+          }}
+        />
+        <ActionButton
+          icon="☰"
+          label={t(locale, "hud.menu")}
+          compact={!bottomBarExpanded}
+          onClick={() => {
+            startTransition(() => {
+              setMenuOpen((value) => !value);
+              setCameraPickerOpen(false);
+            });
+          }}
+        />
       </section>
 
-      <aside className={`history-panel ${historyOpen ? "is-open" : ""}`}>
+      <aside className={`history-panel ${historyOpen ? "is-open" : ""}`} ref={historyPanelRef}>
         <div className="panel-header">
           <div>
             <p className="panel-kicker">{t(locale, "history.kicker")}</p>
@@ -519,6 +642,7 @@ function App() {
         </div>
         <MoveList
           moves={deferredMoves}
+          locale={locale}
           selectedPly={analysisMode ? currentPly : null}
           onSelectPly={(ply) => {
             setAnalysisAutoplay(false);
@@ -648,6 +772,48 @@ function App() {
             </div>
 
             <div className="settings-group">
+              <h3>{t(locale, "menu.cameraSensitivity")}</h3>
+              <div className="slider-block">
+                <label>
+                  <span>{t(locale, "menu.cameraSensitivity.rotate")}</span>
+                  <strong>{formatSensitivityValue(session.settings.cameraSensitivity.rotate)}</strong>
+                  <input
+                    aria-label={t(locale, "menu.cameraSensitivity.rotate")}
+                    max={1.75}
+                    min={0.5}
+                    step={0.25}
+                    type="range"
+                    value={session.settings.cameraSensitivity.rotate}
+                    onChange={(event) => {
+                      void setCameraSensitivity({
+                        ...session.settings.cameraSensitivity,
+                        rotate: Number(event.target.value),
+                      });
+                    }}
+                  />
+                </label>
+                <label>
+                  <span>{t(locale, "menu.cameraSensitivity.zoom")}</span>
+                  <strong>{formatSensitivityValue(session.settings.cameraSensitivity.zoom)}</strong>
+                  <input
+                    aria-label={t(locale, "menu.cameraSensitivity.zoom")}
+                    max={1.75}
+                    min={0.5}
+                    step={0.25}
+                    type="range"
+                    value={session.settings.cameraSensitivity.zoom}
+                    onChange={(event) => {
+                      void setCameraSensitivity({
+                        ...session.settings.cameraSensitivity,
+                        zoom: Number(event.target.value),
+                      });
+                    }}
+                  />
+                </label>
+              </div>
+            </div>
+
+            <div className="settings-group">
               <h3>{t(locale, "panel.themes.title")}</h3>
               <div className="theme-grid">
                 {themes.map((option) => (
@@ -694,13 +860,28 @@ function App() {
         <MenuSection title={t(locale, "section.library.title")}>
           {autosave ? (
             <article className="save-row">
-              <div>
+              <div className="save-row__copy">
                 <strong>{t(locale, "panel.saveLoad.autosave")}</strong>
                 <span>{autosaveTimestamp}</span>
+                <small>{buildSaveSummary(autosave.session, autosave.updatedAt, locale)}</small>
               </div>
               <div className="save-row__actions">
-                <button className="ghost-button" type="button" onClick={() => void restoreAutosave()}>
-                  {t(locale, "save.restore")}
+                {canResumeSession(autosave.session) ? (
+                  <button className="ghost-button" type="button" onClick={() => void resumeSavedSession(restoreAutosave)}>
+                    {t(locale, "save.continue")}
+                  </button>
+                ) : null}
+                {canAnalyzeSession(autosave.session) ? (
+                  <button
+                    className="ghost-button"
+                    type="button"
+                    onClick={() => void openSavedAnalysis(autosave.session, restoreAutosave)}
+                  >
+                    {t(locale, "analysis.open")}
+                  </button>
+                ) : null}
+                <button className="ghost-button" type="button" onClick={() => void handleExportSession(autosave.session, "autosave")}>
+                  {t(locale, "hud.export")}
                 </button>
               </div>
             </article>
@@ -713,7 +894,7 @@ function App() {
             <button className="ghost-button" type="button" onClick={() => fileInputRef.current?.click()}>
               {t(locale, "hud.import")}
             </button>
-            <button className="ghost-button" type="button" onClick={exportPgn}>
+            <button className="ghost-button" type="button" onClick={() => void handleExportSession(session)}>
               {t(locale, "hud.export")}
             </button>
           </div>
@@ -721,13 +902,36 @@ function App() {
           <div className="save-list">
             {saveSlots.map((save) => (
               <article className="save-row" key={save.id}>
-                <div>
+                <div className="save-row__copy">
                   <strong>{save.label}</strong>
                   <span>{formatRelativeTimestamp(save.updatedAt, locale)}</span>
+                  <small>{buildSaveSummary(save.session, save.updatedAt, locale)}</small>
                 </div>
                 <div className="save-row__actions">
-                  <button className="ghost-button" type="button" onClick={() => void loadManualSave(save.id!)}>
-                    {t(locale, "panel.saveLoad.load")}
+                  {canResumeSession(save.session) ? (
+                    <button
+                      className="ghost-button"
+                      type="button"
+                      onClick={() => void resumeSavedSession(() => loadManualSave(save.id!))}
+                    >
+                      {t(locale, "save.continue")}
+                    </button>
+                  ) : null}
+                  {canAnalyzeSession(save.session) ? (
+                    <button
+                      className="ghost-button"
+                      type="button"
+                      onClick={() => void openSavedAnalysis(save.session, () => loadManualSave(save.id!))}
+                    >
+                      {t(locale, "analysis.open")}
+                    </button>
+                  ) : null}
+                  <button
+                    className="ghost-button"
+                    type="button"
+                    onClick={() => void handleExportSession(save.session, save.label)}
+                  >
+                    {t(locale, "hud.export")}
                   </button>
                   <button className="ghost-button" type="button" onClick={() => void deleteManualSave(save.id!)}>
                     {t(locale, "panel.saveLoad.delete")}
@@ -831,7 +1035,11 @@ function App() {
       </section>
 
       {pendingPromotion ? (
-        <section className="promotion-popup" aria-label={t(locale, "promotion.title")}>
+        <section
+          className="promotion-popup"
+          aria-label={t(locale, "promotion.title")}
+          style={getPromotionPopupStyle(promotionAnchor)}
+        >
           <p className="panel-kicker">{t(locale, "promotion.title")}</p>
           <div className="promotion-options">
             {PROMOTION_CHOICES.map((piece) => (
@@ -899,9 +1107,9 @@ function App() {
         </>
       ) : null}
 
-      {restoreNotice || transientError || lastError ? (
-        <div className={`toast ${!restoreNotice && (transientError || lastError) ? "is-error" : ""}`}>
-          {restoreNotice ?? transientError ?? lastError}
+      {restoreNotice || transientNotice || transientError || lastError ? (
+        <div className={`toast ${!restoreNotice && !transientNotice && (transientError || lastError) ? "is-error" : ""}`}>
+          {restoreNotice ?? transientNotice ?? transientError ?? lastError}
         </div>
       ) : null}
 
@@ -999,16 +1207,18 @@ function ChipButton({
 function EvalBar({
   evaluation,
   locale,
+  elementRef,
 }: {
   evaluation: PositionEvaluation | null;
   locale: GameSession["settings"]["locale"];
+  elementRef?: Ref<HTMLElement>;
 }) {
   const score = normalizeEvaluationScore(evaluation);
   const percentage = clamp(50 + score / 18, 6, 94);
   const label = formatEvaluationLabel(evaluation, locale);
 
   return (
-    <aside className="eval-bar" aria-label={t(locale, "analysis.eval")}>
+    <aside className="eval-bar" ref={elementRef} aria-label={t(locale, "analysis.eval")}>
       <div className="eval-bar__track">
         <div className="eval-bar__fill" style={{ height: `${percentage}%` }} />
       </div>
@@ -1030,6 +1240,56 @@ function buildClockSide(color: Color, session: GameSession, locale: GameSession[
       session.snapshot.clockState.activeColor === color &&
       session.snapshot.status === "active",
   };
+}
+
+function measureViewportPadding(
+  shell: HTMLElement,
+  edgeElements: Array<HTMLElement | null>,
+): ViewportPadding {
+  const shellRect = shell.getBoundingClientRect();
+  const padding = { ...EMPTY_VIEWPORT_PADDING };
+
+  edgeElements.forEach((element) => {
+    if (!element) {
+      return;
+    }
+
+    const rect = element.getBoundingClientRect();
+    if (rect.width <= 0 || rect.height <= 0) {
+      return;
+    }
+
+    if (
+      rect.right <= shellRect.left ||
+      rect.left >= shellRect.right ||
+      rect.bottom <= shellRect.top ||
+      rect.top >= shellRect.bottom
+    ) {
+      return;
+    }
+
+    if (rect.top - shellRect.top <= EDGE_CAPTURE_TOLERANCE_PX) {
+      padding.top = Math.max(padding.top, rect.bottom - shellRect.top);
+    }
+
+    if (shellRect.bottom - rect.bottom <= EDGE_CAPTURE_TOLERANCE_PX) {
+      padding.bottom = Math.max(padding.bottom, shellRect.bottom - rect.top);
+    }
+
+    if (rect.left - shellRect.left <= EDGE_CAPTURE_TOLERANCE_PX) {
+      padding.left = Math.max(padding.left, rect.right - shellRect.left);
+    }
+
+    if (shellRect.right - rect.right <= EDGE_CAPTURE_TOLERANCE_PX) {
+      padding.right = Math.max(padding.right, shellRect.right - rect.left);
+    }
+  });
+
+  return padding;
+}
+
+function areViewportPaddingsEqual(a: ViewportPadding, b: ViewportPadding): boolean {
+  return a.top === b.top && a.right === b.right && a.bottom === b.bottom && a.left === b.left;
 }
 
 function syncNewGameForm(
@@ -1055,7 +1315,7 @@ function resolveSheetClockConfig(
   locale: GameSession["settings"]["locale"],
 ): ClockConfig {
   if (selectedClockKey !== "custom") {
-    return NEW_GAME_CLOCK_PRESETS.find((preset) => getClockKey(preset) === selectedClockKey) ?? NEW_GAME_CLOCK_PRESETS[1];
+    return NEW_GAME_CLOCK_PRESETS.find((preset) => getClockKey(preset) === selectedClockKey) ?? NEW_GAME_CLOCK_PRESETS[2];
   }
 
   const minutes = Math.max(0, Number(customMinutes) || 0);
@@ -1063,7 +1323,7 @@ function resolveSheetClockConfig(
 
   return {
     enabled: minutes > 0,
-    label: minutes > 0 ? `${minutes} + ${increment}` : t(locale, "clock.none"),
+    label: minutes > 0 ? (increment > 0 ? `${minutes} + ${increment}` : `${minutes} min`) : t(locale, "clock.none"),
     baseMs: minutes * 60_000,
     incrementMs: increment * 1_000,
   };
@@ -1075,6 +1335,62 @@ function getClockKey(clockConfig: ClockConfig): string {
 
 function formatClockPresetLabel(clockConfig: ClockConfig, locale: GameSession["settings"]["locale"]): string {
   return clockConfig.enabled ? clockConfig.label : t(locale, "clock.none");
+}
+
+function canResumeSession(session: GameSession): boolean {
+  return session.snapshot.status === "idle" || session.snapshot.status === "active";
+}
+
+function canAnalyzeSession(session: GameSession): boolean {
+  return session.moveEntries.length > 0;
+}
+
+function buildSaveSummary(
+  session: GameSession,
+  updatedAt: string,
+  locale: GameSession["settings"]["locale"],
+): string {
+  return [
+    formatAbsoluteTimestamp(updatedAt, locale),
+    t(locale, getResultStatusKey(session.snapshot.status)),
+    getDifficultyPreset(session.settings.difficultyId).label,
+    `${session.moveEntries.length} ${t(locale, "hud.moves").toLowerCase()}`,
+  ].join(" · ");
+}
+
+function formatSensitivityValue(value: number): string {
+  return `${value.toFixed(2)}x`;
+}
+
+function buildPgnFilename(label?: string): string {
+  const timestamp = new Date().toISOString().slice(0, 19).replaceAll(":", "-");
+  const slug = label?.trim().toLowerCase().replace(/[^a-z0-9]+/gi, "-").replace(/^-+|-+$/g, "");
+  return slug ? `pipo-chess-${slug}-${timestamp}.pgn` : `pipo-chess-${timestamp}.pgn`;
+}
+
+function getExportToastKey(result: ExportTextResult): TranslationKey {
+  switch (result) {
+    case "shared":
+      return "save.exportShared";
+    case "copied":
+      return "save.exportCopied";
+    default:
+      return "save.exportDownloaded";
+  }
+}
+
+function getPromotionPopupStyle(anchor: { x: number; y: number } | null): CSSProperties | undefined {
+  if (!anchor) {
+    return undefined;
+  }
+
+  const viewportWidth = typeof window === "undefined" ? 0 : window.innerWidth;
+  const clampedX = clamp(anchor.x, 88, Math.max(88, viewportWidth - 88));
+  return {
+    left: `${clampedX}px`,
+    top: `${Math.max(24, anchor.y)}px`,
+    transform: "translate(-50%, calc(-100% - 0.75rem))",
+  };
 }
 
 function getStatusKey(

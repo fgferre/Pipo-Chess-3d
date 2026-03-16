@@ -1,5 +1,16 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { Color, FogExp2, Mesh, Raycaster, Texture, TOUCH, Vector3 } from "three";
+import {
+  Color,
+  DirectionalLight,
+  FogExp2,
+  HemisphereLight,
+  Mesh,
+  Raycaster,
+  SpotLight,
+  Texture,
+  TOUCH,
+  Vector3,
+} from "three";
 import { applyEngineMove, applyPlayerMove, createNewSession, redoTurn, undoTurn } from "../game/gameService";
 import { themes } from "../data/themes";
 
@@ -423,6 +434,7 @@ describe("ChessStage", () => {
       controls: {
         enableRotate: boolean;
       };
+      pieceBySquare: Map<string, { userData: { sprite?: unknown } }>;
       updateCameraTransition: (now: number) => void;
     };
 
@@ -456,6 +468,13 @@ describe("ChessStage", () => {
     expect(stageInternals.pieceRepresentationOpacity).toBe(0);
     expect(stageInternals.spriteRepresentationOpacity).toBe(1);
     expect(stageInternals.controls.enableRotate).toBe(false);
+    const pawn = stageInternals.pieceBySquare.get("a2")!;
+    const pawnMesh = findFirstMesh(pawn as unknown as { traverse: (callback: (child: unknown) => void) => void });
+    expect(pawnMesh.visible).toBe(false);
+    expect(pawnMesh.material).toMatchObject({ depthWrite: false });
+    expect(pawn.userData.sprite).toMatchObject({
+      material: expect.objectContaining({ depthTest: false }),
+    });
 
     stage.setAnimationMode("off");
     stage.setCameraPreset("classic");
@@ -465,6 +484,23 @@ describe("ChessStage", () => {
     expect(stageInternals.pieceRepresentationOpacity).toBe(1);
     expect(stageInternals.spriteRepresentationOpacity).toBe(0);
     expect(stageInternals.controls.enableRotate).toBe(true);
+  });
+
+  it("offsets the camera projection to keep presets centered in the visible viewport", async () => {
+    const { stage } = createStage();
+    const stageInternals = stage as unknown as {
+      camera: {
+        projectionMatrix: {
+          elements: number[];
+        };
+      };
+    };
+
+    await stage.init();
+    stage.setViewportPadding({ top: 72, right: 180, bottom: 96, left: 36 });
+
+    expect(stageInternals.camera.projectionMatrix.elements[8]).toBeCloseTo((180 - 36) / 600, 5);
+    expect(stageInternals.camera.projectionMatrix.elements[9]).toBeCloseTo((72 - 96) / 600, 5);
   });
 
   it("prepares placeholder sprite textures for all 12 piece variants", async () => {
@@ -743,6 +779,27 @@ describe("ChessStage", () => {
     expect(stageInternals.scene.fog?.color.getHexString()).toBe(
       new Color(themes[2].canvasFog).getHexString(),
     );
+  });
+
+  it("uses a restrained lighting rig so piece volume and shadows remain readable", async () => {
+    const { stage } = createStage();
+    const stageInternals = stage as unknown as {
+      renderer: { toneMappingExposure: number };
+      scene: { children: unknown[] };
+    };
+
+    await stage.init();
+
+    const hemi = stageInternals.scene.children.find((child) => child instanceof HemisphereLight);
+    const spots = stageInternals.scene.children.filter((child) => child instanceof SpotLight);
+    const rim = stageInternals.scene.children.find((child) => child instanceof DirectionalLight);
+
+    expect(stageInternals.renderer.toneMappingExposure).toBeCloseTo(1.0);
+    expect(hemi).toMatchObject({ intensity: 0.22 });
+    expect(spots).toHaveLength(2);
+    expect(spots[0]).toMatchObject({ castShadow: true, intensity: 460 });
+    expect(spots[1]).toMatchObject({ castShadow: false, intensity: 70 });
+    expect(rim).toMatchObject({ intensity: 1.1 });
   });
 
   it("releases stage-owned resources during final disposal", async () => {

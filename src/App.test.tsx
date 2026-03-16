@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 
 const subscribers = new Set<(event: unknown) => void>();
 
@@ -24,7 +24,7 @@ const engineClientMock = {
   analyzeGame: vi.fn().mockResolvedValue({
     result: "active",
     centipawnLossBySide: { w: 22, b: 13 },
-    tagsByPly: { 1: "best" },
+    tagsByPly: { 1: "good" },
     evaluationsByPly: {
       0: { scoreCp: 12, scoreMate: null },
       1: { scoreCp: 24, scoreMate: null },
@@ -35,7 +35,7 @@ const engineClientMock = {
         ply: 1,
         moveUci: "e2e4",
         san: "e4",
-        tag: "best",
+        tag: "good",
         swingCp: 12,
         bestLine: ["e2e4", "e7e5"],
         scoreCp: 24,
@@ -190,6 +190,65 @@ describe("App integration", () => {
     await waitFor(() => {
       expect(engineClientMock.analyzeGame).toHaveBeenCalledTimes(1);
       expect(screen.getByText("Momentos críticos")).toBeInTheDocument();
+    });
+  });
+
+  it("closes the history panel from its close button", async () => {
+    const { default: App } = await import("./App");
+    const { container } = render(<App />);
+
+    await screen.findByText("Pipo Chess 3D");
+    const historyPanel = container.querySelector(".history-panel");
+    expect(historyPanel).not.toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: "Abrir histórico" }));
+    expect(historyPanel).toHaveClass("is-open");
+
+    fireEvent.click(within(historyPanel as HTMLElement).getByRole("button", { name: "Fechar" }));
+    expect(historyPanel).not.toHaveClass("is-open");
+  });
+
+  it("keeps camera presets accessible after entering analysis mode", async () => {
+    const { default: App } = await import("./App");
+    render(<App />);
+
+    await screen.findByText("Pipo Chess 3D");
+    fireEvent.click(screen.getByText("Square e2"));
+    fireEvent.click(screen.getByText("Square e4"));
+
+    await waitFor(() => {
+      expect(engineClientMock.search).toHaveBeenCalledTimes(1);
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Menu" }));
+    fireEvent.click(screen.getByRole("button", { name: "Analisar partida" }));
+
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: "Câmera" })).toBeInTheDocument();
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Câmera" }));
+
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: /Modo 2D/i })).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: /Clássica/i })).toBeInTheDocument();
+    });
+  });
+
+  it("starts background analysis after importing a PGN file", async () => {
+    const { default: App } = await import("./App");
+    const { container } = render(<App />);
+
+    await screen.findByText("Pipo Chess 3D");
+    const fileInput = container.querySelector('input[type="file"]') as HTMLInputElement;
+    const pgn = new File(["1. e4 e5 2. Nf3 Nc6"], "imported.pgn", {
+      type: "application/x-chess-pgn",
+    });
+
+    fireEvent.change(fileInput, { target: { files: [pgn] } });
+
+    await waitFor(() => {
+      expect(engineClientMock.analyzeGame).toHaveBeenCalledTimes(1);
     });
   });
 });

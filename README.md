@@ -27,13 +27,13 @@ npm run test:e2e
 ## Escopo atual
 
 - Partida contra IA local com níveis configuráveis
-- HUD mobile-first com painéis de dificuldade, relógio, tema, idioma, save/load e análise
+- HUD mobile-first com câmera, tema, idioma, save/load e análise
 - Importação e exportação de PGN
 - Persistência local de preferências, autosave e saves manuais
 - Cena 3D low-poly com tabuleiro e peças
+- Presets de câmera com modo 2D top-down
 - PWA instalável e com foco em uso offline
 
 ## Observações
 
 - O projeto já possui base funcional para o MVP.
-- Existe uma investigação em andamento no fluxo de restauração offline após importação de PGN em um cenário E2E específico.

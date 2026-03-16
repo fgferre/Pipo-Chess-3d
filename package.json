@@ -6,7 +6,6 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
-    "generate:assets": "node tools/generate-chess-assets.mjs",
     "copy:engine": "node tools/copy-stockfish-assets.mjs",
     "lint": "eslint .",
     "preview": "vite preview",
@@ -25,6 +24,7 @@
   },
   "devDependencies": {
     "@eslint/js": "^9.39.4",
+    "@playwright/cli": "^0.1.1",
     "@playwright/test": "^1.58.2",
     "@testing-library/jest-dom": "^6.9.1",
     "@testing-library/react": "^16.3.2",

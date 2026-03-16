@@ -142,12 +142,6 @@ button {
   z-index: 1;
 }
 
-.board-input-lock {
-  position: absolute;
-  inset: 0;
-  z-index: 2;
-}
-
 .history-tab {
   right: 0;
   top: 50%;
@@ -162,6 +156,11 @@ button {
   text-transform: uppercase;
   letter-spacing: 0.18em;
   font-size: 0.72rem;
+}
+
+.history-tab.is-open {
+  opacity: 0;
+  pointer-events: none;
 }
 
 .top-bar,
@@ -333,11 +332,13 @@ button {
   border-radius: 1.4rem;
   transform: translateX(calc(100% + 1.2rem));
   opacity: 0;
+  pointer-events: none;
 }
 
 .history-panel.is-open {
   transform: translateX(0);
   opacity: 1;
+  pointer-events: auto;
 }
 
 .panel-header,
@@ -365,6 +366,7 @@ button {
   border-radius: 1.6rem;
   transform: translate(-50%, 110%);
   opacity: 0;
+  pointer-events: none;
 }
 
 .menu-drawer {
@@ -381,6 +383,7 @@ button {
 .camera-picker.is-open {
   transform: translate(-50%, 0);
   opacity: 1;
+  pointer-events: auto;
 }
 
 .menu-section,
@@ -468,10 +471,12 @@ button {
   padding: 1rem 1rem calc(1rem + env(safe-area-inset-bottom));
   border-radius: 1.6rem 1.6rem 0 0;
   transform: translateY(110%);
+  pointer-events: none;
 }
 
 .new-game-sheet.is-open {
   transform: translateY(0);
+  pointer-events: auto;
 }
 
 .sheet-handle {
@@ -485,6 +490,15 @@ button {
 .custom-clock input,
 .slider-block input {
   width: 100%;
+}
+
+.slider-block label {
+  display: grid;
+  gap: 0.35rem;
+}
+
+.slider-block label strong {
+  width: fit-content;
 }
 
 .custom-clock input {
@@ -538,6 +552,11 @@ button {
   font-size: 0.62rem;
 }
 
+.move-tag--brilliant {
+  color: #6bc5ff;
+}
+
+.move-tag--good,
 .move-tag--best {
   color: #84f3a8;
 }
@@ -574,6 +593,11 @@ button {
   font-size: 0.72rem;
 }
 
+.tag--brilliant {
+  background: rgba(74, 186, 255, 0.2);
+}
+
+.tag--good,
 .tag--best {
   background: rgba(97, 255, 164, 0.18);
 }
@@ -597,6 +621,7 @@ button {
   width: min(18rem, calc(100vw - 2rem));
   padding: 0.9rem;
   border-radius: 1.25rem;
+  pointer-events: auto;
 }
 
 .promotion-options {
@@ -665,11 +690,22 @@ button {
 
 .save-row {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   justify-content: space-between;
   gap: 0.9rem;
   padding: 0.9rem;
   border-radius: 1rem;
+}
+
+.save-row__copy {
+  display: grid;
+  gap: 0.18rem;
+  min-width: 0;
+}
+
+.save-row__copy small {
+  color: var(--text-muted);
+  line-height: 1.35;
 }
 
 .save-row__actions {
@@ -723,12 +759,17 @@ button {
     right: 1.2rem;
     bottom: 1.2rem;
     width: 20rem;
+    transform: translateX(calc(100% + 1rem));
+    opacity: 0;
+  }
+
+  .history-panel.is-open {
     transform: translateX(0);
     opacity: 1;
   }
 
   .history-tab {
-    display: none;
+    right: 0.45rem;
   }
 
   .menu-drawer {

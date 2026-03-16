@@ -8,7 +8,8 @@ export default defineConfig({
     trace: "on-first-retry",
   },
   webServer: {
-    command: "npm run build && npm run preview -- --host 127.0.0.1 --port 4173",
+    command:
+      'cmd /c ".\\node_modules\\.bin\\tsc.cmd -b && .\\node_modules\\.bin\\vite.cmd build && .\\node_modules\\.bin\\vite.cmd preview --host 127.0.0.1 --port 4173"',
     url: "http://127.0.0.1:4173",
     reuseExistingServer: false,
     timeout: 120_000,

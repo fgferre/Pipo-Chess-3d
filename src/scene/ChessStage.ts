@@ -77,10 +77,24 @@ const FRAME_WOOD_MATERIAL = {
   clearcoatRoughness: 0.3,
 } as const;
 
+const EMPTY_VIEWPORT_PADDING = {
+  top: 0,
+  right: 0,
+  bottom: 0,
+  left: 0,
+} as const;
+
 interface HighlightState {
   selectedSquare: Square | null;
   legalTargets: Square[];
   hintMove: { from: Square; to: Square } | null;
+}
+
+export interface ViewportPadding {
+  top: number;
+  right: number;
+  bottom: number;
+  left: number;
 }
 
 interface RenderState extends HighlightState {
@@ -364,6 +378,23 @@ export function resolveSquareFromBoardPoint(localX: number, localZ: number): Squ
 
 function clampUnit(value: number): number {
   return Math.min(1, Math.max(0, value));
+}
+
+function clampRange(value: number, min: number, max: number): number {
+  return Math.min(max, Math.max(min, value));
+}
+
+function normalizeViewportPadding(padding: ViewportPadding): ViewportPadding {
+  return {
+    top: Math.max(0, padding.top),
+    right: Math.max(0, padding.right),
+    bottom: Math.max(0, padding.bottom),
+    left: Math.max(0, padding.left),
+  };
+}
+
+function areViewportPaddingsEqual(a: ViewportPadding, b: ViewportPadding): boolean {
+  return a.top === b.top && a.right === b.right && a.bottom === b.bottom && a.left === b.left;
 }
 
 function mixHex(startHex: string, endHex: string, amount: number): string {
@@ -1183,6 +1214,8 @@ export class ChessStage {
   private viewMode: ViewMode = "3d";
   private cameraPreset: CameraPreset = "classic";
   private activeCameraTransition: ActiveCameraTransition | null = null;
+  private viewportPadding: ViewportPadding = EMPTY_VIEWPORT_PADDING;
+  private cameraSensitivity: AppSettings["cameraSensitivity"] = { rotate: 1, zoom: 1 };
   private pieceRepresentationOpacity = 1;
   private spriteRepresentationOpacity = 0;
   private activePointerId: number | null = null;
@@ -1228,7 +1261,7 @@ export class ChessStage {
     this.renderer.shadowMap.enabled = true;
     this.renderer.shadowMap.type = PCFSoftShadowMap;
     this.renderer.toneMapping = ACESFilmicToneMapping;
-    this.renderer.toneMappingExposure = 1.1;
+    this.renderer.toneMappingExposure = 1.0;
     this.renderer.domElement.className = "board-canvas";
     this.container.appendChild(this.renderer.domElement);
 
@@ -1246,6 +1279,7 @@ export class ChessStage {
     this.controls.maxDistance = 50;
     this.controls.touches.ONE = null;
     this.controls.touches.TWO = TOUCH.DOLLY_ROTATE;
+    this.applyCameraSensitivity(this.cameraSensitivity);
 
     this.scene.fog = new FogExp2(0x050508, 0.012);
 
@@ -1368,6 +1402,7 @@ export class ChessStage {
       map: this.getOrCreateSpriteTexture(piece.color, piece.type),
       transparent: true,
       opacity: 0,
+      depthTest: false,
       depthWrite: false,
     });
     const sprite = new Sprite(material);
@@ -1561,6 +1596,50 @@ export class ChessStage {
     this.controls.enabled = false;
   }
 
+  setViewportPadding(padding: ViewportPadding): void {
+    const nextPadding = normalizeViewportPadding(padding);
+    if (areViewportPaddingsEqual(this.viewportPadding, nextPadding)) {
+      return;
+    }
+
+    this.viewportPadding = nextPadding;
+    this.updateCameraProjectionOffset();
+  }
+
+  setCameraSensitivity(sensitivity: AppSettings["cameraSensitivity"]): void {
+    if (
+      this.cameraSensitivity.rotate === sensitivity.rotate &&
+      this.cameraSensitivity.zoom === sensitivity.zoom
+    ) {
+      return;
+    }
+
+    this.cameraSensitivity = { ...sensitivity };
+    this.applyCameraSensitivity(this.cameraSensitivity);
+  }
+
+  projectSquareToViewport(square: Square, yOffset = 0): { x: number; y: number } | null {
+    const width = this.container.clientWidth;
+    const height = this.container.clientHeight;
+    if (width === 0 || height === 0) {
+      return null;
+    }
+
+    this.root.updateMatrixWorld(true);
+    this.camera.updateMatrixWorld(true);
+    const point = this.root.localToWorld(this.createSquareVector(square, yOffset));
+    point.project(this.camera);
+
+    if (!Number.isFinite(point.x) || !Number.isFinite(point.y)) {
+      return null;
+    }
+
+    return {
+      x: ((point.x + 1) / 2) * width,
+      y: ((1 - point.y) / 2) * height,
+    };
+  }
+
   setAnimationMode(mode: "normal" | "reduced" | "off"): void {
     this.animationMode = mode;
     if (mode === "off") {
@@ -1569,6 +1648,11 @@ export class ChessStage {
       }
       this.syncPiecesToCurrentState();
     }
+  }
+
+  private applyCameraSensitivity(sensitivity: AppSettings["cameraSensitivity"]): void {
+    this.controls.rotateSpeed = sensitivity.rotate;
+    this.controls.zoomSpeed = sensitivity.zoom;
   }
 
   dispose(): void {
@@ -1648,43 +1732,66 @@ export class ChessStage {
       return;
     }
 
-    this.camera.aspect = width / height;
-    this.camera.updateProjectionMatrix();
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, width < 900 ? 1.5 : 2));
     this.renderer.setSize(width, height, false);
+    this.updateCameraProjectionOffset();
+  }
+
+  private updateCameraProjectionOffset(): void {
+    const width = this.container.clientWidth;
+    const height = this.container.clientHeight;
+    if (width === 0 || height === 0) {
+      return;
+    }
+
+    this.camera.aspect = width / height;
+    this.camera.updateProjectionMatrix();
+
+    const projection = this.camera.projectionMatrix.elements;
+    projection[8] = clampRange(
+      (this.viewportPadding.right - this.viewportPadding.left) / width,
+      -0.85,
+      0.85,
+    );
+    projection[9] = clampRange(
+      (this.viewportPadding.top - this.viewportPadding.bottom) / height,
+      -0.85,
+      0.85,
+    );
+    this.camera.projectionMatrixInverse.copy(this.camera.projectionMatrix).invert();
   }
 
   private setupLighting(): void {
-    const hemi = new HemisphereLight(0xfff5e6, 0x050510, 0.3);
+    const hemi = new HemisphereLight(0xfff3e2, 0x02030a, 0.22);
     this.scene.add(hemi);
 
-    const keyLight = new SpotLight(0xffeedd, 500);
-    keyLight.position.set(35, 18, 10);
-    keyLight.angle = Math.PI / 4;
-    keyLight.penumbra = 0.5;
-    keyLight.decay = 1.3;
+    const keyLight = new SpotLight(0xffebd2, 460);
+    keyLight.position.set(30, 24, 14);
+    keyLight.angle = Math.PI / 5;
+    keyLight.penumbra = 0.4;
+    keyLight.decay = 1.2;
     keyLight.distance = 150;
     keyLight.castShadow = true;
     keyLight.shadow.mapSize.width = 2048;
     keyLight.shadow.mapSize.height = 2048;
     keyLight.shadow.camera.near = 10;
     keyLight.shadow.camera.far = 80;
-    keyLight.shadow.bias = -0.0005;
-    keyLight.shadow.normalBias = 0.005;
-    keyLight.shadow.radius = 1.2;
+    keyLight.shadow.bias = -0.00035;
+    keyLight.shadow.normalBias = 0.004;
+    keyLight.shadow.radius = 1.4;
     this.scene.add(keyLight);
 
-    const fillLight = new SpotLight(0xaaccff, 150);
-    fillLight.position.set(-20, 25, -20);
-    fillLight.angle = Math.PI / 3;
-    fillLight.penumbra = 0.8;
-    fillLight.decay = 1.2;
+    const fillLight = new SpotLight(0x9cc3ff, 70);
+    fillLight.position.set(-18, 18, -24);
+    fillLight.angle = Math.PI / 2.8;
+    fillLight.penumbra = 0.9;
+    fillLight.decay = 1.1;
     fillLight.distance = 150;
     fillLight.castShadow = false;
     this.scene.add(fillLight);
 
-    const rimLight = new DirectionalLight(0xffffff, 0.8);
-    rimLight.position.set(0, 10, -30);
+    const rimLight = new DirectionalLight(0xdfe8ff, 1.1);
+    rimLight.position.set(-12, 16, -26);
     this.scene.add(rimLight);
   }
 
@@ -2290,6 +2397,8 @@ export class ChessStage {
       ) {
         activeMaterial.transparent = resolvedOpacity < 0.999;
         activeMaterial.opacity = resolvedOpacity;
+        activeMaterial.depthWrite = resolvedOpacity >= 0.999;
+        child.visible = resolvedOpacity > 0.01;
         if (child.material !== activeMaterial) {
           child.material = activeMaterial;
         }

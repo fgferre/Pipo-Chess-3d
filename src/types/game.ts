@@ -22,6 +22,11 @@ export interface ClockState {
   expiredColor: Color | null;
 }
 
+export interface CameraSensitivity {
+  rotate: number;
+  zoom: number;
+}
+
 export interface DifficultyPreset {
   id: string;
   label: string;
@@ -64,6 +69,7 @@ export interface SerializableMove {
   afterFen: string;
   captured?: PieceSymbol;
   promotion?: PieceSymbol;
+  clockStateAfter?: ClockState;
 }
 
 export interface GameSnapshot {
@@ -100,7 +106,7 @@ export interface CriticalMoment {
   scoreMate: number | null;
 }
 
-export type MoveTag = "best" | "inaccuracy" | "mistake" | "blunder";
+export type MoveTag = "brilliant" | "good" | "inaccuracy" | "mistake" | "blunder";
 
 export interface PositionEvaluation {
   scoreCp: number | null;
@@ -124,6 +130,7 @@ export interface AppSettings {
   clockConfig: ClockConfig;
   animationMode: 'normal' | 'reduced' | 'off';
   defaultViewMode: '3d' | '2d';
+  cameraSensitivity: CameraSensitivity;
 }
 
 export interface GameSession {
@@ -188,6 +195,7 @@ export interface EngineInfoSnapshot {
 export interface PendingPromotion {
   from: Square;
   to: Square;
+  anchorSquare: Square;
 }
 
 export interface AnalysisCursorState {

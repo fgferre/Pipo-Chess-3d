@@ -23,7 +23,13 @@ export function formatRelativeTimestamp(isoDate: string, locale: string): string
   return formatter.format(new Date(isoDate));
 }
 
+export function formatAbsoluteTimestamp(isoDate: string, locale: string): string {
+  return new Intl.DateTimeFormat(locale, {
+    dateStyle: "medium",
+    timeStyle: "short",
+  }).format(new Date(isoDate));
+}
+
 export function clamp(value: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, value));
 }
-

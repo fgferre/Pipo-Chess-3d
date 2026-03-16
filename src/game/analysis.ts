@@ -42,8 +42,8 @@ export function buildAnalysisSummary(
 
   if (evaluations.length > 0) {
     evaluationsByPly[0] = {
-      scoreCp: evaluations[0].before.scoreCp,
-      scoreMate: evaluations[0].before.mate,
+      scoreCp: toWhitePerspective(evaluations[0].before.scoreCp, evaluations[0].item.fenBefore),
+      scoreMate: toWhitePerspective(evaluations[0].before.mate, evaluations[0].item.fenBefore),
     };
   }
 
@@ -51,12 +51,19 @@ export function buildAnalysisSummary(
     const beforeScore = normalizeScore(evaluation.before);
     const afterScore = -normalizeScore(evaluation.after);
     const swingCp = Math.max(0, beforeScore - afterScore);
-    const tag = classifyMove(evaluation.item.playedMoveUci === evaluation.before.bestMove, swingCp);
+    const improvementCp = afterScore - beforeScore;
+    const tag = classifyMove({
+      isBestMove: evaluation.item.playedMoveUci === evaluation.before.bestMove,
+      swingCp,
+      improvementCp,
+      before: evaluation.before,
+      after: evaluation.after,
+    });
 
     tagsByPly[evaluation.item.ply] = tag;
     evaluationsByPly[evaluation.item.ply] = {
-      scoreCp: evaluation.after.scoreCp,
-      scoreMate: evaluation.after.mate,
+      scoreCp: toWhitePerspective(evaluation.after.scoreCp, evaluation.item.fenAfter),
+      scoreMate: toWhitePerspective(evaluation.after.mate, evaluation.item.fenAfter),
     };
     totals[evaluation.item.mover].loss += swingCp;
     totals[evaluation.item.mover].count += 1;
@@ -68,8 +75,8 @@ export function buildAnalysisSummary(
       tag,
       swingCp,
       bestLine: evaluation.before.pv,
-      scoreCp: evaluation.before.scoreCp,
-      scoreMate: evaluation.before.mate,
+      scoreCp: toWhitePerspective(evaluation.before.scoreCp, evaluation.item.fenBefore),
+      scoreMate: toWhitePerspective(evaluation.before.mate, evaluation.item.fenBefore),
     });
   }
 
@@ -112,9 +119,25 @@ export function buildAnalysisWorkloadFromPgn(pgn: string): AnalysisWorkItem[] {
   });
 }
 
-function classifyMove(isBestMove: boolean, swingCp: number): MoveTag {
+function classifyMove({
+  isBestMove,
+  swingCp,
+  improvementCp,
+  before,
+  after,
+}: {
+  isBestMove: boolean;
+  swingCp: number;
+  improvementCp: number;
+  before: EngineEvaluation;
+  after: EngineEvaluation;
+}): MoveTag {
+  if (isBestMove && (improvementCp >= 250 || improvesMateEvaluation(before, after))) {
+    return "brilliant";
+  }
+
   if (isBestMove || swingCp < 20) {
-    return "best";
+    return "good";
   }
 
   if (swingCp < 80) {
@@ -128,10 +151,33 @@ function classifyMove(isBestMove: boolean, swingCp: number): MoveTag {
   return "blunder";
 }
 
+function improvesMateEvaluation(before: EngineEvaluation, after: EngineEvaluation): boolean {
+  if (before.mate === null && after.mate === null) {
+    return false;
+  }
+
+  const beforeScore = normalizeScore(before);
+  const afterScore = -normalizeScore(after);
+  return afterScore > beforeScore;
+}
+
 function normalizeScore(evaluation: EngineEvaluation): number {
   if (evaluation.mate !== null) {
     return evaluation.mate > 0 ? 10_000 : -10_000;
   }
 
   return evaluation.scoreCp ?? 0;
+}
+
+function toWhitePerspective(score: number | null, fen: string): number | null {
+  if (score === null) {
+    return null;
+  }
+
+  return getSideToMove(fen) === "b" ? -score : score;
+}
+
+function getSideToMove(fen: string): "w" | "b" {
+  const sideToMove = fen.split(" ")[1];
+  return sideToMove === "b" ? "b" : "w";
 }

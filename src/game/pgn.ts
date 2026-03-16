@@ -27,6 +27,8 @@ export function applyPipoHeaders(
   chess.setHeader("PipoOrientation", settings.orientation);
   chess.setHeader("PipoAnimationMode", settings.animationMode);
   chess.setHeader("PipoDefaultViewMode", settings.defaultViewMode);
+  chess.setHeader("PipoCameraRotateSensitivity", String(settings.cameraSensitivity.rotate));
+  chess.setHeader("PipoCameraZoomSensitivity", String(settings.cameraSensitivity.zoom));
   chess.setHeader("PipoPlayerColor", playerColor);
   chess.setHeader("PipoClockEnabled", String(clock.enabled));
   chess.setHeader("PipoClockLabel", clock.label);
@@ -46,6 +48,8 @@ export function extractSettingsFromHeaders(
 ): { settings: AppSettings; playerColor: Color } {
   const baseMs = Number(headers.PipoClockBaseMs);
   const incrementMs = Number(headers.PipoClockIncrementMs);
+  const rotateSensitivity = Number(headers.PipoCameraRotateSensitivity);
+  const zoomSensitivity = Number(headers.PipoCameraZoomSensitivity);
   const enabled =
     headers.PipoClockEnabled === undefined
       ? fallback.clockConfig.enabled
@@ -70,6 +74,10 @@ export function extractSettingsFromHeaders(
           ? headers.PipoAnimationMode
           : fallback.animationMode,
       defaultViewMode: headers.PipoDefaultViewMode === "2d" ? "2d" : fallback.defaultViewMode,
+      cameraSensitivity: {
+        rotate: Number.isFinite(rotateSensitivity) ? rotateSensitivity : fallback.cameraSensitivity.rotate,
+        zoom: Number.isFinite(zoomSensitivity) ? zoomSensitivity : fallback.cameraSensitivity.zoom,
+      },
       clockConfig,
     },
     playerColor: headers.PipoPlayerColor === "b" ? "b" : "w",
