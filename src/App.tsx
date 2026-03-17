@@ -10,7 +10,10 @@ import {
   type Ref,
   type ReactNode,
 } from "react";
+import { AnimatePresence, motion } from "framer-motion";
 import type { Color, PieceSymbol } from "chess.js";
+import { soundService } from "./audio/soundService";
+import { haptics } from "./hooks/useHaptics";
 import { ChessScene, type ViewportPadding } from "./components/ChessScene";
 import { MoveList } from "./components/MoveList";
 import { AnalysisSummaryView } from "./components/AnalysisSummaryView";
@@ -106,6 +109,7 @@ function App() {
   const [selectedClockKey, setSelectedClockKey] = useState("custom");
   const [customMinutes, setCustomMinutes] = useState("10");
   const [customIncrement, setCustomIncrement] = useState("0");
+  const [isZenMode, setIsZenMode] = useState(false);
   const [transientNotice, setTransientNotice] = useState<string | null>(null);
   const [transientError, setTransientError] = useState<string | null>(null);
   const [promotionAnchor, setPromotionAnchor] = useState<{ x: number; y: number } | null>(null);
@@ -167,18 +171,15 @@ function App() {
       setCustomMinutes,
       setCustomIncrement,
     );
-  }, [
-    session.settings.clockConfig.baseMs,
-    session.settings.clockConfig.incrementMs,
-    session.settings.clockConfig.enabled,
-    session.settings.difficultyId,
-  ]);
+  }, [session.settings.clockConfig, session.settings.difficultyId]);
 
   useEffect(() => {
     if (isTerminalStatus(session.snapshot.status)) {
       if (lastFinishedGameRef.current !== session.snapshot.pgn) {
         setResultModalOpen(true);
         lastFinishedGameRef.current = session.snapshot.pgn;
+        soundService.play("game-over");
+        haptics.gameOver();
       }
       return;
     }
@@ -186,6 +187,40 @@ function App() {
     setResultModalOpen(false);
     lastFinishedGameRef.current = null;
   }, [session.snapshot.pgn, session.snapshot.status]);
+
+  const prevMoveLengthRef = useRef(0);
+  useEffect(() => {
+    const moveCount = session.moveEntries.length;
+    if (!booted || moveCount === 0 || moveCount <= prevMoveLengthRef.current) {
+      prevMoveLengthRef.current = moveCount;
+      return;
+    }
+    prevMoveLengthRef.current = moveCount;
+    const lastEntry = session.moveEntries[moveCount - 1];
+    if (!lastEntry) return;
+
+    const isCastle = lastEntry.san.startsWith("O-O");
+    const isCapture = lastEntry.captured !== undefined;
+
+    if (isCapture) {
+      soundService.play("piece-capture");
+      haptics.heavy();
+    } else if (isCastle) {
+      soundService.play("castle");
+      haptics.medium();
+    } else {
+      soundService.play("piece-move");
+      haptics.medium();
+    }
+
+    // Check or checkmate notification (after move sound settles)
+    if (lastEntry.san.includes("+") || lastEntry.san.includes("#")) {
+      window.setTimeout(() => {
+        soundService.play("check");
+        haptics.check();
+      }, 80);
+    }
+  }, [session.moveEntries, session.moveEntries.length, booted]);
 
   useEffect(() => {
     if (!restoreNotice) {
@@ -251,8 +286,8 @@ function App() {
 
     const updateViewportPadding = () => {
       const nextPadding = measureViewportPadding(shell, [
-        topBarRef.current,
-        bottomBarRef.current,
+        isZenMode ? null : topBarRef.current,
+        isZenMode ? null : bottomBarRef.current,
         historyOpen ? historyPanelRef.current : null,
         analysisMode ? evalBarRef.current : null,
       ]);
@@ -269,7 +304,7 @@ function App() {
       window.cancelAnimationFrame(frame);
       window.removeEventListener("resize", updateViewportPadding);
     };
-  }, [analysisMode, bottomBarExpanded, historyOpen, topBarExpanded]);
+  }, [analysisMode, bottomBarExpanded, historyOpen, isZenMode, topBarExpanded]);
 
   const persistOnPause = useEffectEvent(() => {
     void persistCurrentAutosave();
@@ -323,7 +358,7 @@ function App() {
     }
   };
 
-  const handleExportSession = useEffectEvent(async (targetSession: GameSession, label?: string) => {
+  const handleExportSession = async (targetSession: GameSession, label?: string) => {
     try {
       const result = await exportTextContent(
         buildPgnFilename(label),
@@ -340,27 +375,25 @@ function App() {
       setTransientNotice(null);
       setTransientError(t(locale, "save.exportError"));
     }
-  });
+  };
 
-  const openSavedAnalysis = useEffectEvent(
-    async (targetSession: GameSession, loader: () => Promise<void>) => {
-      await loader();
-      startTransition(() => {
-        setResultModalOpen(false);
-        setMenuOpen(false);
-        setCameraPickerOpen(false);
-        setHistoryOpen(true);
-        setBottomBarExpanded(true);
-      });
-      setAnalysisAutoplay(false);
-      setAnalysisCursor(targetSession.moveEntries.length);
-      if (!targetSession.analysisSummary && targetSession.moveEntries.length > 0) {
-        void runAnalysis();
-      }
-    },
-  );
+  const openSavedAnalysis = async (targetSession: GameSession, loader: () => Promise<void>) => {
+    await loader();
+    startTransition(() => {
+      setResultModalOpen(false);
+      setMenuOpen(false);
+      setCameraPickerOpen(false);
+      setHistoryOpen(true);
+      setBottomBarExpanded(true);
+    });
+    setAnalysisAutoplay(false);
+    setAnalysisCursor(targetSession.moveEntries.length);
+    if (!targetSession.analysisSummary && targetSession.moveEntries.length > 0) {
+      void runAnalysis();
+    }
+  };
 
-  const resumeSavedSession = useEffectEvent(async (loader: () => Promise<void>) => {
+  const resumeSavedSession = async (loader: () => Promise<void>) => {
     await loader();
     startTransition(() => {
       setResultModalOpen(false);
@@ -371,7 +404,7 @@ function App() {
     });
     setAnalysisAutoplay(false);
     setAnalysisCursor(null);
-  });
+  };
 
   const openNewGameSheet = () => {
     startTransition(() => {
@@ -454,6 +487,8 @@ function App() {
             if (analysisMode) {
               return;
             }
+            haptics.light();
+            soundService.play("piece-select");
             void selectSquare(square);
           }}
           onPromotionAnchorChange={setPromotionAnchor}
@@ -463,10 +498,13 @@ function App() {
         ) : null}
       </main>
 
-      <button
+      <motion.button
         className={`history-tab ${historyOpen ? "is-open" : ""}`}
         type="button"
         aria-label={t(locale, "history.toggle")}
+        animate={{ opacity: isZenMode ? 0 : 1 }}
+        transition={{ duration: 0.3, ease: "easeInOut" }}
+        style={{ pointerEvents: isZenMode ? "none" : undefined }}
         onClick={() => {
           startTransition(() => {
             setHistoryOpen((value) => !value);
@@ -474,9 +512,15 @@ function App() {
         }}
       >
         <span>{analysisMode ? t(locale, "history.analysis") : "PGN"}</span>
-      </button>
+      </motion.button>
 
-      <section className={`top-bar ${topBarExpanded ? "is-expanded" : ""}`} ref={topBarRef}>
+      <motion.section
+        className={`top-bar ${topBarExpanded ? "is-expanded" : ""}`}
+        ref={topBarRef}
+        animate={{ opacity: isZenMode ? 0 : 1 }}
+        transition={{ duration: 0.3, ease: "easeInOut" }}
+        style={{ pointerEvents: isZenMode ? "none" : undefined }}
+      >
         <button
           className="bar-toggle"
           type="button"
@@ -498,9 +542,15 @@ function App() {
           </div>
         </div>
         <ClockPill side={bottomSide} collapsed={!topBarExpanded} />
-      </section>
+      </motion.section>
 
-      <section className={`bottom-bar ${bottomBarExpanded ? "is-expanded" : ""}`} ref={bottomBarRef}>
+      <motion.section
+        className={`bottom-bar ${bottomBarExpanded ? "is-expanded" : ""}`}
+        ref={bottomBarRef}
+        animate={{ opacity: isZenMode ? 0 : 1 }}
+        transition={{ duration: 0.3, ease: "easeInOut" }}
+        style={{ pointerEvents: isZenMode ? "none" : undefined }}
+      >
         <button
           className="bar-toggle"
           type="button"
@@ -602,6 +652,12 @@ function App() {
           </>
         )}
         <ActionButton
+          icon={isZenMode ? "◎" : "○"}
+          label="Zen"
+          compact={!bottomBarExpanded}
+          onClick={() => setIsZenMode((v) => !v)}
+        />
+        <ActionButton
           icon="🎥"
           label={t(locale, "hud.camera")}
           compact={!bottomBarExpanded}
@@ -623,34 +679,46 @@ function App() {
             });
           }}
         />
-      </section>
+      </motion.section>
 
-      <aside className={`history-panel ${historyOpen ? "is-open" : ""}`} ref={historyPanelRef}>
-        <div className="panel-header">
-          <div>
-            <p className="panel-kicker">{t(locale, "history.kicker")}</p>
-            <h2>{t(locale, "hud.moves")}</h2>
-          </div>
-          <button
-            className="ghost-icon-button"
-            type="button"
-            aria-label={t(locale, "panel.close")}
-            onClick={() => setHistoryOpen(false)}
+      <AnimatePresence>
+        {historyOpen && (
+          <motion.aside
+            className="history-panel"
+            ref={historyPanelRef}
+            initial={{ x: "110%", opacity: 0 }}
+            animate={{ x: 0, opacity: 1 }}
+            exit={{ x: "110%", opacity: 0 }}
+            transition={{ type: "spring", stiffness: 280, damping: 32 }}
+            style={{ pointerEvents: "auto" }}
           >
-            ×
-          </button>
-        </div>
-        <MoveList
-          moves={deferredMoves}
-          locale={locale}
-          selectedPly={analysisMode ? currentPly : null}
-          onSelectPly={(ply) => {
-            setAnalysisAutoplay(false);
-            setAnalysisCursor(ply);
-          }}
-          tagsByPly={session.analysisSummary?.tagsByPly}
-        />
-      </aside>
+            <div className="panel-header">
+              <div>
+                <p className="panel-kicker">{t(locale, "history.kicker")}</p>
+                <h2>{t(locale, "hud.moves")}</h2>
+              </div>
+              <button
+                className="ghost-icon-button"
+                type="button"
+                aria-label={t(locale, "panel.close")}
+                onClick={() => setHistoryOpen(false)}
+              >
+                ×
+              </button>
+            </div>
+            <MoveList
+              moves={deferredMoves}
+              locale={locale}
+              selectedPly={analysisMode ? currentPly : null}
+              onSelectPly={(ply) => {
+                setAnalysisAutoplay(false);
+                setAnalysisCursor(ply);
+              }}
+              tagsByPly={session.analysisSummary?.tagsByPly}
+            />
+          </motion.aside>
+        )}
+      </AnimatePresence>
 
       {cameraPickerOpen ? (
         <div
@@ -660,30 +728,41 @@ function App() {
         />
       ) : null}
 
-      <section className={`camera-picker ${cameraPickerOpen ? "is-open" : ""}`}>
-        <div className="panel-header">
-          <div>
-            <p className="panel-kicker">{t(locale, "camera.kicker")}</p>
-            <h2>{t(locale, "hud.camera")}</h2>
-          </div>
-        </div>
-        <div className="camera-grid">
-          {CAMERA_PRESETS.map((preset) => (
-            <button
-              className={`camera-card ${cameraPreset === preset.id ? "is-selected" : ""}`}
-              key={preset.id}
-              type="button"
-              onClick={() => {
-                setCameraPreset(preset.id);
-                setCameraPickerOpen(false);
-              }}
-            >
-              <span>{preset.icon}</span>
-              <strong>{t(locale, preset.labelKey)}</strong>
-            </button>
-          ))}
-        </div>
-      </section>
+      <AnimatePresence>
+        {cameraPickerOpen && (
+          <motion.section
+            className="camera-picker"
+            initial={{ y: "110%", opacity: 0 }}
+            animate={{ y: 0, opacity: 1 }}
+            exit={{ y: "110%", opacity: 0 }}
+            transition={{ type: "spring", stiffness: 320, damping: 36 }}
+            style={{ pointerEvents: "auto" }}
+          >
+            <div className="panel-header">
+              <div>
+                <p className="panel-kicker">{t(locale, "camera.kicker")}</p>
+                <h2>{t(locale, "hud.camera")}</h2>
+              </div>
+            </div>
+            <div className="camera-grid">
+              {CAMERA_PRESETS.map((preset) => (
+                <button
+                  className={`camera-card ${cameraPreset === preset.id ? "is-selected" : ""}`}
+                  key={preset.id}
+                  type="button"
+                  onClick={() => {
+                    setCameraPreset(preset.id);
+                    setCameraPickerOpen(false);
+                  }}
+                >
+                  <span>{preset.icon}</span>
+                  <strong>{t(locale, preset.labelKey)}</strong>
+                </button>
+              ))}
+            </div>
+          </motion.section>
+        )}
+      </AnimatePresence>
 
       {menuOpen ? (
         <div
@@ -693,7 +772,16 @@ function App() {
         />
       ) : null}
 
-      <aside className={`menu-drawer ${menuOpen ? "is-open" : ""}`}>
+      <AnimatePresence>
+        {menuOpen && (
+      <motion.aside
+        className="menu-drawer"
+        initial={{ y: "110%", opacity: 0 }}
+        animate={{ y: 0, opacity: 1 }}
+        exit={{ y: "110%", opacity: 0 }}
+        transition={{ type: "spring", stiffness: 300, damping: 36 }}
+        style={{ pointerEvents: "auto" }}
+      >
         <div className="panel-header">
           <div>
             <p className="panel-kicker">{t(locale, "menu.kicker")}</p>
@@ -722,7 +810,7 @@ function App() {
             <button
               className="ghost-button"
               type="button"
-              disabled={session.moveEntries.length === 0}
+              disabled={session.moveEntries.length === 0 || !!analysisProgress}
               onClick={() => void runAnalysis()}
             >
               {t(locale, "panel.analysis.run")}
@@ -868,7 +956,7 @@ function App() {
               <div className="save-row__actions">
                 {canResumeSession(autosave.session) ? (
                   <button className="ghost-button" type="button" onClick={() => void resumeSavedSession(restoreAutosave)}>
-                    {t(locale, "save.continue")}
+                    {t(locale, "save.restore")}
                   </button>
                 ) : null}
                 {canAnalyzeSession(autosave.session) ? (
@@ -942,7 +1030,9 @@ function App() {
             {saveSlots.length === 0 ? <p className="muted-copy">{t(locale, "panel.saveLoad.empty")}</p> : null}
           </div>
         </MenuSection>
-      </aside>
+      </motion.aside>
+        )}
+      </AnimatePresence>
 
       {newGameOpen ? (
         <div
@@ -952,87 +1042,89 @@ function App() {
         />
       ) : null}
 
-      <section className={`new-game-sheet ${newGameOpen ? "is-open" : ""}`}>
-        <div className="sheet-handle" />
-        <div className="panel-header panel-header--sheet">
-          <div>
-            <p className="panel-kicker">{t(locale, "newGame.kicker")}</p>
-            <h2>{t(locale, "panel.newGame.title")}</h2>
+      {newGameOpen ? (
+        <section className="new-game-sheet is-open" role="dialog" aria-modal="true" aria-label={t(locale, "panel.newGame.title")}>
+          <div className="sheet-handle" />
+          <div className="panel-header panel-header--sheet">
+            <div>
+              <p className="panel-kicker">{t(locale, "newGame.kicker")}</p>
+              <h2>{t(locale, "panel.newGame.title")}</h2>
+            </div>
           </div>
-        </div>
 
-        <div className="settings-group">
-          <h3>{t(locale, "newGame.color")}</h3>
-          <div className="chip-row chip-row--three">
-            {(["white", "random", "black"] as const).map((colorChoice) => (
-              <ChipButton
-                key={colorChoice}
-                active={newGameColor === colorChoice}
-                onClick={() => setNewGameColor(colorChoice)}
-              >
-                {t(locale, `newGame.color.${colorChoice}`)}
-              </ChipButton>
-            ))}
-          </div>
-        </div>
-
-        <div className="settings-group">
-          <h3>{t(locale, "newGame.level")}</h3>
-          <div className="slider-block">
-            <strong>{getDifficultyPreset(newGameDifficultyId).label}</strong>
-            <input
-              aria-label={t(locale, "newGame.level")}
-              max={difficultyPresets.length - 1}
-              min={0}
-              type="range"
-              value={selectedDifficultyIndex}
-              onChange={(event) => {
-                const index = Number(event.target.value);
-                setNewGameDifficultyId(difficultyPresets[index]?.id ?? difficultyPresets[0].id);
-              }}
-            />
-            <div className="slider-labels">
-              {difficultyPresets.map((preset) => (
-                <span key={preset.id}>{preset.label}</span>
+          <div className="settings-group">
+            <h3>{t(locale, "newGame.color")}</h3>
+            <div className="chip-row chip-row--three">
+              {(["white", "random", "black"] as const).map((colorChoice) => (
+                <ChipButton
+                  key={colorChoice}
+                  active={newGameColor === colorChoice}
+                  onClick={() => setNewGameColor(colorChoice)}
+                >
+                  {t(locale, `newGame.color.${colorChoice}`)}
+                </ChipButton>
               ))}
             </div>
           </div>
-        </div>
 
-        <div className="settings-group">
-          <h3>{t(locale, "panel.clock.title")}</h3>
-          <div className="chip-row chip-row--wrap">
-            {NEW_GAME_CLOCK_PRESETS.map((preset) => (
-              <ChipButton
-                key={getClockKey(preset)}
-                active={selectedClockKey === getClockKey(preset)}
-                onClick={() => setSelectedClockKey(getClockKey(preset))}
-              >
-                {formatClockPresetLabel(preset, locale)}
-              </ChipButton>
-            ))}
-            <ChipButton active={selectedClockKey === "custom"} onClick={() => setSelectedClockKey("custom")}>
-              {t(locale, "panel.clock.custom")}
-            </ChipButton>
-          </div>
-          {selectedClockKey === "custom" ? (
-            <div className="custom-clock">
-              <label>
-                {t(locale, "panel.clock.minutes")}
-                <input value={customMinutes} onChange={(event) => setCustomMinutes(event.target.value)} />
-              </label>
-              <label>
-                {t(locale, "panel.clock.increment")}
-                <input value={customIncrement} onChange={(event) => setCustomIncrement(event.target.value)} />
-              </label>
+          <div className="settings-group">
+            <h3>{t(locale, "newGame.level")}</h3>
+            <div className="slider-block">
+              <strong>{getDifficultyPreset(newGameDifficultyId).label}</strong>
+              <input
+                aria-label={t(locale, "newGame.level")}
+                max={difficultyPresets.length - 1}
+                min={0}
+                type="range"
+                value={selectedDifficultyIndex}
+                onChange={(event) => {
+                  const index = Number(event.target.value);
+                  setNewGameDifficultyId(difficultyPresets[index]?.id ?? difficultyPresets[0].id);
+                }}
+              />
+              <div className="slider-labels">
+                {difficultyPresets.map((preset) => (
+                  <span key={preset.id}>{preset.label}</span>
+                ))}
+              </div>
             </div>
-          ) : null}
-        </div>
+          </div>
 
-        <button className="primary-button primary-button--full" type="button" onClick={() => void applyNewGame()}>
-          {t(locale, "panel.newGame.confirm")}
-        </button>
-      </section>
+          <div className="settings-group">
+            <h3>{t(locale, "panel.clock.title")}</h3>
+            <div className="chip-row chip-row--wrap">
+              {NEW_GAME_CLOCK_PRESETS.map((preset) => (
+                <ChipButton
+                  key={getClockKey(preset)}
+                  active={selectedClockKey === getClockKey(preset)}
+                  onClick={() => setSelectedClockKey(getClockKey(preset))}
+                >
+                  {formatClockPresetLabel(preset, locale)}
+                </ChipButton>
+              ))}
+              <ChipButton active={selectedClockKey === "custom"} onClick={() => setSelectedClockKey("custom")}>
+                {t(locale, "panel.clock.custom")}
+              </ChipButton>
+            </div>
+            {selectedClockKey === "custom" ? (
+              <div className="custom-clock">
+                <label>
+                  {t(locale, "panel.clock.minutes")}
+                  <input value={customMinutes} onChange={(event) => setCustomMinutes(event.target.value)} />
+                </label>
+                <label>
+                  {t(locale, "panel.clock.increment")}
+                  <input value={customIncrement} onChange={(event) => setCustomIncrement(event.target.value)} />
+                </label>
+              </div>
+            ) : null}
+          </div>
+
+          <button className="primary-button primary-button--full" type="button" onClick={() => void applyNewGame()}>
+            {t(locale, "panel.newGame.confirm")}
+          </button>
+        </section>
+      ) : null}
 
       {pendingPromotion ? (
         <section
@@ -1078,34 +1170,49 @@ function App() {
         </>
       ) : null}
 
-      {resultModalOpen ? (
-        <>
-          <div className="overlay-scrim overlay-scrim--strong" aria-hidden="true" />
-          <section className="result-modal">
-            <p className="panel-kicker">{t(locale, "result.kicker")}</p>
-            <h2>{t(locale, getFriendlyResultKey(session))}</h2>
-            <p className="muted-copy">{t(locale, getResultStatusKey(session.snapshot.status))}</p>
-            <div className="inline-actions">
-              <button className="primary-button" type="button" onClick={() => void enterAnalysis()}>
-                {t(locale, "analysis.open")}
-              </button>
-              <button className="ghost-button" type="button" onClick={openNewGameSheet}>
-                {t(locale, "hud.newGame")}
-              </button>
-              <button
-                className="ghost-button"
-                type="button"
-                onClick={() => {
-                  setResultModalOpen(false);
-                  setMenuOpen(true);
-                }}
-              >
-                {t(locale, "hud.menu")}
-              </button>
-            </div>
-          </section>
-        </>
-      ) : null}
+      <AnimatePresence>
+        {resultModalOpen && (
+          <>
+            <motion.div
+              className="overlay-scrim overlay-scrim--strong"
+              aria-hidden="true"
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              transition={{ duration: 0.22 }}
+            />
+            <motion.section
+              className="result-modal"
+              initial={{ scale: 0.88, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.92, opacity: 0 }}
+              transition={{ type: "spring", stiffness: 400, damping: 30 }}
+            >
+              <p className="panel-kicker">{t(locale, "result.kicker")}</p>
+              <h2>{t(locale, getFriendlyResultKey(session))}</h2>
+              <p className="muted-copy">{t(locale, getResultStatusKey(session.snapshot.status))}</p>
+              <div className="inline-actions">
+                <button className="primary-button" type="button" onClick={() => void enterAnalysis()}>
+                  {t(locale, "analysis.open")}
+                </button>
+                <button className="ghost-button" type="button" onClick={openNewGameSheet}>
+                  {t(locale, "hud.newGame")}
+                </button>
+                <button
+                  className="ghost-button"
+                  type="button"
+                  onClick={() => {
+                    setResultModalOpen(false);
+                    setMenuOpen(true);
+                  }}
+                >
+                  {t(locale, "hud.menu")}
+                </button>
+              </div>
+            </motion.section>
+          </>
+        )}
+      </AnimatePresence>
 
       {restoreNotice || transientNotice || transientError || lastError ? (
         <div className={`toast ${!restoreNotice && !transientNotice && (transientError || lastError) ? "is-error" : ""}`}>
@@ -1220,7 +1327,11 @@ function EvalBar({
   return (
     <aside className="eval-bar" ref={elementRef} aria-label={t(locale, "analysis.eval")}>
       <div className="eval-bar__track">
-        <div className="eval-bar__fill" style={{ height: `${percentage}%` }} />
+        <motion.div
+          className="eval-bar__fill"
+          animate={{ height: `${percentage}%` }}
+          transition={{ type: "spring", stiffness: 60, damping: 18 }}
+        />
       </div>
       <strong>{label}</strong>
     </aside>

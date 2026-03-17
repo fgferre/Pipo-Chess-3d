@@ -60,6 +60,16 @@ vi.mock("three", async () => {
   };
 });
 
+vi.mock("./PostProcessingPipeline.js", () => ({
+  PostProcessingPipeline: class {
+    setBloomStrength = vi.fn();
+    getBloomStrength = vi.fn(() => 0.35);
+    setSize = vi.fn();
+    render = vi.fn();
+    dispose = vi.fn();
+  },
+}));
+
 vi.mock("three/examples/jsm/controls/OrbitControls.js", () => ({
   OrbitControls: class {
     enabled = true;
@@ -792,12 +802,12 @@ describe("ChessStage", () => {
     const hemi = stageInternals.scene.children.find((child) => child instanceof HemisphereLight);
     const spots = stageInternals.scene.children.filter((child) => child instanceof SpotLight);
 
-    expect(stageInternals.renderer.toneMappingExposure).toBeCloseTo(0.8);
-    expect(hemi).toMatchObject({ intensity: 0.46 });
+    expect(stageInternals.renderer.toneMappingExposure).toBeCloseTo(1.1);
+    expect(hemi).toMatchObject({ intensity: 0.35 });
     expect(spots).toHaveLength(3);
-    expect(spots[0]).toMatchObject({ castShadow: true, intensity: 650 });
-    expect(spots[1]).toMatchObject({ castShadow: true, intensity: 180 });
-    expect(spots[2]).toMatchObject({ castShadow: false, intensity: 60 });
+    expect(spots[0]).toMatchObject({ castShadow: true, intensity: 90 });
+    expect(spots[1]).toMatchObject({ castShadow: true, intensity: 40 });
+    expect(spots[2]).toMatchObject({ castShadow: false, intensity: 16 });
   });
 
   it("releases stage-owned resources during final disposal", async () => {

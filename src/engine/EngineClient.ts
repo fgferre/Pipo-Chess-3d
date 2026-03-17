@@ -21,6 +21,8 @@ export class EngineClient {
         resolve: (evaluation: EngineEvaluation) => void;
         reject: (reason?: unknown) => void;
         info: EngineInfoSnapshot;
+        settled: Promise<void>;
+        settle: () => void;
       }
     | null = null;
   private readyResolver: (() => void) | null = null;
@@ -48,6 +50,7 @@ export class EngineClient {
     this.worker.onerror = () => {
       const error = new Error("Engine boot failed");
       this.readyRejector?.(error);
+      this.rejectActiveSearch(error);
       this.emitStatus("error", "init", "Engine boot failed");
     };
 
@@ -123,7 +126,15 @@ export class EngineClient {
 
   async stop(): Promise<void> {
     this.analysisToken += 1;
+    const activeSearch = this.activeSearch;
     this.send("stop");
+
+    if (!activeSearch) {
+      return;
+    }
+
+    await activeSearch.settled;
+    this.emitStatus("ready", "stop", "Ready");
   }
 
   terminate(): void {
@@ -134,6 +145,10 @@ export class EngineClient {
     this.send(`position fen ${fen}`);
 
     return new Promise<EngineEvaluation>((resolve, reject) => {
+      let settleSearch: () => void = () => undefined;
+      const settled = new Promise<void>((settle) => {
+        settleSearch = settle;
+      });
       this.activeSearch = {
         resolve,
         reject,
@@ -144,6 +159,8 @@ export class EngineClient {
           mate: null,
           depth: null,
         },
+        settled,
+        settle: settleSearch,
       };
 
       this.send(`go movetime ${moveTimeMs}`);
@@ -193,13 +210,15 @@ export class EngineClient {
 
     if (line.startsWith("bestmove")) {
       const bestMove = line.split(" ")[1];
-      this.activeSearch.resolve({
+      const activeSearch = this.activeSearch;
+      activeSearch.resolve({
         bestMove,
-        pv: this.activeSearch.info.pv,
-        scoreCp: this.activeSearch.info.scoreCp,
-        mate: this.activeSearch.info.mate,
-        depth: this.activeSearch.info.depth,
+        pv: activeSearch.info.pv,
+        scoreCp: activeSearch.info.scoreCp,
+        mate: activeSearch.info.mate,
+        depth: activeSearch.info.depth,
       });
+      activeSearch.settle();
       this.activeSearch = null;
     }
   }
@@ -258,6 +277,17 @@ export class EngineClient {
 
   private send(command: string): void {
     this.worker?.postMessage(command);
+  }
+
+  private rejectActiveSearch(error: Error): void {
+    if (!this.activeSearch) {
+      return;
+    }
+
+    const activeSearch = this.activeSearch;
+    this.activeSearch = null;
+    activeSearch.reject(error);
+    activeSearch.settle();
   }
 
   private matchNumber(line: string, pattern: RegExp): number | null {

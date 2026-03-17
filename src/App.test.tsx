@@ -193,19 +193,46 @@ describe("App integration", () => {
     });
   });
 
+  it("does not start overlapping analyses when the action is clicked repeatedly", async () => {
+    const { default: App } = await import("./App");
+    render(<App />);
+
+    await screen.findByText("Pipo Chess 3D");
+    fireEvent.click(screen.getByText("Square e2"));
+    fireEvent.click(screen.getByText("Square e4"));
+
+    await waitFor(() => {
+      expect(engineClientMock.search).toHaveBeenCalledTimes(1);
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Menu" }));
+    const analyzeButton = screen.getByRole("button", { name: "Gerar análise" });
+    fireEvent.click(analyzeButton);
+    fireEvent.click(analyzeButton);
+
+    await waitFor(() => {
+      expect(engineClientMock.analyzeGame).toHaveBeenCalledTimes(1);
+    });
+  });
+
   it("closes the history panel from its close button", async () => {
     const { default: App } = await import("./App");
     const { container } = render(<App />);
 
     await screen.findByText("Pipo Chess 3D");
+
+    // Panel is conditionally rendered — not in DOM when closed
+    expect(container.querySelector(".history-panel")).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: "Abrir histórico" }));
+
     const historyPanel = container.querySelector(".history-panel");
     expect(historyPanel).not.toBeNull();
 
-    fireEvent.click(screen.getByRole("button", { name: "Abrir histórico" }));
-    expect(historyPanel).toHaveClass("is-open");
-
     fireEvent.click(within(historyPanel as HTMLElement).getByRole("button", { name: "Fechar" }));
-    expect(historyPanel).not.toHaveClass("is-open");
+    await waitFor(() => {
+      expect(container.querySelector(".history-panel")).toBeNull();
+    });
   });
 
   it("keeps camera presets accessible after entering analysis mode", async () => {
@@ -232,6 +259,23 @@ describe("App integration", () => {
     await waitFor(() => {
       expect(screen.getByRole("button", { name: /Modo 2D/i })).toBeInTheDocument();
       expect(screen.getByRole("button", { name: /Clássica/i })).toBeInTheDocument();
+    });
+  });
+
+  it("removes the new game sheet from the DOM when it is closed", async () => {
+    const { default: App } = await import("./App");
+    const { container } = render(<App />);
+
+    await screen.findByText("Pipo Chess 3D");
+    expect(container.querySelector(".new-game-sheet")).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: "Nova partida" }));
+    expect(container.querySelector(".new-game-sheet")).not.toBeNull();
+
+    fireEvent.click(container.querySelector(".overlay-scrim") as Element);
+
+    await waitFor(() => {
+      expect(container.querySelector(".new-game-sheet")).toBeNull();
     });
   });
 

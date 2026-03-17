@@ -14,8 +14,11 @@
     "test:e2e": "playwright test"
   },
   "dependencies": {
+    "@fontsource/inter": "^5.2.8",
+    "@fontsource/jetbrains-mono": "^5.2.8",
     "chess.js": "^1.4.0",
     "dexie": "^4.3.0",
+    "framer-motion": "^12.37.0",
     "react": "^19.2.4",
     "react-dom": "^19.2.4",
     "stockfish": "^18.0.5",

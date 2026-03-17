@@ -4,10 +4,13 @@ import {
   PCFSoftShadowMap,
   ACESFilmicToneMapping,
   BufferGeometry,
+  Float32BufferAttribute,
   PerspectiveCamera,
   Scene,
   Group,
   Mesh,
+  Points,
+  PointsMaterial,
   Color,
   FogExp2,
   SpotLight,
@@ -34,11 +37,13 @@ import {
   Shape,
   CanvasTexture,
   RepeatWrapping,
+  AdditiveBlending,
   TOUCH,
 } from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import { RoomEnvironment } from "three/examples/jsm/environments/RoomEnvironment.js";
 import { RoundedBoxGeometry } from "three/examples/jsm/geometries/RoundedBoxGeometry.js";
+import { PostProcessingPipeline } from "./PostProcessingPipeline.js";
 import type { Color as PieceColor, PieceSymbol, Square } from "chess.js";
 import type { AppSettings, Orientation, SerializableMove, ThemeDefinition } from "../types/game";
 import { fenToPieces, squareToCoords, type BoardPiece } from "../utils/board";
@@ -182,6 +187,14 @@ interface ActiveStageTransition {
   scales: PieceScaleAnimation[];
   opacities: PieceOpacityAnimation[];
   finalize: () => void;
+}
+
+interface CaptureParticleBurst {
+  points: Points;
+  material: PointsMaterial;
+  velocities: Vector3[];
+  startedAt: number;
+  durationMs: number;
 }
 
 const ANIMATION_MODE_CONFIG: Record<
@@ -443,27 +456,29 @@ function createWoodTexture(
   veinHex: string,
   isKnotty = false,
 ): CanvasTexture {
+  const SIZE = 2048;
   const canvas = document.createElement("canvas");
-  canvas.width = 1024;
-  canvas.height = 1024;
+  canvas.width = SIZE;
+  canvas.height = SIZE;
   const ctx = canvas.getContext("2d")!;
 
   ctx.fillStyle = baseHex;
-  ctx.fillRect(0, 0, 1024, 1024);
+  ctx.fillRect(0, 0, SIZE, SIZE);
 
-  const centerX = isKnotty ? 300 : -1500;
-  const centerY = isKnotty ? 400 : 512;
+  const centerX = isKnotty ? 600 : -3000;
+  const centerY = isKnotty ? 800 : 1024;
 
   ctx.lineCap = "round";
   ctx.lineJoin = "round";
 
-  for (let r = 10; r < 3500; r += Math.random() * 25 + 15) {
+  // Primary grain layer
+  for (let r = 10; r < 7000; r += Math.random() * 25 + 15) {
     ctx.beginPath();
     ctx.strokeStyle = veinHex;
     ctx.globalAlpha = Math.random() * 0.4 + 0.15;
     ctx.lineWidth = Math.random() * 14 + 6;
 
-    for (let angle = -Math.PI / 2; angle < Math.PI * 1.5; angle += 0.05) {
+    for (let angle = -Math.PI / 2; angle < Math.PI * 1.5; angle += 0.04) {
       let noise = Math.sin(angle * 6) * 15 + Math.cos(angle * 4) * 20;
       if (isKnotty) {
         noise += Math.sin(angle * 12) * 10;
@@ -478,12 +493,36 @@ function createWoodTexture(
     ctx.stroke();
   }
 
-  const grad = ctx.createRadialGradient(512, 512, 300, 512, 512, 800);
-  grad.addColorStop(0, "rgba(255,255,255,0.02)");
-  grad.addColorStop(1, "rgba(0,0,0,0.2)");
+  // Secondary grain layer — offset by 15 degrees for depth
+  const cos15 = Math.cos(Math.PI / 12);
+  const sin15 = Math.sin(Math.PI / 12);
+  for (let r = 30; r < 7000; r += Math.random() * 40 + 28) {
+    ctx.beginPath();
+    ctx.strokeStyle = veinHex;
+    ctx.globalAlpha = Math.random() * 0.18 + 0.05;
+    ctx.lineWidth = Math.random() * 7 + 2;
+
+    for (let angle = -Math.PI / 2; angle < Math.PI * 1.5; angle += 0.06) {
+      const noise = Math.sin(angle * 5) * 18 + Math.cos(angle * 3) * 14 + Math.sin(r * 0.018 + angle * 2.5) * 38;
+      const baseX = centerX + Math.cos(angle) * (r + noise);
+      const baseY = centerY + Math.sin(angle) * (r + noise) * (isKnotty ? 1.3 : 3.6);
+      // Rotate 15 degrees around center
+      const rx = baseX - SIZE / 2;
+      const ry = baseY - SIZE / 2;
+      const x = rx * cos15 - ry * sin15 + SIZE / 2;
+      const y = rx * sin15 + ry * cos15 + SIZE / 2;
+      if (angle === -Math.PI / 2) ctx.moveTo(x, y);
+      else ctx.lineTo(x, y);
+    }
+    ctx.stroke();
+  }
+
+  const grad = ctx.createRadialGradient(SIZE / 2, SIZE / 2, SIZE * 0.28, SIZE / 2, SIZE / 2, SIZE * 0.76);
+  grad.addColorStop(0, "rgba(255,255,255,0.025)");
+  grad.addColorStop(1, "rgba(0,0,0,0.22)");
   ctx.globalAlpha = 1.0;
   ctx.fillStyle = grad;
-  ctx.fillRect(0, 0, 1024, 1024);
+  ctx.fillRect(0, 0, SIZE, SIZE);
 
   const texture = new CanvasTexture(canvas);
   texture.anisotropy = renderer.capabilities.getMaxAnisotropy();
@@ -1208,6 +1247,8 @@ export class ChessStage {
   private accentMat!: MeshPhysicalMaterial;
   private groutMat!: MeshStandardMaterial;
   private environmentTarget: WebGLRenderTarget | null = null;
+  private pipeline: PostProcessingPipeline | null = null;
+  private activeCaptureParticles: CaptureParticleBurst[] = [];
   private animationFrame = 0;
   private disposed = false;
   private paused = false;
@@ -1224,7 +1265,6 @@ export class ChessStage {
   private multiTouchGesture = false;
   private animationMode: AnimationMode = "normal";
   private pointerMaxTravel = 0;
-  private pointerDownSquare: Square | null = null;
   private pointerDownOwnPieceSquare: Square | null = null;
   private dragState: DragState | null = null;
   private returnAnimation: ReturnAnimation | null = null;
@@ -1261,7 +1301,7 @@ export class ChessStage {
     this.renderer.shadowMap.enabled = true;
     this.renderer.shadowMap.type = PCFSoftShadowMap;
     this.renderer.toneMapping = ACESFilmicToneMapping;
-    this.renderer.toneMappingExposure = 0.8;
+    this.renderer.toneMappingExposure = 1.1;
     this.renderer.domElement.className = "board-canvas";
     this.container.appendChild(this.renderer.domElement);
 
@@ -1315,6 +1355,8 @@ export class ChessStage {
 
     this.setupLighting();
     this.buildBoard();
+
+    this.pipeline = new PostProcessingPipeline(this.renderer, this.scene, this.camera);
 
     this.lightPieceMat = new MeshPhysicalMaterial({
       color: 0xd0c4b0,
@@ -1641,6 +1683,10 @@ export class ChessStage {
     };
   }
 
+  setBloomStrength(strength: number): void {
+    this.pipeline?.setBloomStrength(strength);
+  }
+
   setAnimationMode(mode: "normal" | "reduced" | "off"): void {
     this.animationMode = mode;
     if (mode === "off") {
@@ -1720,6 +1766,16 @@ export class ChessStage {
     this.environmentTarget?.dispose();
     this.environmentTarget = null;
 
+    for (const burst of this.activeCaptureParticles) {
+      this.root.remove(burst.points);
+      burst.points.geometry.dispose();
+      burst.material.dispose();
+    }
+    this.activeCaptureParticles.length = 0;
+
+    this.pipeline?.dispose();
+    this.pipeline = null;
+
     this.renderer.dispose();
     if (domElement.parentElement === this.container) {
       this.container.removeChild(domElement);
@@ -1733,8 +1789,10 @@ export class ChessStage {
       return;
     }
 
-    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, width < 900 ? 1.5 : 2));
+    const pixelRatio = Math.min(window.devicePixelRatio, width < 900 ? 1.5 : 2);
+    this.renderer.setPixelRatio(pixelRatio);
     this.renderer.setSize(width, height, false);
+    this.pipeline?.setSize(width, height, pixelRatio);
     this.updateCameraProjectionOffset();
   }
 
@@ -1766,11 +1824,11 @@ export class ChessStage {
     // Jazz Club / Pub Atmosphere
     
     // Key Light - Warm overhead spot resembling a hanging lamp directly over the board
-    const overheadLamp = new SpotLight(0xffddaa, 650);
+    const overheadLamp = new SpotLight(0xffddaa, 90);
     overheadLamp.position.set(0, 25, 0);
     overheadLamp.angle = Math.PI / 4.5;
     overheadLamp.penumbra = 0.8;
-    overheadLamp.decay = 1.8;
+    overheadLamp.decay = 2.0;
     overheadLamp.distance = 100;
     overheadLamp.castShadow = true;
     overheadLamp.shadow.mapSize.width = 4096;
@@ -1783,11 +1841,11 @@ export class ChessStage {
     this.scene.add(overheadLamp);
 
     // Rim Light - Cool blue/purple from the back to separate pieces from the dark background
-    const neonRim = new SpotLight(0x7460e8, 180);
+    const neonRim = new SpotLight(0x7460e8, 40);
     neonRim.position.set(-15, 8, -25);
     neonRim.angle = Math.PI / 3;
     neonRim.penumbra = 0.9;
-    neonRim.decay = 1.4;
+    neonRim.decay = 2.0;
     neonRim.distance = 120;
     neonRim.castShadow = true;
     neonRim.shadow.mapSize.width = 1024;
@@ -1797,17 +1855,17 @@ export class ChessStage {
     this.scene.add(neonRim);
 
     // Fill Light - Very low intensity, warm amber glow from the side (like a distant candle or bar light)
-    const ambientGlow = new SpotLight(0xffaa55, 60);
+    const ambientGlow = new SpotLight(0xffaa55, 16);
     ambientGlow.position.set(20, 5, 10);
     ambientGlow.angle = Math.PI / 2;
     ambientGlow.penumbra = 1.0;
-    ambientGlow.decay = 1.5;
+    ambientGlow.decay = 2.0;
     ambientGlow.distance = 80;
     ambientGlow.castShadow = false;
     this.scene.add(ambientGlow);
-    
+
     // Environmental Ambient - almost pitch black but with a slight warm tint to not have 100% black shadows
-    const envLight = new HemisphereLight(0x221100, 0x050510, 0.46);
+    const envLight = new HemisphereLight(0x221100, 0x050510, 0.35);
     this.scene.add(envLight);
   }
 
@@ -1926,6 +1984,88 @@ export class ChessStage {
     this.boardGroup.add(accent);
   }
 
+  private spawnCaptureBurst(position: Vector3, accentHex: string): void {
+    const PARTICLE_COUNT = 32;
+    const positions = new Float32Array(PARTICLE_COUNT * 3);
+    const velocities: Vector3[] = [];
+
+    for (let i = 0; i < PARTICLE_COUNT; i++) {
+      positions[i * 3] = position.x;
+      positions[i * 3 + 1] = position.y + 0.3;
+      positions[i * 3 + 2] = position.z;
+
+      const theta = Math.random() * Math.PI * 2;
+      const phi = Math.random() * Math.PI;
+      const speed = 0.8 + Math.random() * 1.8;
+      velocities.push(new Vector3(
+        Math.sin(phi) * Math.cos(theta) * speed,
+        Math.abs(Math.cos(phi)) * speed * 1.4,
+        Math.sin(phi) * Math.sin(theta) * speed,
+      ));
+    }
+
+    const geometry = new BufferGeometry();
+    geometry.setAttribute("position", new Float32BufferAttribute(positions, 3));
+
+    const material = new PointsMaterial({
+      color: new Color(accentHex),
+      size: 0.18,
+      transparent: true,
+      opacity: 1.0,
+      blending: AdditiveBlending,
+      depthWrite: false,
+      sizeAttenuation: true,
+    });
+
+    const points = new Points(geometry, material);
+    this.root.add(points);
+
+    this.activeCaptureParticles.push({
+      points,
+      material,
+      velocities,
+      startedAt: performance.now(),
+      durationMs: 440,
+    });
+  }
+
+  private updateCaptureParticles(now: number): void {
+    const GRAVITY = -9.8;
+    const toRemove: CaptureParticleBurst[] = [];
+
+    for (const burst of this.activeCaptureParticles) {
+      const elapsed = (now - burst.startedAt) / 1000;
+      const progress = clampUnit((now - burst.startedAt) / burst.durationMs);
+
+      const posAttr = burst.points.geometry.getAttribute("position") as Float32BufferAttribute;
+      const PARTICLE_COUNT = posAttr.count;
+
+      for (let i = 0; i < PARTICLE_COUNT; i++) {
+        const vel = burst.velocities[i];
+        posAttr.setXYZ(
+          i,
+          posAttr.getX(i) + vel.x * 0.016,
+          posAttr.getY(i) + (vel.y + GRAVITY * elapsed) * 0.016,
+          posAttr.getZ(i) + vel.z * 0.016,
+        );
+      }
+      posAttr.needsUpdate = true;
+
+      burst.material.opacity = 1 - progress * progress;
+
+      if (progress >= 1) {
+        toRemove.push(burst);
+      }
+    }
+
+    for (const burst of toRemove) {
+      this.root.remove(burst.points);
+      burst.points.geometry.dispose();
+      burst.material.dispose();
+      this.activeCaptureParticles.splice(this.activeCaptureParticles.indexOf(burst), 1);
+    }
+  }
+
   private startLoop(): void {
     cancelAnimationFrame(this.animationFrame);
     if (this.disposed || this.paused) {
@@ -1940,12 +2080,17 @@ export class ChessStage {
       this.updateCameraTransition(now);
       this.updateReturnAnimation(now);
       this.updateStageTransition(now);
+      this.updateCaptureParticles(now);
       this.syncSpriteVisuals();
       this.updateAnimatedHighlights(now);
       if (!this.activeCameraTransition) {
         this.controls.update();
       }
-      this.renderer.render(this.scene, this.camera);
+      if (this.pipeline) {
+        this.pipeline.render();
+      } else {
+        this.renderer.render(this.scene, this.camera);
+      }
       this.animationFrame = requestAnimationFrame(tick);
     };
 
@@ -2136,6 +2281,10 @@ export class ChessStage {
             startProgress: 0,
             endProgress: 1,
           });
+          // Spawn particle burst at capture position
+          const capturePos = this.createSquareVector(descriptor.captureSquare!, 0.3);
+          const accentHex = this.currentState?.theme.highlightPrimary ?? "#f6c344";
+          this.spawnCaptureBurst(capturePos, accentHex);
         } else {
           capturedPiece.visible = false;
         }
@@ -2841,7 +2990,6 @@ export class ChessStage {
     this.activePointerId = null;
     this.activePointerType = "";
     this.pointerMaxTravel = 0;
-    this.pointerDownSquare = null;
     this.pointerDownOwnPieceSquare = null;
   }
 
@@ -2865,13 +3013,12 @@ export class ChessStage {
     this.activePointerType = event.pointerType ?? "";
     this.pointerDownPosition.set(event.clientX, event.clientY);
     this.pointerMaxTravel = 0;
-    this.pointerDownSquare = null;
     this.pointerDownOwnPieceSquare = null;
 
     if (this.activePointerType === "touch") {
-      this.pointerDownSquare = this.resolveSquareFromPointerEvent(event);
-      this.pointerDownOwnPieceSquare = this.isDraggablePieceSquare(this.pointerDownSquare)
-        ? this.pointerDownSquare
+      const pointerDownSquare = this.resolveSquareFromPointerEvent(event);
+      this.pointerDownOwnPieceSquare = this.isDraggablePieceSquare(pointerDownSquare)
+        ? pointerDownSquare
         : null;
     }
   };

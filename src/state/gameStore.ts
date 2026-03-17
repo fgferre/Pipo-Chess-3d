@@ -34,7 +34,6 @@ import {
 import type {
   AutosaveRecord,
   CameraPreset,
-  ClockConfig,
   EnginePhase,
   GameSession,
   Locale,
@@ -75,11 +74,9 @@ interface GameStore {
   undo: () => Promise<void>;
   redo: () => Promise<void>;
   newGame: (options?: NewGameOptions) => Promise<void>;
-  setDifficulty: (difficultyId: string) => Promise<void>;
   setTheme: (themeId: string) => Promise<void>;
   setLocale: (locale: Locale) => Promise<void>;
   toggleOrientation: () => Promise<void>;
-  setClockConfig: (clockConfig: ClockConfig) => Promise<void>;
   setAnimationMode: (mode: GameSession["settings"]["animationMode"]) => Promise<void>;
   setDefaultViewMode: (mode: GameSession["settings"]["defaultViewMode"]) => Promise<void>;
   setCameraSensitivity: (cameraSensitivity: GameSession["settings"]["cameraSensitivity"]) => Promise<void>;
@@ -100,6 +97,7 @@ interface GameStore {
 let subscribedToEngine = false;
 let bootstrapPromise: Promise<void> | null = null;
 let activeAnalysisSignature: string | null = null;
+let cameraSensitivityPersistTimeout: number | null = null;
 
 export const useGameStore = create<GameStore>((set, get) => ({
   booted: false,
@@ -448,16 +446,6 @@ export const useGameStore = create<GameStore>((set, get) => ({
     await persistLiveAutosave(get, set);
   },
 
-  setDifficulty: async (difficultyId) => {
-    const nextSession = setSessionSettings(get().session, {
-      ...get().session.settings,
-      difficultyId,
-    });
-    set({ session: nextSession, lastError: null });
-    await persistLiveSettings(get, set);
-    await persistLiveAutosave(get, set);
-  },
-
   setTheme: async (themeId) => {
     const nextSession = setSessionSettings(get().session, {
       ...get().session.settings,
@@ -483,16 +471,6 @@ export const useGameStore = create<GameStore>((set, get) => ({
     const nextSession = setSessionSettings(get().session, {
       ...get().session.settings,
       orientation,
-    });
-    set({ session: nextSession, lastError: null });
-    await persistLiveSettings(get, set);
-    await persistLiveAutosave(get, set);
-  },
-
-  setClockConfig: async (clockConfig) => {
-    const nextSession = setSessionSettings(get().session, {
-      ...get().session.settings,
-      clockConfig,
     });
     set({ session: nextSession, lastError: null });
     await persistLiveSettings(get, set);
@@ -529,8 +507,7 @@ export const useGameStore = create<GameStore>((set, get) => ({
       cameraSensitivity,
     });
     set({ session: nextSession, lastError: null });
-    await persistLiveSettings(get, set);
-    await persistLiveAutosave(get, set);
+    scheduleCameraSensitivityPersistence(get, set);
   },
 
   setCameraPreset: (preset) => {
@@ -697,7 +674,7 @@ export const useGameStore = create<GameStore>((set, get) => ({
 
   runAnalysis: async () => {
     const session = get().session;
-    if (session.moveEntries.length === 0) {
+    if (session.moveEntries.length === 0 || get().analysisProgress) {
       return;
     }
 
@@ -885,6 +862,21 @@ async function persistLiveSettings(
   } catch (error) {
     setStoreError(set, get().session.settings.locale, error, "save.persistError");
   }
+}
+
+function scheduleCameraSensitivityPersistence(
+  get: () => GameStore,
+  set: (partial: Partial<GameStore>) => void,
+): void {
+  if (cameraSensitivityPersistTimeout !== null) {
+    window.clearTimeout(cameraSensitivityPersistTimeout);
+  }
+
+  cameraSensitivityPersistTimeout = window.setTimeout(() => {
+    cameraSensitivityPersistTimeout = null;
+    void persistLiveSettings(get, set);
+    void persistLiveAutosave(get, set);
+  }, 180);
 }
 
 async function interruptEngineWork(): Promise<void> {

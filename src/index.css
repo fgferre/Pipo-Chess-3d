@@ -1,5 +1,9 @@
 :root {
-  font-family: "Trebuchet MS", "Gill Sans", sans-serif;
+  --font-sans: "Inter", system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", "Menlo", monospace;
+
+  font-family: var(--font-sans);
+  font-feature-settings: "cv02", "cv03", "cv04", "cv11";
   line-height: 1.5;
   font-weight: 400;
   color: var(--text-primary, #f8f0de);
@@ -112,9 +116,10 @@ button {
   padding: 0.28rem 0.72rem;
   border-radius: 999px;
   background: rgba(8, 18, 31, 0.56);
-  font-family: Georgia, "Times New Roman", serif;
-  font-size: 0.86rem;
-  letter-spacing: 0.08em;
+  font-family: var(--font-sans);
+  font-size: 0.82rem;
+  font-weight: 600;
+  letter-spacing: 0.12em;
   text-transform: uppercase;
 }
 
@@ -250,8 +255,10 @@ button {
 
 .clock-pill__copy strong,
 .top-bar__engine strong {
-  font-family: Georgia, "Times New Roman", serif;
+  font-family: var(--font-mono);
   font-size: 1.15rem;
+  font-weight: 500;
+  letter-spacing: 0.02em;
 }
 
 .clock-pill__copy small.is-thinking {
@@ -320,7 +327,6 @@ button {
 .menu-drawer,
 .new-game-sheet {
   inset-inline: auto;
-  transition: transform 220ms ease, opacity 220ms ease;
 }
 
 .history-panel {
@@ -330,15 +336,6 @@ button {
   width: min(18rem, calc(100vw - 2rem));
   padding: 1rem;
   border-radius: 1.4rem;
-  transform: translateX(calc(100% + 1.2rem));
-  opacity: 0;
-  pointer-events: none;
-}
-
-.history-panel.is-open {
-  transform: translateX(0);
-  opacity: 1;
-  pointer-events: auto;
 }
 
 .panel-header,
@@ -364,9 +361,7 @@ button {
   width: min(26rem, calc(100vw - 1.7rem));
   padding: 1rem;
   border-radius: 1.6rem;
-  transform: translate(-50%, 110%);
-  opacity: 0;
-  pointer-events: none;
+  transform: translateX(-50%);
 }
 
 .menu-drawer {
@@ -377,13 +372,6 @@ button {
 
 .camera-picker {
   bottom: 5.8rem;
-}
-
-.menu-drawer.is-open,
-.camera-picker.is-open {
-  transform: translate(-50%, 0);
-  opacity: 1;
-  pointer-events: auto;
 }
 
 .menu-section,
@@ -651,12 +639,25 @@ button {
 .overlay-scrim {
   position: absolute;
   inset: 0;
-  z-index: 2;
+  z-index: 4;
   background: rgba(4, 8, 14, 0.32);
 }
 
 .overlay-scrim--strong {
   background: rgba(4, 8, 14, 0.58);
+}
+
+.camera-picker,
+.menu-drawer,
+.new-game-sheet,
+.promotion-popup,
+.dialog-card,
+.result-modal {
+  z-index: 5;
+}
+
+.toast {
+  z-index: 6;
 }
 
 .eval-bar {
@@ -759,13 +760,6 @@ button {
     right: 1.2rem;
     bottom: 1.2rem;
     width: 20rem;
-    transform: translateX(calc(100% + 1rem));
-    opacity: 0;
-  }
-
-  .history-panel.is-open {
-    transform: translateX(0);
-    opacity: 1;
   }
 
   .history-tab {
@@ -777,11 +771,7 @@ button {
     bottom: 1.2rem;
     left: auto;
     right: 22.4rem;
-    transform: translateX(calc(100% + 1rem));
-  }
-
-  .menu-drawer.is-open {
-    transform: translateX(0);
+    transform: none;
   }
 
   .camera-picker {
@@ -789,11 +779,7 @@ button {
     left: auto;
     right: 1.2rem;
     bottom: 6.4rem;
-    transform: translateX(calc(100% + 1rem));
-  }
-
-  .camera-picker.is-open {
-    transform: translateX(0);
+    transform: none;
   }
 
   .theme-grid {

@@ -130,7 +130,7 @@ export function ChessScene({
       window.cancelAnimationFrame(frame);
       handlePromotionAnchorChange(null);
     };
-  }, [handlePromotionAnchorChange, promotionAnchorSquare]);
+  }, [promotionAnchorSquare]);
 
   return (
     <div
