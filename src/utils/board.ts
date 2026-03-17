@@ -6,7 +6,7 @@ export interface BoardPiece {
   type: PieceSymbol;
 }
 
-const files = ["a", "b", "c", "d", "e", "f", "g", "h"] as const;
+export const files = ["a", "b", "c", "d", "e", "f", "g", "h"] as const;
 
 export function fenToPieces(fen: string): BoardPiece[] {
   const [position] = fen.split(" ");

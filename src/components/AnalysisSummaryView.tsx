@@ -30,7 +30,7 @@ export function AnalysisSummaryView({ summary, locale }: AnalysisSummaryViewProp
           <article className="analysis-card" key={moment.ply}>
             <span className={`tag tag--${moment.tag}`}>{t(locale, `analysis.${moment.tag}`)}</span>
             <strong>
-              {moment.ply}. {moment.san}
+              {Math.ceil(moment.ply / 2)}.{moment.ply % 2 === 0 ? ".." : ""} {moment.san}
             </strong>
             <span>{moment.swingCp} cp</span>
             <small>{moment.bestLine.join(" ")}</small>

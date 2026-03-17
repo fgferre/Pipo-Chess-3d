@@ -406,8 +406,8 @@ function createInitialClockState(clockConfig: ClockConfig, activeColor: Color = 
     whiteMs: clockConfig.baseMs,
     blackMs: clockConfig.baseMs,
     activeColor,
-    lastTickAt: Date.now(),
-    running: true,
+    lastTickAt: null,
+    running: false,
     expiredColor: null,
   };
 }

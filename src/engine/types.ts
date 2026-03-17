@@ -1,58 +1,4 @@
-import type { DifficultyPreset, EngineAnalysisPayload, AnalysisSummary } from "../types/game";
-
-export interface InitEngineRequest {
-  type: "init";
-  requestId: string;
-  scriptUrl: string;
-  wasmUrl: string;
-}
-
-export interface NewGameRequest {
-  type: "newGame";
-  requestId: string;
-}
-
-export interface SetPositionRequest {
-  type: "setPosition";
-  requestId: string;
-  fen: string;
-}
-
-export interface SearchRequest {
-  type: "search";
-  requestId: string;
-  fen?: string;
-  difficulty: DifficultyPreset;
-  moveTimeMs?: number;
-}
-
-export interface HintRequest {
-  type: "hint";
-  requestId: string;
-  fen?: string;
-  difficulty: DifficultyPreset;
-}
-
-export interface AnalyzeRequest {
-  type: "analyze";
-  requestId: string;
-  payload: EngineAnalysisPayload;
-  moveTimeMs: number;
-}
-
-export interface StopRequest {
-  type: "stop";
-  requestId: string;
-}
-
-export type EngineRequest =
-  | InitEngineRequest
-  | NewGameRequest
-  | SetPositionRequest
-  | SearchRequest
-  | HintRequest
-  | AnalyzeRequest
-  | StopRequest;
+import type { AnalysisSummary } from "../types/game";
 
 export interface ReadyResponse {
   type: "ready";
@@ -65,11 +11,6 @@ export interface StatusResponse {
   phase: "loading" | "ready" | "thinking" | "analyzing" | "error";
   requestId: string;
   message?: string;
-}
-
-export interface PositionAckResponse {
-  type: "positionAck";
-  requestId: string;
 }
 
 export interface SearchResultResponse {
@@ -109,7 +50,6 @@ export interface ErrorResponse {
 export type EngineResponse =
   | ReadyResponse
   | StatusResponse
-  | PositionAckResponse
   | SearchResultResponse
   | HintResultResponse
   | AnalysisProgressResponse

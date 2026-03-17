@@ -36,6 +36,7 @@ describe("gameService", () => {
     };
 
     let session = createNewSession(settings);
+    // Clock is paused until the first move — no time lost before e4
     vi.setSystemTime(new Date("2025-01-01T00:00:05.000Z"));
     session = applyPlayerMove(session, "e2", "e4")!;
     vi.setSystemTime(new Date("2025-01-01T00:00:08.000Z"));
@@ -46,12 +47,12 @@ describe("gameService", () => {
     session = applyEngineMove(session, "b8c6");
 
     const undone = undoTurn(session);
-    expect(undone.snapshot.clockState.whiteMs).toBe(55_000);
+    expect(undone.snapshot.clockState.whiteMs).toBe(60_000);
     expect(undone.snapshot.clockState.blackMs).toBe(57_000);
     expect(undone.snapshot.clockState.activeColor).toBe("w");
 
     const redone = redoTurn(undone);
-    expect(redone.snapshot.clockState.whiteMs).toBe(51_000);
+    expect(redone.snapshot.clockState.whiteMs).toBe(56_000);
     expect(redone.snapshot.clockState.blackMs).toBe(55_000);
     expect(redone.snapshot.clockState.activeColor).toBe("w");
   });
@@ -69,13 +70,16 @@ describe("gameService", () => {
       },
     };
 
-    const session = createNewSession(settings, { playerColor: "b" });
+    // Player is white — first move starts the clock
+    let session = createNewSession(settings, { playerColor: "w" });
+    session = applyPlayerMove(session, "e2", "e4")!;
+    // Clock is now running for black; advance past black's 1s budget
     vi.setSystemTime(new Date("2025-01-01T00:00:01.500Z"));
-    const timedOut = applyEngineMove(session, "e2e4");
+    const timedOut = applyEngineMove(session, "e7e5");
 
     expect(timedOut.snapshot.status).toBe("timeout");
-    expect(timedOut.snapshot.moveList).toHaveLength(0);
-    expect(timedOut.snapshot.clockState.expiredColor).toBe("w");
+    expect(timedOut.snapshot.moveList).toHaveLength(1);
+    expect(timedOut.snapshot.clockState.expiredColor).toBe("b");
   });
 
   it("detects checkmate from PGN", () => {
