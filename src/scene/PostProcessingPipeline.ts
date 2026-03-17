@@ -72,9 +72,9 @@ export class PostProcessingPipeline {
 
     this.bloomPass = new UnrealBloomPass(
       new Vector2(w, h),
-      0.22,  // strength — só highlights genuínos, não superfícies iluminadas normalmente
+      0.14,  // strength — sutil, apenas specular highlights genuínos
       0.45,  // radius
-      0.92,  // threshold — só acima de 0.92 em HDR aciona o bloom
+      0.96,  // threshold — alto para não ativar bloom em superfícies difusas (peças brancas)
     );
     this.composer.addPass(this.bloomPass);
 

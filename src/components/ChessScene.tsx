@@ -1,16 +1,13 @@
 import { useEffect, useEffectEvent, useRef } from "react";
 import type { Square } from "chess.js";
-import { ChessStage, type ViewportPadding } from "../scene/ChessStage";
+import { ChessStage } from "../scene/ChessStage";
 import { useGameStore } from "../state/gameStore";
 import type { GameSession, ThemeDefinition } from "../types/game";
-
-export type { ViewportPadding } from "../scene/ChessStage";
 
 interface ChessSceneProps {
   session: GameSession;
   theme: ThemeDefinition;
   interactionEnabled: boolean;
-  viewportPadding: ViewportPadding;
   lastMove: { from: Square; to: Square } | null;
   promotionAnchorSquare: Square | null;
   selectedSquare: Square | null;
@@ -24,7 +21,6 @@ export function ChessScene({
   session,
   theme,
   interactionEnabled,
-  viewportPadding,
   lastMove,
   promotionAnchorSquare,
   selectedSquare,
@@ -107,10 +103,6 @@ export function ChessScene({
   useEffect(() => {
     stageRef.current?.setCameraSensitivity(session.settings.cameraSensitivity);
   }, [session.settings.cameraSensitivity]);
-
-  useEffect(() => {
-    stageRef.current?.setViewportPadding(viewportPadding);
-  }, [viewportPadding]);
 
   useEffect(() => {
     if (!promotionAnchorSquare) {

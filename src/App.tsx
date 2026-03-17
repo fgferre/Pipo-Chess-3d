@@ -14,7 +14,7 @@ import { AnimatePresence, motion } from "framer-motion";
 import type { Color, PieceSymbol } from "chess.js";
 import { soundService } from "./audio/soundService";
 import { haptics } from "./hooks/useHaptics";
-import { ChessScene, type ViewportPadding } from "./components/ChessScene";
+import { ChessScene } from "./components/ChessScene";
 import { MoveList } from "./components/MoveList";
 import { AnalysisSummaryView } from "./components/AnalysisSummaryView";
 import { clockPresets } from "./data/clocks";
@@ -44,13 +44,6 @@ const CAMERA_PRESETS: Array<{ id: CameraPreset; icon: string; labelKey: Translat
   { id: "2d", icon: "□", labelKey: "camera.2d" },
 ];
 const PROMOTION_CHOICES = ["q", "r", "b", "n"] as const;
-const EMPTY_VIEWPORT_PADDING: ViewportPadding = {
-  top: 0,
-  right: 0,
-  bottom: 0,
-  left: 0,
-};
-const EDGE_CAPTURE_TOLERANCE_PX = 32;
 
 function App() {
   const {
@@ -113,13 +106,8 @@ function App() {
   const [transientNotice, setTransientNotice] = useState<string | null>(null);
   const [transientError, setTransientError] = useState<string | null>(null);
   const [promotionAnchor, setPromotionAnchor] = useState<{ x: number; y: number } | null>(null);
-  const [viewportPadding, setViewportPadding] = useState<ViewportPadding>(EMPTY_VIEWPORT_PADDING);
   const appShellRef = useRef<HTMLDivElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
-  const topBarRef = useRef<HTMLElement | null>(null);
-  const bottomBarRef = useRef<HTMLElement | null>(null);
-  const historyPanelRef = useRef<HTMLElement | null>(null);
-  const evalBarRef = useRef<HTMLElement | null>(null);
   const lastFinishedGameRef = useRef<string | null>(null);
   const deferredMoves = useDeferredValue(session.snapshot.moveList);
   const locale = session.settings.locale;
@@ -277,34 +265,6 @@ function App() {
     setAnalysisAutoplay,
     setAnalysisCursor,
   ]);
-
-  useEffect(() => {
-    const shell = appShellRef.current;
-    if (!shell) {
-      return;
-    }
-
-    const updateViewportPadding = () => {
-      const nextPadding = measureViewportPadding(shell, [
-        isZenMode ? null : topBarRef.current,
-        isZenMode ? null : bottomBarRef.current,
-        historyOpen ? historyPanelRef.current : null,
-        analysisMode ? evalBarRef.current : null,
-      ]);
-      setViewportPadding((current) =>
-        areViewportPaddingsEqual(current, nextPadding) ? current : nextPadding,
-      );
-    };
-
-    updateViewportPadding();
-    const frame = window.requestAnimationFrame(updateViewportPadding);
-    window.addEventListener("resize", updateViewportPadding);
-
-    return () => {
-      window.cancelAnimationFrame(frame);
-      window.removeEventListener("resize", updateViewportPadding);
-    };
-  }, [analysisMode, bottomBarExpanded, historyOpen, isZenMode, topBarExpanded]);
 
   const persistOnPause = useEffectEvent(() => {
     void persistCurrentAutosave();
@@ -477,7 +437,6 @@ function App() {
           session={boardSession}
           theme={theme}
           interactionEnabled={!analysisMode}
-          viewportPadding={viewportPadding}
           lastMove={boardLastMove}
           promotionAnchorSquare={pendingPromotion?.anchorSquare ?? null}
           selectedSquare={analysisMode ? null : selectedSquare}
@@ -494,7 +453,7 @@ function App() {
           onPromotionAnchorChange={setPromotionAnchor}
         />
         {analysisMode ? (
-          <EvalBar elementRef={evalBarRef} evaluation={currentEvaluation} locale={locale} />
+          <EvalBar evaluation={currentEvaluation} locale={locale} />
         ) : null}
       </main>
 
@@ -516,10 +475,14 @@ function App() {
 
       <motion.section
         className={`top-bar ${topBarExpanded ? "is-expanded" : ""}`}
-        ref={topBarRef}
-        animate={{ opacity: isZenMode ? 0 : 1 }}
+        animate={{
+          opacity: isZenMode ? 0 : 1,
+          height: isZenMode ? 0 : "auto",
+          marginBlock: isZenMode ? 0 : undefined,
+          paddingBlock: isZenMode ? 0 : undefined,
+        }}
         transition={{ duration: 0.3, ease: "easeInOut" }}
-        style={{ pointerEvents: isZenMode ? "none" : undefined }}
+        style={{ overflow: "hidden", pointerEvents: isZenMode ? "none" : undefined }}
       >
         <button
           className="bar-toggle"
@@ -546,10 +509,14 @@ function App() {
 
       <motion.section
         className={`bottom-bar ${bottomBarExpanded ? "is-expanded" : ""}`}
-        ref={bottomBarRef}
-        animate={{ opacity: isZenMode ? 0 : 1 }}
+        animate={{
+          opacity: isZenMode ? 0 : 1,
+          height: isZenMode ? 0 : "auto",
+          marginBlock: isZenMode ? 0 : undefined,
+          paddingBlock: isZenMode ? 0 : undefined,
+        }}
         transition={{ duration: 0.3, ease: "easeInOut" }}
-        style={{ pointerEvents: isZenMode ? "none" : undefined }}
+        style={{ overflow: "hidden", pointerEvents: isZenMode ? "none" : undefined }}
       >
         <button
           className="bar-toggle"
@@ -685,7 +652,6 @@ function App() {
         {historyOpen && (
           <motion.aside
             className="history-panel"
-            ref={historyPanelRef}
             initial={{ x: "110%", opacity: 0 }}
             animate={{ x: 0, opacity: 1 }}
             exit={{ x: "110%", opacity: 0 }}
@@ -1351,56 +1317,6 @@ function buildClockSide(color: Color, session: GameSession, locale: GameSession[
       session.snapshot.clockState.activeColor === color &&
       session.snapshot.status === "active",
   };
-}
-
-function measureViewportPadding(
-  shell: HTMLElement,
-  edgeElements: Array<HTMLElement | null>,
-): ViewportPadding {
-  const shellRect = shell.getBoundingClientRect();
-  const padding = { ...EMPTY_VIEWPORT_PADDING };
-
-  edgeElements.forEach((element) => {
-    if (!element) {
-      return;
-    }
-
-    const rect = element.getBoundingClientRect();
-    if (rect.width <= 0 || rect.height <= 0) {
-      return;
-    }
-
-    if (
-      rect.right <= shellRect.left ||
-      rect.left >= shellRect.right ||
-      rect.bottom <= shellRect.top ||
-      rect.top >= shellRect.bottom
-    ) {
-      return;
-    }
-
-    if (rect.top - shellRect.top <= EDGE_CAPTURE_TOLERANCE_PX) {
-      padding.top = Math.max(padding.top, rect.bottom - shellRect.top);
-    }
-
-    if (shellRect.bottom - rect.bottom <= EDGE_CAPTURE_TOLERANCE_PX) {
-      padding.bottom = Math.max(padding.bottom, shellRect.bottom - rect.top);
-    }
-
-    if (rect.left - shellRect.left <= EDGE_CAPTURE_TOLERANCE_PX) {
-      padding.left = Math.max(padding.left, rect.right - shellRect.left);
-    }
-
-    if (shellRect.right - rect.right <= EDGE_CAPTURE_TOLERANCE_PX) {
-      padding.right = Math.max(padding.right, shellRect.right - rect.left);
-    }
-  });
-
-  return padding;
-}
-
-function areViewportPaddingsEqual(a: ViewportPadding, b: ViewportPadding): boolean {
-  return a.top === b.top && a.right === b.right && a.bottom === b.bottom && a.left === b.left;
 }
 
 function syncNewGameForm(

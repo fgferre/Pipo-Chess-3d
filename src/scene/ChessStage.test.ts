@@ -80,6 +80,7 @@ vi.mock("three/examples/jsm/controls/OrbitControls.js", () => ({
     maxPolarAngle = 0;
     minDistance = 0;
     maxDistance = 0;
+    mouseButtons = { LEFT: 0, MIDDLE: 1, RIGHT: 2 };
     touches = { ONE: 0, TWO: 2 };
     target = new Vector3();
 
@@ -495,21 +496,35 @@ describe("ChessStage", () => {
     expect(stageInternals.controls.enableRotate).toBe(true);
   });
 
-  it("offsets the camera projection to keep presets centered in the visible viewport", async () => {
-    const { stage } = createStage();
+  it("adapts FOV to container aspect ratio so the board fills portrait screens", async () => {
+    // Create a portrait container (400 wide x 800 tall)
+    const container = document.createElement("div");
+    Object.defineProperty(container, "clientWidth", { configurable: true, value: 400 });
+    Object.defineProperty(container, "clientHeight", { configurable: true, value: 800 });
+    document.body.appendChild(container);
+
+    const stage = new ChessStage(container, vi.fn());
+    stages.push(stage);
     const stageInternals = stage as unknown as {
-      camera: {
-        projectionMatrix: {
-          elements: number[];
-        };
-      };
+      camera: { fov: number; aspect: number };
+      updateCameraFov: () => void;
     };
 
     await stage.init();
-    stage.setViewportPadding({ top: 72, right: 180, bottom: 96, left: 36 });
 
-    expect(stageInternals.camera.projectionMatrix.elements[8]).toBeCloseTo((180 - 36) / 600, 5);
-    expect(stageInternals.camera.projectionMatrix.elements[9]).toBeCloseTo((72 - 96) / 600, 5);
+    // Portrait (aspect 0.5): FOV should widen from base 40 -> 40 / 0.5 = 80, capped at 65
+    expect(stageInternals.camera.fov).toBeCloseTo(65, 0);
+    expect(stageInternals.camera.aspect).toBeCloseTo(0.5, 2);
+
+    // Switch to landscape dimensions
+    Object.defineProperty(container, "clientWidth", { configurable: true, value: 1200 });
+    Object.defineProperty(container, "clientHeight", { configurable: true, value: 600 });
+    stageInternals.updateCameraFov();
+    // Landscape (aspect 2.0): FOV should stay at base 40
+    expect(stageInternals.camera.fov).toBe(40);
+    expect(stageInternals.camera.aspect).toBeCloseTo(2, 2);
+
+    document.body.removeChild(container);
   });
 
   it("prepares placeholder sprite textures for all 12 piece variants", async () => {
@@ -802,12 +817,12 @@ describe("ChessStage", () => {
     const hemi = stageInternals.scene.children.find((child) => child instanceof HemisphereLight);
     const spots = stageInternals.scene.children.filter((child) => child instanceof SpotLight);
 
-    expect(stageInternals.renderer.toneMappingExposure).toBeCloseTo(1.1);
-    expect(hemi).toMatchObject({ intensity: 0.35 });
+    expect(stageInternals.renderer.toneMappingExposure).toBeCloseTo(1.0);
+    expect(hemi).toMatchObject({ intensity: 0.5 });
     expect(spots).toHaveLength(3);
-    expect(spots[0]).toMatchObject({ castShadow: true, intensity: 90 });
-    expect(spots[1]).toMatchObject({ castShadow: true, intensity: 40 });
-    expect(spots[2]).toMatchObject({ castShadow: false, intensity: 16 });
+    expect(spots[0]).toMatchObject({ castShadow: true, intensity: 55 });
+    expect(spots[1]).toMatchObject({ castShadow: true, intensity: 28 });
+    expect(spots[2]).toMatchObject({ castShadow: false, intensity: 12 });
   });
 
   it("releases stage-owned resources during final disposal", async () => {

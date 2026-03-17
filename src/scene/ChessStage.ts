@@ -38,6 +38,7 @@ import {
   CanvasTexture,
   RepeatWrapping,
   AdditiveBlending,
+  MOUSE,
   TOUCH,
 } from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
@@ -46,7 +47,7 @@ import { RoundedBoxGeometry } from "three/examples/jsm/geometries/RoundedBoxGeom
 import { PostProcessingPipeline } from "./PostProcessingPipeline.js";
 import type { Color as PieceColor, PieceSymbol, Square } from "chess.js";
 import type { AppSettings, Orientation, SerializableMove, ThemeDefinition } from "../types/game";
-import { fenToPieces, squareToCoords, type BoardPiece } from "../utils/board";
+import { fenToPieces, files, squareToCoords, type BoardPiece } from "../utils/board";
 
 const SEGMENTS = 64;
 const CLICK_THRESHOLD_PX = 6;
@@ -55,8 +56,14 @@ const PIECE_SCALE = 0.5;
 const RETURN_DURATION_MS = 160;
 const LAST_MOVE_HIGHLIGHT_MS = 1800;
 const HINT_HIGHLIGHT_MS = 4200;
-const files = ["a", "b", "c", "d", "e", "f", "g", "h"] as const;
 const BOARD_TEXTURE_VARIATIONS = 4;
+const BASE_FOV = 40;
+const MAX_PORTRAIT_FOV = 65;
+
+// Reusable scratch vectors to avoid per-frame allocations in hot paths
+const _motionResult = new Vector3();
+const _motionControl = new Vector3();
+const _motionTail = new Vector3();
 
 const DEFAULT_BOARD_PALETTE = {
   lightSquares: { baseHex: "#e0b576", veinHex: "#a36d26", isKnotty: false },
@@ -81,24 +88,10 @@ const FRAME_WOOD_MATERIAL = {
   clearcoatRoughness: 0.4,
 } as const;
 
-const EMPTY_VIEWPORT_PADDING = {
-  top: 0,
-  right: 0,
-  bottom: 0,
-  left: 0,
-} as const;
-
 interface HighlightState {
   selectedSquare: Square | null;
   legalTargets: Square[];
   hintMove: { from: Square; to: Square } | null;
-}
-
-export interface ViewportPadding {
-  top: number;
-  right: number;
-  bottom: number;
-  left: number;
 }
 
 interface RenderState extends HighlightState {
@@ -390,23 +383,6 @@ export function resolveSquareFromBoardPoint(localX: number, localZ: number): Squ
 
 function clampUnit(value: number): number {
   return Math.min(1, Math.max(0, value));
-}
-
-function clampRange(value: number, min: number, max: number): number {
-  return Math.min(max, Math.max(min, value));
-}
-
-function normalizeViewportPadding(padding: ViewportPadding): ViewportPadding {
-  return {
-    top: Math.max(0, padding.top),
-    right: Math.max(0, padding.right),
-    bottom: Math.max(0, padding.bottom),
-    left: Math.max(0, padding.left),
-  };
-}
-
-function areViewportPaddingsEqual(a: ViewportPadding, b: ViewportPadding): boolean {
-  return a.top === b.top && a.right === b.right && a.bottom === b.bottom && a.left === b.left;
 }
 
 function mixHex(startHex: string, endHex: string, amount: number): string {
@@ -1255,7 +1231,6 @@ export class ChessStage {
   private viewMode: ViewMode = "3d";
   private cameraPreset: CameraPreset = "classic";
   private activeCameraTransition: ActiveCameraTransition | null = null;
-  private viewportPadding: ViewportPadding = EMPTY_VIEWPORT_PADDING;
   private cameraSensitivity: AppSettings["cameraSensitivity"] = { rotate: 1, zoom: 1 };
   private pieceRepresentationOpacity = 1;
   private spriteRepresentationOpacity = 0;
@@ -1301,7 +1276,7 @@ export class ChessStage {
     this.renderer.shadowMap.enabled = true;
     this.renderer.shadowMap.type = PCFSoftShadowMap;
     this.renderer.toneMapping = ACESFilmicToneMapping;
-    this.renderer.toneMappingExposure = 1.1;
+    this.renderer.toneMappingExposure = 1.0;
     this.renderer.domElement.className = "board-canvas";
     this.container.appendChild(this.renderer.domElement);
 
@@ -1317,6 +1292,9 @@ export class ChessStage {
     this.controls.maxPolarAngle = Math.PI / 2 - 0.05;
     this.controls.minDistance = 8;
     this.controls.maxDistance = 50;
+    this.controls.mouseButtons.LEFT = null;
+    this.controls.mouseButtons.MIDDLE = MOUSE.DOLLY;
+    this.controls.mouseButtons.RIGHT = MOUSE.ROTATE;
     this.controls.touches.ONE = null;
     this.controls.touches.TWO = TOUCH.DOLLY_ROTATE;
     this.applyCameraSensitivity(this.cameraSensitivity);
@@ -1360,9 +1338,9 @@ export class ChessStage {
 
     this.lightPieceMat = new MeshPhysicalMaterial({
       color: 0xd0c4b0,
-      roughness: 0.55,
+      roughness: 0.65,
       metalness: 0.0,
-      clearcoat: 0.08,
+      clearcoat: 0.04,
       clearcoatRoughness: 0.4,
       envMapIntensity: 0.05,
     });
@@ -1382,6 +1360,7 @@ export class ChessStage {
     this.prototypes.set("b", createBishopPrototype(tempMat));
     this.prototypes.set("q", createQueenPrototype(tempMat));
     this.prototypes.set("k", createKingPrototype(tempMat));
+    tempMat.dispose();
 
     this.startLoop();
   }
@@ -1606,13 +1585,6 @@ export class ChessStage {
 
   setCameraPreset(preset: CameraPreset): void {
     const profile = getCameraPresetProfile(preset);
-    if (
-      this.cameraPreset === preset &&
-      !this.activeCameraTransition &&
-      this.viewMode === profile.viewMode
-    ) {
-      return;
-    }
 
     if (this.animationMode === "off") {
       this.applyCameraPresetState(preset);
@@ -1637,16 +1609,6 @@ export class ChessStage {
       toSpriteOpacity: profile.spriteOpacity,
     };
     this.controls.enabled = false;
-  }
-
-  setViewportPadding(padding: ViewportPadding): void {
-    const nextPadding = normalizeViewportPadding(padding);
-    if (areViewportPaddingsEqual(this.viewportPadding, nextPadding)) {
-      return;
-    }
-
-    this.viewportPadding = nextPadding;
-    this.updateCameraProjectionOffset();
   }
 
   setCameraSensitivity(sensitivity: AppSettings["cameraSensitivity"]): void {
@@ -1793,38 +1755,29 @@ export class ChessStage {
     this.renderer.setPixelRatio(pixelRatio);
     this.renderer.setSize(width, height, false);
     this.pipeline?.setSize(width, height, pixelRatio);
-    this.updateCameraProjectionOffset();
+    this.updateCameraFov();
   }
 
-  private updateCameraProjectionOffset(): void {
+  private updateCameraFov(): void {
     const width = this.container.clientWidth;
     const height = this.container.clientHeight;
     if (width === 0 || height === 0) {
       return;
     }
 
-    this.camera.aspect = width / height;
+    const aspect = width / height;
+    this.camera.fov = aspect < 1
+      ? Math.min(BASE_FOV / aspect, MAX_PORTRAIT_FOV)
+      : BASE_FOV;
+    this.camera.aspect = aspect;
     this.camera.updateProjectionMatrix();
-
-    const projection = this.camera.projectionMatrix.elements;
-    projection[8] = clampRange(
-      (this.viewportPadding.right - this.viewportPadding.left) / width,
-      -0.85,
-      0.85,
-    );
-    projection[9] = clampRange(
-      (this.viewportPadding.top - this.viewportPadding.bottom) / height,
-      -0.85,
-      0.85,
-    );
-    this.camera.projectionMatrixInverse.copy(this.camera.projectionMatrix).invert();
   }
 
   private setupLighting(): void {
     // Jazz Club / Pub Atmosphere
     
     // Key Light - Warm overhead spot resembling a hanging lamp directly over the board
-    const overheadLamp = new SpotLight(0xffddaa, 90);
+    const overheadLamp = new SpotLight(0xffddaa, 55);
     overheadLamp.position.set(0, 25, 0);
     overheadLamp.angle = Math.PI / 4.5;
     overheadLamp.penumbra = 0.8;
@@ -1841,7 +1794,7 @@ export class ChessStage {
     this.scene.add(overheadLamp);
 
     // Rim Light - Cool blue/purple from the back to separate pieces from the dark background
-    const neonRim = new SpotLight(0x7460e8, 40);
+    const neonRim = new SpotLight(0x7460e8, 28);
     neonRim.position.set(-15, 8, -25);
     neonRim.angle = Math.PI / 3;
     neonRim.penumbra = 0.9;
@@ -1855,7 +1808,7 @@ export class ChessStage {
     this.scene.add(neonRim);
 
     // Fill Light - Very low intensity, warm amber glow from the side (like a distant candle or bar light)
-    const ambientGlow = new SpotLight(0xffaa55, 16);
+    const ambientGlow = new SpotLight(0xffaa55, 12);
     ambientGlow.position.set(20, 5, 10);
     ambientGlow.angle = Math.PI / 2;
     ambientGlow.penumbra = 1.0;
@@ -1865,7 +1818,7 @@ export class ChessStage {
     this.scene.add(ambientGlow);
 
     // Environmental Ambient - almost pitch black but with a slight warm tint to not have 100% black shadows
-    const envLight = new HemisphereLight(0x221100, 0x050510, 0.35);
+    const envLight = new HemisphereLight(0x221100, 0x050510, 0.5);
     this.scene.add(envLight);
   }
 
@@ -2432,18 +2385,18 @@ export class ChessStage {
   ): Vector3 {
     const eased = easeInOutCubic(progress);
     if (arcHeight <= 0) {
-      return new Vector3().lerpVectors(from, to, eased);
+      return _motionResult.lerpVectors(from, to, eased);
     }
 
-    const control = from.clone().add(to).multiplyScalar(0.5);
-    control.y = Math.max(from.y, to.y) + arcHeight;
+    _motionControl.addVectors(from, to).multiplyScalar(0.5);
+    _motionControl.y = Math.max(from.y, to.y) + arcHeight;
     const oneMinusT = 1 - eased;
 
-    return new Vector3()
+    return _motionResult
       .copy(from)
       .multiplyScalar(oneMinusT * oneMinusT)
-      .add(control.multiplyScalar(2 * oneMinusT * eased))
-      .add(to.clone().multiplyScalar(eased * eased));
+      .add(_motionControl.multiplyScalar(2 * oneMinusT * eased))
+      .add(_motionTail.copy(to).multiplyScalar(eased * eased));
   }
 
   private finalizeTransition(
@@ -2713,6 +2666,9 @@ export class ChessStage {
     if (this.feltMat) {
       this.feltMat.color.set(theme.canvasFelt);
     }
+    if (this.lightPieceMat) {
+      this.lightPieceMat.color.set(theme.whitePiece);
+    }
     if (this.darkPieceMat) {
       this.darkPieceMat.color.set(theme.blackPiece);
     }
@@ -2789,7 +2745,7 @@ export class ChessStage {
 
       const highlightMaterial = baseMaterial.clone();
       highlightMaterial.emissive = new Color(color);
-      highlightMaterial.emissiveIntensity = 0.48;
+      highlightMaterial.emissiveIntensity = 0.35;
       highlightMaterial.transparent = this.pieceRepresentationOpacity < 0.999;
       highlightMaterial.opacity =
         this.pieceRepresentationOpacity * (piece.userData.effectOpacity ?? 1);
