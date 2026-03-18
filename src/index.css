@@ -44,10 +44,32 @@ button {
 .app-shell {
   display: grid;
   grid-template-rows: auto 1fr auto;
+  grid-template-columns: 100%;
   width: 100vw;
   height: 100vh;
   overflow: hidden;
   isolation: isolate;
+}
+
+.top-bar {
+  grid-row: 1;
+  grid-column: 1;
+}
+
+.bottom-bar {
+  grid-row: 3;
+  grid-column: 1;
+}
+
+.stage-root {
+  grid-row: 2;
+  grid-column: 1;
+  position: relative;
+  overflow: hidden;
+  min-height: 0;
+  z-index: 1;
+  width: 100%;
+  height: 100%;
 }
 
 .canvas-backdrop {
@@ -59,12 +81,14 @@ button {
 .board-shell,
 .board-canvas {
   position: absolute;
-  inset: 0;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
 }
 
 .board-shell {
-  width: 100%;
-  height: 100%;
+  z-index: 1;
 }
 
 .backdrop-orb {
@@ -142,14 +166,6 @@ button {
   backdrop-filter: blur(24px);
 }
 
-.stage-root {
-  grid-row: 2;
-  position: relative;
-  overflow: hidden;
-  min-height: 0;
-  z-index: 1;
-}
-
 .history-tab {
   right: 0;
   top: 50%;
@@ -184,12 +200,10 @@ button {
 }
 
 .top-bar {
-  grid-row: 1;
   margin-top: calc(0.85rem + env(safe-area-inset-top));
 }
 
 .bottom-bar {
-  grid-row: 3;
   margin-bottom: calc(0.85rem + env(safe-area-inset-bottom));
   justify-content: center;
 }
@@ -754,16 +768,34 @@ button {
 }
 
 @media (min-width: 900px) {
-  .top-bar,
-  .bottom-bar {
-    margin-inline: 1.2rem;
+  .app-shell:has(.history-panel) {
+    grid-template-columns: 1fr 20rem;
+  }
+
+  .app-shell:has(.history-panel) .top-bar,
+  .app-shell:has(.history-panel) .bottom-bar {
+    grid-column: 1 / span 2;
   }
 
   .history-panel {
-    top: 1.2rem;
-    right: 1.2rem;
-    bottom: 1.2rem;
-    width: 20rem;
+    grid-row: 2;
+    grid-column: 2;
+    position: relative;
+    inset: 0 !important;
+    width: auto !important;
+    height: 100% !important;
+    margin: 0 !important;
+    border-radius: 0 !important;
+    border-top: none;
+    border-bottom: none;
+    border-right: none;
+    backdrop-filter: blur(48px);
+    z-index: 3;
+  }
+
+  .top-bar,
+  .bottom-bar {
+    margin-inline: 1.2rem;
   }
 
   .history-tab {

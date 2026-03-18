@@ -227,8 +227,8 @@ const CAMERA_PRESET_PROFILES: Record<CameraPreset, CameraPresetProfile> = {
     spriteOpacity: 0,
   },
   side: {
-    position: [0, 9, 36],
-    target: [0, 1.2, 0],
+    position: [0, 10, 36],
+    target: [0, 0, 0],
     minPolarAngle: 1,
     maxPolarAngle: Math.PI / 2 - 0.04,
     minDistance: 12,
@@ -1276,7 +1276,7 @@ export class ChessStage {
     this.renderer.shadowMap.enabled = true;
     this.renderer.shadowMap.type = PCFSoftShadowMap;
     this.renderer.toneMapping = ACESFilmicToneMapping;
-    this.renderer.toneMappingExposure = 1.0;
+    this.renderer.toneMappingExposure = 0.68;
     this.renderer.domElement.className = "board-canvas";
     this.container.appendChild(this.renderer.domElement);
 
@@ -1288,6 +1288,7 @@ export class ChessStage {
     this.controls = new OrbitControls(this.camera, this.renderer.domElement);
     this.controls.enableDamping = true;
     this.controls.dampingFactor = 0.05;
+    this.controls.enablePan = false;
     this.controls.minPolarAngle = 0.55;
     this.controls.maxPolarAngle = Math.PI / 2 - 0.05;
     this.controls.minDistance = 8;
@@ -1316,6 +1317,10 @@ export class ChessStage {
     });
 
     this.renderer.domElement.addEventListener("pointerdown", this.handlePointerDown);
+    window.addEventListener("pointerdown", (e) => {
+      if (e.button === 2) e.preventDefault();
+    });
+    window.addEventListener("contextmenu", (e) => e.preventDefault());
     window.addEventListener("pointermove", this.handlePointerMove);
     window.addEventListener("pointerup", this.handlePointerUp);
     window.addEventListener("pointercancel", this.handlePointerCancel);
@@ -1337,30 +1342,32 @@ export class ChessStage {
     this.pipeline = new PostProcessingPipeline(this.renderer, this.scene, this.camera);
 
     this.lightPieceMat = new MeshPhysicalMaterial({
-      color: 0xd0c4b0,
-      roughness: 0.65,
-      metalness: 0.0,
-      clearcoat: 0.04,
-      clearcoatRoughness: 0.4,
-      envMapIntensity: 0.05,
+      color: 0x5a544d, // Clean deep bone tone
+      roughness: 0.28, // Smoother for more distinct highlights
+      metalness: 0.05,
+      sheen: 1.0, 
+      sheenColor: 0xffffff,
+      sheenRoughness: 0.1,
+      clearcoat: 0.65, // Increased polish for white pieces
+      clearcoatRoughness: 0.12,
+      envMapIntensity: 0.45,
     });
     this.darkPieceMat = new MeshPhysicalMaterial({
-      color: 0x060608,
-      roughness: 0.55,
+      color: 0x010101, // Deepest black
+      roughness: 0.65, // More matte for black pieces
       metalness: 0.0,
-      clearcoat: 0.12,
-      clearcoatRoughness: 0.3,
+      sheen: 0.0,
+      clearcoat: 0.05, // Very subtle sheen only
+      clearcoatRoughness: 0.45,
       envMapIntensity: 0.05,
     });
 
-    const tempMat = new MeshPhysicalMaterial({ color: 0xffffff });
-    this.prototypes.set("p", createPawnPrototype(tempMat));
-    this.prototypes.set("r", createRookPrototype(tempMat));
-    this.prototypes.set("n", createKnightPrototype(tempMat, this.feltMat, this.eyeMat));
-    this.prototypes.set("b", createBishopPrototype(tempMat));
-    this.prototypes.set("q", createQueenPrototype(tempMat));
-    this.prototypes.set("k", createKingPrototype(tempMat));
-    tempMat.dispose();
+    this.prototypes.set("p", createPawnPrototype(this.lightPieceMat));
+    this.prototypes.set("r", createRookPrototype(this.lightPieceMat));
+    this.prototypes.set("n", createKnightPrototype(this.lightPieceMat, this.feltMat, this.eyeMat));
+    this.prototypes.set("b", createBishopPrototype(this.lightPieceMat));
+    this.prototypes.set("q", createQueenPrototype(this.lightPieceMat));
+    this.prototypes.set("k", createKingPrototype(this.lightPieceMat));
 
     this.startLoop();
   }
@@ -1776,13 +1783,13 @@ export class ChessStage {
   private setupLighting(): void {
     // Jazz Club / Pub Atmosphere
     
-    // Key Light - Warm overhead spot resembling a hanging lamp directly over the board
-    const overheadLamp = new SpotLight(0xffddaa, 55);
-    overheadLamp.position.set(0, 25, 0);
-    overheadLamp.angle = Math.PI / 4.5;
-    overheadLamp.penumbra = 0.8;
-    overheadLamp.decay = 2.0;
-    overheadLamp.distance = 100;
+    // Key Light - High-contrast side lighting to reveal texture and volume
+    const overheadLamp = new SpotLight(0xffdfba, 96);
+    overheadLamp.position.set(20, 20, 10);
+    overheadLamp.angle = Math.PI / 5;
+    overheadLamp.penumbra = 1.0;
+    overheadLamp.decay = 2.4;
+    overheadLamp.distance = 150;
     overheadLamp.castShadow = true;
     overheadLamp.shadow.mapSize.width = 4096;
     overheadLamp.shadow.mapSize.height = 4096;
@@ -1790,16 +1797,16 @@ export class ChessStage {
     overheadLamp.shadow.camera.far = 40;
     overheadLamp.shadow.bias = -0.0001;
     overheadLamp.shadow.normalBias = 0.002;
-    overheadLamp.shadow.radius = 2.5;
+    overheadLamp.shadow.radius = 2.0;
     this.scene.add(overheadLamp);
 
-    // Rim Light - Cool blue/purple from the back to separate pieces from the dark background
-    const neonRim = new SpotLight(0x7460e8, 28);
-    neonRim.position.set(-15, 8, -25);
+    // Rim Light 1 - Left - Defines silhouette
+    const neonRim = new SpotLight(0x7a68ff, 32);
+    neonRim.position.set(-20, 12, -25);
     neonRim.angle = Math.PI / 3;
-    neonRim.penumbra = 0.9;
+    neonRim.penumbra = 1.0;
     neonRim.decay = 2.0;
-    neonRim.distance = 120;
+    neonRim.distance = 140;
     neonRim.castShadow = true;
     neonRim.shadow.mapSize.width = 1024;
     neonRim.shadow.mapSize.height = 1024;
@@ -1807,18 +1814,28 @@ export class ChessStage {
     neonRim.shadow.radius = 3.0;
     this.scene.add(neonRim);
 
-    // Fill Light - Very low intensity, warm amber glow from the side (like a distant candle or bar light)
-    const ambientGlow = new SpotLight(0xffaa55, 12);
-    ambientGlow.position.set(20, 5, 10);
-    ambientGlow.angle = Math.PI / 2;
+    // Rim Light 2 - Right - Definitions for overlapping pieces
+    const rimLightRight = new SpotLight(0x8878ff, 18);
+    rimLightRight.position.set(22, 10, -22);
+    rimLightRight.angle = Math.PI / 3.5;
+    rimLightRight.penumbra = 1.0;
+    rimLightRight.decay = 2.0;
+    rimLightRight.distance = 130;
+    rimLightRight.castShadow = false;
+    this.scene.add(rimLightRight);
+
+    // Fill Light - Subtle front pre-fill for minimal visibility in shadows
+    const ambientGlow = new SpotLight(0xffb577, 12);
+    ambientGlow.position.set(0, 4, 30);
+    ambientGlow.angle = Math.PI / 2.5;
     ambientGlow.penumbra = 1.0;
-    ambientGlow.decay = 2.0;
-    ambientGlow.distance = 80;
+    ambientGlow.decay = 2.5;
+    ambientGlow.distance = 140;
     ambientGlow.castShadow = false;
     this.scene.add(ambientGlow);
 
-    // Environmental Ambient - almost pitch black but with a slight warm tint to not have 100% black shadows
-    const envLight = new HemisphereLight(0x221100, 0x050510, 0.5);
+    // Environmental Ambient - Almost black for maximum contrast
+    const envLight = new HemisphereLight(0x0a0502, 0x010103, 0.02);
     this.scene.add(envLight);
   }
 
@@ -2965,13 +2982,18 @@ export class ChessStage {
       return;
     }
 
+    // Only allow left-click for piece interaction to avoid camera rotation conflicts
+    if (event.pointerType === "mouse" && event.button !== 0) {
+      return;
+    }
+
     this.activePointerId = event.pointerId;
     this.activePointerType = event.pointerType ?? "";
     this.pointerDownPosition.set(event.clientX, event.clientY);
     this.pointerMaxTravel = 0;
     this.pointerDownOwnPieceSquare = null;
 
-    if (this.activePointerType === "touch") {
+    if (this.currentState?.canInteract && !this.isInteractionLocked()) {
       const pointerDownSquare = this.resolveSquareFromPointerEvent(event);
       this.pointerDownOwnPieceSquare = this.isDraggablePieceSquare(pointerDownSquare)
         ? pointerDownSquare
@@ -2992,7 +3014,6 @@ export class ChessStage {
     }
 
     if (
-      this.activePointerType === "touch" &&
       !this.multiTouchGesture &&
       maxTravel > CLICK_THRESHOLD_PX &&
       this.pointerDownOwnPieceSquare

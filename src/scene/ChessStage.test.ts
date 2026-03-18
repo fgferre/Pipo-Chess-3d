@@ -165,8 +165,9 @@ function pointerEvent(
   clientX: number,
   clientY: number,
   pointerType = "mouse",
+  button = 0,
 ): PointerEvent {
-  return { pointerId, clientX, clientY, pointerType } as PointerEvent;
+  return { pointerId, clientX, clientY, pointerType, button } as PointerEvent;
 }
 
 function buildRenderState(
@@ -561,12 +562,13 @@ describe("ChessStage", () => {
     const intersectSpy = vi.spyOn(Raycaster.prototype, "intersectObject").mockReturnValue([
       { point: new Vector3(-3.5, 0.03, 3.5) },
     ] as never);
-    stageInternals.currentState = buildRenderState();
+    stageInternals.currentState = buildRenderState({ canInteract: false });
 
     stageInternals.handlePointerDown(pointerEvent(1, 100, 100));
 
     expect(intersectSpy).not.toHaveBeenCalled();
 
+    stageInternals.currentState.canInteract = true;
     stageInternals.handlePointerMove(pointerEvent(1, 103, 104));
     stageInternals.handlePointerUp(pointerEvent(1, 104, 104));
 
@@ -586,10 +588,11 @@ describe("ChessStage", () => {
     const intersectSpy = vi.spyOn(Raycaster.prototype, "intersectObject").mockReturnValue([
       { point: new Vector3(-3.5, 0.03, 3.5) },
     ] as never);
-    stageInternals.currentState = buildRenderState();
+    stageInternals.currentState = buildRenderState({ canInteract: false });
 
     stageInternals.handlePointerDown(pointerEvent(7, 100, 100));
     stageInternals.handlePointerMove(pointerEvent(7, 118, 100));
+    stageInternals.currentState.canInteract = true;
     stageInternals.handlePointerUp(pointerEvent(7, 118, 100));
 
     expect(intersectSpy).not.toHaveBeenCalled();
@@ -702,6 +705,54 @@ describe("ChessStage", () => {
     expect(onSquareSelect).toHaveBeenCalledWith("e2");
     expect(stageInternals.dragState).toBeNull();
     expect(stageInternals.returnAnimation?.to.toArray()).toEqual([0.5, 0, 2.5]);
+  });
+
+  it("starts a mouse drag from a player piece and emits the drop target", async () => {
+    const { onSquareSelect, stage } = createStage();
+    const stageInternals = stage as unknown as {
+      dragState: unknown;
+      returnAnimation: unknown;
+      pieceBySquare: Map<string, { position: Vector3 }>;
+      handlePointerDown: (event: PointerEvent) => void;
+      handlePointerMove: (event: PointerEvent) => void;
+      handlePointerUp: (event: PointerEvent) => void;
+    };
+    let point = new Vector3(0.5, 0.03, 2.5);
+    vi.spyOn(Raycaster.prototype, "intersectObject").mockImplementation(
+      () => [{ point }] as never,
+    );
+    stageInternals.pieceBySquare.set("e2", { position: new Vector3(0.5, 0, 2.5) } as any);
+
+    await stage.init();
+
+    stage.update(
+      buildRenderState({
+        fen: "8/8/8/8/8/8/4P3/8 w - - 0 1",
+      }),
+    );
+
+    // Down on e2
+    stageInternals.handlePointerDown(pointerEvent(41, 100, 100, "mouse", 0));
+    // Move to e4
+    point = new Vector3(0.5, 0.03, 0.5);
+    stageInternals.handlePointerMove(pointerEvent(41, 120, 120, "mouse", 0));
+
+    expect(stageInternals.dragState).not.toBeNull();
+
+    stage.update(
+      buildRenderState({
+        fen: "8/8/8/8/8/8/4P3/8 w - - 0 1",
+        selectedSquare: "e2",
+        legalTargets: ["e4"],
+      }),
+    );
+
+    // Up on e4
+    stageInternals.handlePointerUp(pointerEvent(41, 120, 120, "mouse", 0));
+
+    expect(onSquareSelect).toHaveBeenNthCalledWith(1, "e2");
+    expect(onSquareSelect).toHaveBeenNthCalledWith(2, "e4");
+    expect(stageInternals.dragState).toBeNull();
   });
 
   it("disposes previous highlight resources before rebuilding them", () => {
