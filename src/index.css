@@ -472,17 +472,17 @@ button {
 }
 
 .new-game-sheet {
-  left: 0.85rem;
-  right: 0.85rem;
+  left: 50%;
   bottom: 0;
-  padding: 1rem 1rem calc(1rem + env(safe-area-inset-bottom));
+  width: min(26rem, calc(100vw - 1.7rem));
+  padding: 1.25rem 1.25rem calc(1.25rem + env(safe-area-inset-bottom));
   border-radius: 1.6rem 1.6rem 0 0;
-  transform: translateY(110%);
+  transform: translate(-50%, 110%);
   pointer-events: none;
 }
 
 .new-game-sheet.is-open {
-  transform: translateY(0);
+  transform: translate(-50%, 0);
   pointer-events: auto;
 }
 
@@ -492,6 +492,61 @@ button {
   margin: 0 auto 0.9rem;
   border-radius: 999px;
   background: rgba(255, 255, 255, 0.24);
+}
+
+.board-cue {
+  position: absolute;
+  z-index: 5;
+  transform: translate(-50%, calc(-100% - 0.5rem));
+  padding: 0.4rem 0.85rem;
+  border-radius: 0.7rem;
+  border: 1px solid var(--hud-border);
+  background: color-mix(in srgb, var(--hud-surface) 90%, transparent);
+  backdrop-filter: blur(12px);
+  font-size: 0.78rem;
+  color: var(--text-muted);
+  pointer-events: none;
+  white-space: nowrap;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.board-cue__summary {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.board-cue__expand-indicator {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1rem;
+  height: 1rem;
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--text-muted) 18%, transparent);
+  font-size: 0.65rem;
+  font-weight: 700;
+  line-height: 1;
+  flex-shrink: 0;
+}
+
+.board-cue__detail {
+  display: block;
+  font-size: 0.7rem;
+  opacity: 0.8;
+  white-space: nowrap;
+  overflow: hidden;
+}
+
+.board-cue--expanded {
+  white-space: normal;
+}
+
+.board-cue--castling {
+  border-color: color-mix(in srgb, var(--accent-secondary) 48%, var(--hud-border));
+  color: var(--text-primary);
 }
 
 .custom-clock input,

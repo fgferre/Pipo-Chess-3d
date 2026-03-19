@@ -56,6 +56,7 @@ export function ChessScene({
       qualityMode: session.settings.qualityMode,
       manualQualityTier: session.settings.manualQualityTier,
     });
+    stage.setShowCoordinates(session.settings.showCoordinates);
     void stage.init();
 
     const visibilityHandler = () => {
@@ -126,6 +127,10 @@ export function ChessScene({
   useEffect(() => {
     stageRef.current?.setCameraSensitivity(session.settings.cameraSensitivity);
   }, [session.settings.cameraSensitivity]);
+
+  useEffect(() => {
+    stageRef.current?.setShowCoordinates(session.settings.showCoordinates);
+  }, [session.settings.showCoordinates]);
 
   useEffect(() => {
     if (!promotionAnchorSquare) {

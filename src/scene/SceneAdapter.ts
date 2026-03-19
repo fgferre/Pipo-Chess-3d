@@ -25,6 +25,7 @@ export interface SceneAdapter {
   setCameraSensitivity(sensitivity: AppSettings["cameraSensitivity"]): void;
   setAnimationMode(mode: AppSettings["animationMode"]): void;
   setQualityPreference(preference: Pick<AppSettings, "qualityMode" | "manualQualityTier">): void;
+  setShowCoordinates(show: boolean): void;
   projectSquareToViewport(square: Square, yOffset?: number): { x: number; y: number } | null;
   dispose(): void;
 }

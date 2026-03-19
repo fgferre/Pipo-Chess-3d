@@ -87,6 +87,7 @@ interface GameStore {
   setTheme: (themeId: string) => Promise<void>;
   setLocale: (locale: Locale) => Promise<void>;
   toggleOrientation: () => Promise<void>;
+  setShowCoordinates: (show: boolean) => Promise<void>;
   setAnimationMode: (mode: GameSession["settings"]["animationMode"]) => Promise<void>;
   setDefaultViewMode: (mode: GameSession["settings"]["defaultViewMode"]) => Promise<void>;
   setCameraSensitivity: (cameraSensitivity: GameSession["settings"]["cameraSensitivity"]) => Promise<void>;
@@ -533,6 +534,13 @@ export const useGameStore = create<GameStore>((set, get) => ({
   toggleOrientation: async () => {
     const orientation = get().session.settings.orientation === "white" ? "black" : "white";
     const nextSession = updateSessionSettings(get, { orientation });
+    set({ session: nextSession, lastError: null });
+    await persistLiveSettings(get, set);
+    await persistLiveAutosave(get, set);
+  },
+
+  setShowCoordinates: async (show) => {
+    const nextSession = updateSessionSettings(get, { showCoordinates: show });
     set({ session: nextSession, lastError: null });
     await persistLiveSettings(get, set);
     await persistLiveAutosave(get, set);

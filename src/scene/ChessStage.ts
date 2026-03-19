@@ -873,6 +873,23 @@ function createHighlight(
   return { mesh, material };
 }
 
+function createCoordinateLabelTexture(char: string, color: string): CanvasTexture {
+  const size = 64;
+  const canvas = document.createElement("canvas");
+  canvas.width = size;
+  canvas.height = size;
+  const ctx = canvas.getContext("2d")!;
+  ctx.clearRect(0, 0, size, size);
+  ctx.fillStyle = color;
+  ctx.font = `bold 42px Georgia, "Times New Roman", serif`;
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  ctx.fillText(char, size / 2, size / 2);
+  const texture = new CanvasTexture(canvas);
+  texture.needsUpdate = true;
+  return texture;
+}
+
 function createTargetIndicator(
   square: Square,
   color: string,
@@ -1216,6 +1233,7 @@ export class ChessStage implements SceneAdapter {
   private readonly pointerDownPosition = new Vector2();
   private readonly root = new Group();
   private readonly boardGroup = new Group();
+  private readonly coordinateGroup = new Group();
   private readonly pieceGroup = new Group();
   private readonly spriteGroup = new Group();
   private readonly highlightGroup = new Group();
@@ -1286,6 +1304,8 @@ export class ChessStage implements SceneAdapter {
   private currentFen = "";
   private currentThemeId = "";
   private currentOrientation: Orientation = "white";
+  private coordinatesVisible = false;
+  private coordinateOrientation: Orientation = "white";
   private currentHighlightKey = "";
   private currentState: RenderState | null = null;
   private transitionStateCursor: TransitionComparableState | null = null;
@@ -1546,6 +1566,9 @@ export class ChessStage implements SceneAdapter {
     if (state.orientation !== this.currentOrientation) {
       this.currentOrientation = state.orientation;
       this.root.rotation.y = state.orientation === "black" ? Math.PI : 0;
+      if (this.coordinatesVisible) {
+        this.buildCoordinateLabels(state.orientation);
+      }
     }
 
     const hintKey = state.hintMove ? `${state.hintMove.from}-${state.hintMove.to}` : "";
@@ -1902,12 +1925,107 @@ export class ChessStage implements SceneAdapter {
     this.controls.zoomSpeed = sensitivity.zoom;
   }
 
+  setShowCoordinates(show: boolean): void {
+    if (show === this.coordinatesVisible) return;
+    this.coordinatesVisible = show;
+    if (show) {
+      this.buildCoordinateLabels(this.currentOrientation);
+    } else {
+      this.disposeCoordinateLabels();
+    }
+  }
+
+  private buildCoordinateLabels(orientation: Orientation): void {
+    this.disposeCoordinateLabels();
+    this.coordinateOrientation = orientation;
+
+    const palette = this.currentState?.theme
+      ? deriveBoardPalette(this.currentState.theme)
+      : DEFAULT_BOARD_PALETTE;
+    const textColor = palette.lightSquares.baseHex;
+
+    const isBlack = orientation === "black";
+    const fileLetters = isBlack
+      ? ["h", "g", "f", "e", "d", "c", "b", "a"]
+      : ["a", "b", "c", "d", "e", "f", "g", "h"];
+    const rankNumbers = isBlack
+      ? ["8", "7", "6", "5", "4", "3", "2", "1"]
+      : ["1", "2", "3", "4", "5", "6", "7", "8"];
+
+    const LABEL_HEIGHT = 0.045;
+    const geo = new BoxGeometry(0.45, LABEL_HEIGHT, 0.45);
+    const sideMat = new MeshStandardMaterial({
+      color: new Color(palette.frame.baseHex),
+      roughness: 0.85,
+      metalness: 0.0,
+    });
+
+    const createLabelMesh = (char: string, x: number, z: number, rotZ: number): Mesh => {
+      const texture = createCoordinateLabelTexture(char, textColor);
+      const topMat = new MeshStandardMaterial({
+        map: texture,
+        transparent: true,
+        opacity: 0.82,
+        emissive: new Color(textColor),
+        emissiveIntensity: 0.12,
+        roughness: 0.6,
+      });
+      // BoxGeometry face order: +X, -X, +Y (top), -Y (bottom), +Z, -Z
+      const mesh = new Mesh(geo, [sideMat, sideMat, topMat, sideMat, sideMat, sideMat]);
+      mesh.rotation.y = rotZ;
+      mesh.castShadow = true;
+      mesh.receiveShadow = true;
+      mesh.position.set(x, LABEL_HEIGHT / 2, z);
+      return mesh;
+    };
+
+    // File labels (a-h) along bottom and top edges
+    // The root rotates by PI for black, so labels are placed at fixed positions
+    // and the text content is swapped based on orientation.
+    for (let i = 0; i < 8; i++) {
+      const x = i - 3.5;
+      // Bottom edge (near white side when orientation=white)
+      this.coordinateGroup.add(createLabelMesh(fileLetters[i], x, 4.3, 0));
+      // Top edge — rotate text by PI so it reads correctly from the other side
+      this.coordinateGroup.add(createLabelMesh(fileLetters[i], x, -4.3, Math.PI));
+    }
+
+    // Rank labels (1-8) along left and right edges
+    for (let i = 0; i < 8; i++) {
+      const z = 3.5 - i;
+      // Left edge
+      this.coordinateGroup.add(createLabelMesh(rankNumbers[i], -4.3, z, Math.PI / 2));
+      // Right edge — rotate text so it reads correctly from the other side
+      this.coordinateGroup.add(createLabelMesh(rankNumbers[i], 4.3, z, -Math.PI / 2));
+    }
+  }
+
+  private disposeCoordinateLabels(): void {
+    const disposedMats = new Set<Material>();
+    while (this.coordinateGroup.children.length > 0) {
+      const child = this.coordinateGroup.children[0];
+      this.coordinateGroup.remove(child);
+      if (child instanceof Mesh) {
+        const mats = Array.isArray(child.material) ? child.material : [child.material];
+        for (const mat of mats) {
+          if (disposedMats.has(mat)) continue;
+          disposedMats.add(mat);
+          if (mat instanceof MeshStandardMaterial) {
+            mat.map?.dispose();
+            mat.dispose();
+          }
+        }
+      }
+    }
+  }
+
   dispose(): void {
     if (this.disposed) {
       return;
     }
 
     this.disposed = true;
+    this.disposeCoordinateLabels();
     this.touchPointerIds.clear();
     this.multiTouchGesture = false;
     this.clearDragState();
@@ -2183,6 +2301,12 @@ export class ChessStage implements SceneAdapter {
     accent.castShadow = true;
     accent.receiveShadow = true;
     this.boardGroup.add(accent);
+
+    // Re-attach coordinate group (boardGroup.clear() removes it)
+    this.boardGroup.add(this.coordinateGroup);
+    if (this.coordinatesVisible) {
+      this.buildCoordinateLabels(this.currentOrientation);
+    }
   }
 
   private buildPiecePrototypes(): void {

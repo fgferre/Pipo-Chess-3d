@@ -4,6 +4,8 @@ import {
   applyPlayerMove,
   createDefaultSettings,
   createNewSession,
+  diagnoseIllegalMove,
+  formatIllegalMoveDiagnosis,
   getCastlingTargetsForSquare,
   hydrateSession,
   redoTurn,
@@ -161,5 +163,78 @@ describe("gameService", () => {
     const session = createNewSession();
     const targets = getCastlingTargetsForSquare(session, "e2");
     expect(targets).toHaveLength(0);
+  });
+
+  it("diagnoses a pinned piece that shields the king", () => {
+    // 1.e4 e5 2.Bc4 Nf6 3.d3 — bishop on c8 is free, but let's set up a pin:
+    // 1.e4 d5 2.exd5 Nc6 3.Bb5 — d7 pawn gone, Bb5 pins Nc6 to Ke8
+    const session = sessionFromPgn("1. e4 d5 2. exd5 Nc6 3. Bb5", createDefaultSettings());
+    // Nc6 is pinned by Bb5 to Ke8 along b5-c6-d7-e8 diagonal (d7 is clear).
+    const diagnosis = diagnoseIllegalMove(session, "c6", "d4");
+
+    expect(diagnosis.reason).toBe("pinned");
+    expect(diagnosis.attackerSquares).toContain("b5");
+    expect(diagnosis.attackerTypes).toContain("b");
+  });
+
+  it("diagnoses moving king into check", () => {
+    // After 1.e4 e5, try moving black king to e7 (white pawn controls d6... no).
+    // Simpler: from starting position, try white king to e2 — blocked by pawn. Let's clear path.
+    // After 1.e4 e5 2.Ke2 is illegal because d1 queen defends but Ke2 isn't attacked...
+    // Actually Ke2 IS legal after 1.e4 e5. Let's find a real case.
+    // After 1.e4 d5 2.Bb5+ Bd7 — it's white's turn, king is on e1.
+    // Actually let's use: position where king would move into an attacked square.
+    // 1.d4 e5 2.dxe5 Qg5 — white to move. If white tries Kd2, is it attacked? Qg5 doesn't attack d2.
+    // Simplest: use a FEN. After 1.e4 e5, if black tries Ke7, that's actually legal (just bad).
+    // Let's use: 1.f3 e5 2.g4 — if we try Kf2 it's legal. Hmm.
+    // Use PGN to create position where king move is illegal:
+    // After 1.e4 e5 2.Qh5, black to move. If black tries Ke7, the queen on h5 attacks e8 not e7...
+    // Qh5 attacks f7 and e8? No, Qh5 attacks h4,g4,f3,g5,f5,e5,h6,h7,h8,g6,f7,e8.
+    // So Ke7 would not be in check from Qh5. But d8 queen is there...
+    // Let's just use a custom session with known FEN via sessionFromPgn.
+    // After 1.e4 e5 2.Qf3 Nc6 3.Bc4 — tries Ke7 by black, but Qf3 doesn't attack e7.
+    // Let me try: position with black Ke8, white Re1. If Ke7 then Re1 checks along e-file? No Re1 is blocked by e2 pawn.
+    // Enough overthinking. Use a direct scenario:
+    // 1.e4 e5 2.Qh5 — Qh5 attacks e8 diagonally. If black tries Ke7... Qh5 doesn't attack e7.
+    // Wait — Qh5 to e8: h5-g6-f7-e8. Yes, Qh5 attacks e8 along the diagonal.
+    // So after 1.e4 e5 2.Qh5, the black king on e8 cannot stay because... it's not in check yet.
+    // For king moves into check: 1.e4 e5 2.Qh5 Ke7 is actually legal (it's just terrible).
+    //
+    // Let me use an actual check scenario: after 1.e4 e5 2.Qh5 Nf6, white plays Qxe5+.
+    // Now black king is in check. If black tries Ke7: Qe5 attacks e7? Q on e5 attacks e6,e7,e8 along file. Yes!
+    const session = sessionFromPgn("1. e4 e5 2. Qh5 Nf6 3. Qxe5+", createDefaultSettings());
+    // Black is in check from Qe5. Trying Ke7 — queen on e5 attacks e7 along the e-file.
+    const diagnosis = diagnoseIllegalMove(session, "e8", "e7");
+
+    expect(diagnosis.reason).toBe("exposes-king");
+    expect(diagnosis.attackerSquares).toContain("e5");
+    expect(diagnosis.attackerTypes).toContain("q");
+  });
+
+  it("diagnoses a blocked move (piece cannot reach target)", () => {
+    const session = createNewSession();
+    // Try moving white pawn e2 diagonally to d3 (no capture available)
+    const diagnosis = diagnoseIllegalMove(session, "e2", "d3");
+
+    expect(diagnosis.reason).toBe("blocked");
+    expect(diagnosis.attackerSquares).toHaveLength(0);
+  });
+
+  it("formats diagnosis messages in both locales", () => {
+    const diagnosis = {
+      reason: "pinned" as const,
+      attackerSquares: ["b5" as const],
+      attackerTypes: ["b" as const],
+    };
+
+    const ptBR = formatIllegalMoveDiagnosis(diagnosis, "pt-BR");
+    expect(ptBR.summary).toBe("Peça presa");
+    expect(ptBR.detail).toContain("Bispo");
+    expect(ptBR.detail).toContain("b5");
+
+    const en = formatIllegalMoveDiagnosis(diagnosis, "en");
+    expect(en.summary).toBe("Pinned piece");
+    expect(en.detail).toContain("Bishop");
+    expect(en.detail).toContain("b5");
   });
 });

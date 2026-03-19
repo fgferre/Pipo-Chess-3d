@@ -1,4 +1,4 @@
-import { Chess, type Color, type Move, type Square } from "chess.js";
+import { Chess, type Color, type Move, type PieceSymbol, type Square } from "chess.js";
 import { defaultClockConfig, normalizeClockConfig } from "../data/clocks";
 import { defaultDifficultyId } from "../data/difficulties";
 import { defaultThemeId } from "../data/themes";
@@ -37,6 +37,7 @@ export function createDefaultSettings(): AppSettings {
     },
     qualityMode: qualitySettings.qualityMode,
     manualQualityTier: qualitySettings.manualQualityTier,
+    showCoordinates: true,
   };
 }
 
@@ -117,6 +118,98 @@ export function getCastlingTargetsForSquare(session: GameSession, square: Square
     .moves({ square, verbose: true })
     .filter((move) => move.flags.includes("k") || move.flags.includes("q"))
     .map((move) => move.to);
+}
+
+export interface IllegalMoveDiagnosis {
+  reason: "exposes-king" | "pinned" | "blocked" | "no-piece" | "unknown";
+  attackerSquares: Square[];
+  attackerTypes: PieceSymbol[];
+}
+
+export function diagnoseIllegalMove(
+  session: GameSession,
+  from: Square,
+  to: Square,
+): IllegalMoveDiagnosis {
+  const chess = replayMoveEntries(session.moveEntries);
+  const piece = chess.get(from);
+
+  if (!piece) {
+    return { reason: "no-piece", attackerSquares: [], attackerTypes: [] };
+  }
+
+  const opponent: Color = piece.color === "w" ? "b" : "w";
+
+  // Simulate the move: place piece on target, remove from source
+  const sim = new Chess();
+  sim.load(chess.fen(), { skipValidation: true });
+  sim.remove(from);
+  sim.put({ type: piece.type, color: piece.color }, to);
+
+  // Find the king square after the simulated move
+  const kingSquare =
+    piece.type === "k" ? to : sim.findPiece({ type: "k", color: piece.color })[0];
+
+  if (kingSquare && sim.isAttacked(kingSquare, opponent)) {
+    const attackers = sim.attackers(kingSquare, opponent);
+    const attackerTypes = attackers.map((sq) => sim.get(sq)?.type).filter(Boolean) as PieceSymbol[];
+
+    return {
+      reason: piece.type === "k" ? "exposes-king" : "pinned",
+      attackerSquares: attackers,
+      attackerTypes,
+    };
+  }
+
+  return { reason: "blocked", attackerSquares: [], attackerTypes: [] };
+}
+
+const PIECE_NAMES: Record<string, Record<PieceSymbol, string>> = {
+  "pt-BR": { p: "Peão", r: "Torre", n: "Cavalo", b: "Bispo", q: "Dama", k: "Rei" },
+  en: { p: "Pawn", r: "Rook", n: "Knight", b: "Bishop", q: "Queen", k: "King" },
+};
+
+export function formatIllegalMoveDiagnosis(
+  diagnosis: IllegalMoveDiagnosis,
+  locale: string,
+): { summary: string; detail: string | null } {
+  const names = PIECE_NAMES[locale] ?? PIECE_NAMES.en;
+  const firstType = diagnosis.attackerTypes[0];
+  const firstSquare = diagnosis.attackerSquares[0];
+  const pieceName = firstType ? names[firstType] : null;
+
+  switch (diagnosis.reason) {
+    case "exposes-king":
+      return {
+        summary: locale === "pt-BR" ? "Rei em xeque" : "King in check",
+        detail:
+          pieceName && firstSquare
+            ? locale === "pt-BR"
+              ? `pelo ${pieceName} em ${firstSquare}`
+              : `from ${pieceName} on ${firstSquare}`
+            : null,
+      };
+    case "pinned":
+      return {
+        summary: locale === "pt-BR" ? "Peça presa" : "Pinned piece",
+        detail:
+          pieceName && firstSquare
+            ? locale === "pt-BR"
+              ? `protege o rei do ${pieceName} em ${firstSquare}`
+              : `shields king from ${pieceName} on ${firstSquare}`
+            : null,
+      };
+    case "blocked":
+      return {
+        summary: locale === "pt-BR" ? "Lance ilegal" : "Illegal move",
+        detail: null,
+      };
+    default:
+      return {
+        summary: locale === "pt-BR" ? "Lance ilegal" : "Illegal move",
+        detail: null,
+      };
+  }
 }
 
 export function applyPlayerMove(
@@ -533,6 +626,7 @@ function normalizeSettings(settings: AppSettings): AppSettings {
     cameraSensitivity: normalizeCameraSensitivity(settings.cameraSensitivity),
     qualityMode: qualitySettings.qualityMode,
     manualQualityTier: qualitySettings.manualQualityTier,
+    showCoordinates: settings.showCoordinates ?? true,
   };
 }
 

@@ -13,6 +13,7 @@ const stageInstances: Array<{
   setCameraSensitivity: ReturnType<typeof vi.fn>;
   setAnimationMode: ReturnType<typeof vi.fn>;
   setQualityPreference: ReturnType<typeof vi.fn>;
+  setShowCoordinates: ReturnType<typeof vi.fn>;
   projectSquareToViewport: ReturnType<typeof vi.fn>;
   dispose: ReturnType<typeof vi.fn>;
 }> = [];
@@ -29,6 +30,7 @@ vi.mock("../scene/SceneAdapter", () => ({
       setCameraSensitivity: vi.fn(),
       setAnimationMode: vi.fn(),
       setQualityPreference: vi.fn(),
+      setShowCoordinates: vi.fn(),
       projectSquareToViewport: vi.fn().mockReturnValue({ x: 120, y: 140 }),
       dispose: vi.fn(),
     };

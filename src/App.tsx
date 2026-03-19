@@ -20,7 +20,7 @@ import { AnalysisSummaryView } from "./components/AnalysisSummaryView";
 import { clockPresets } from "./data/clocks";
 import { difficultyPresets, getDifficultyPreset } from "./data/difficulties";
 import { getTheme, getThemeCssVariables, themes } from "./data/themes";
-import { deriveSessionAtPly } from "./game/gameService";
+import { deriveSessionAtPly, diagnoseIllegalMove, formatIllegalMoveDiagnosis } from "./game/gameService";
 import { getLocaleLabel, t } from "./i18n";
 import { locales } from "./i18n/dictionaries";
 import { useGameStore } from "./state/gameStore";
@@ -86,6 +86,7 @@ function App() {
     setTheme,
     setLocale,
     toggleOrientation,
+    setShowCoordinates,
     setAnimationMode,
     setDefaultViewMode,
     setCameraSensitivity,
@@ -122,6 +123,9 @@ function App() {
   const [transientError, setTransientError] = useState<string | null>(null);
   const [promotionAnchor, setPromotionAnchor] = useState<{ x: number; y: number } | null>(null);
   const [invalidMoveSquare, setInvalidMoveSquare] = useState<Square | null>(null);
+  const [invalidMoveSummary, setInvalidMoveSummary] = useState<string | null>(null);
+  const [invalidMoveDetail, setInvalidMoveDetail] = useState<string | null>(null);
+  const [invalidMoveExpanded, setInvalidMoveExpanded] = useState(false);
   const [invalidMoveAnchor, setInvalidMoveAnchor] = useState<{ x: number; y: number } | null>(null);
   const [castlingAnchor, setCastlingAnchor] = useState<{ x: number; y: number } | null>(null);
   const appShellRef = useRef<HTMLDivElement | null>(null);
@@ -271,9 +275,15 @@ function App() {
 
   useEffect(() => {
     if (!invalidMoveSquare) return;
-    const timeout = window.setTimeout(() => setInvalidMoveSquare(null), 1800);
+    const delay = invalidMoveExpanded ? 4000 : 1800;
+    const timeout = window.setTimeout(() => {
+      setInvalidMoveSquare(null);
+      setInvalidMoveSummary(null);
+      setInvalidMoveDetail(null);
+      setInvalidMoveExpanded(false);
+    }, delay);
     return () => window.clearTimeout(timeout);
-  }, [invalidMoveSquare]);
+  }, [invalidMoveSquare, invalidMoveExpanded]);
 
   useEffect(() => {
     if (!analysisAutoplay || analysisCursor === null) {
@@ -494,6 +504,11 @@ function App() {
                 (p) => p.square === square && p.color === session.playerColor,
               );
               if (!isPlayerPiece) {
+                const diagnosis = diagnoseIllegalMove(session, selectedSquare, square);
+                const formatted = formatIllegalMoveDiagnosis(diagnosis, locale);
+                setInvalidMoveSummary(formatted.summary);
+                setInvalidMoveDetail(formatted.detail);
+                setInvalidMoveExpanded(false);
                 setInvalidMoveSquare(square);
                 soundService.play("invalid-move");
                 haptics.light();
@@ -884,6 +899,24 @@ function App() {
             </div>
 
             <div className="settings-group">
+              <h3>{t(locale, "menu.coordinates")}</h3>
+              <div className="chip-row">
+                <ChipButton
+                  active={session.settings.showCoordinates}
+                  onClick={() => void setShowCoordinates(true)}
+                >
+                  {t(locale, "menu.coordinates.show")}
+                </ChipButton>
+                <ChipButton
+                  active={!session.settings.showCoordinates}
+                  onClick={() => void setShowCoordinates(false)}
+                >
+                  {t(locale, "menu.coordinates.hide")}
+                </ChipButton>
+              </div>
+            </div>
+
+            <div className="settings-group">
               <h3>{t(locale, "menu.animation")}</h3>
               <div className="chip-row">
                 {(["normal", "reduced", "off"] as const).map((mode) => (
@@ -1206,15 +1239,38 @@ function App() {
       <AnimatePresence>
         {invalidMoveSquare && invalidMoveAnchor ? (
           <motion.div
-            className="board-cue board-cue--invalid"
+            className={`board-cue board-cue--invalid${invalidMoveExpanded ? " board-cue--expanded" : ""}`}
             key="invalid-move-cue"
-            style={getBoardCueStyle(invalidMoveAnchor)}
+            style={{
+              ...getBoardCueStyle(invalidMoveAnchor),
+              ...(invalidMoveDetail ? { cursor: "pointer", pointerEvents: "auto" as const } : {}),
+            }}
             initial={{ scale: 0.85, opacity: 0 }}
             animate={{ scale: 1, opacity: 1 }}
             exit={{ scale: 0.92, opacity: 0 }}
             transition={{ type: "spring", stiffness: 400, damping: 30 }}
+            onClick={invalidMoveDetail ? () => setInvalidMoveExpanded((v) => !v) : undefined}
           >
-            {t(locale, "feedback.invalidMove")}
+            <span className="board-cue__summary">
+              {invalidMoveSummary ?? t(locale, "feedback.invalidMove")}
+              {invalidMoveDetail ? (
+                <span className="board-cue__expand-indicator">{invalidMoveExpanded ? "−" : "+"}</span>
+              ) : null}
+            </span>
+            <AnimatePresence>
+              {invalidMoveExpanded && invalidMoveDetail ? (
+                <motion.span
+                  className="board-cue__detail"
+                  key="detail"
+                  initial={{ height: 0, opacity: 0 }}
+                  animate={{ height: "auto", opacity: 1 }}
+                  exit={{ height: 0, opacity: 0 }}
+                  transition={{ duration: 0.2 }}
+                >
+                  {invalidMoveDetail}
+                </motion.span>
+              ) : null}
+            </AnimatePresence>
           </motion.div>
         ) : null}
       </AnimatePresence>

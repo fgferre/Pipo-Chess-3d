@@ -4,7 +4,9 @@ export type SoundEvent =
   | "piece-capture"
   | "castle"
   | "check"
-  | "game-over";
+  | "game-over"
+  | "undo"
+  | "invalid-move";
 
 class SoundService {
   private ctx: AudioContext | null = null;
@@ -119,6 +121,17 @@ class SoundService {
         this.click(ctx, 880, 840, 0.14, 0.42);
         this.click(ctx, 660, 620, 0.16, 0.38, 140);
         this.click(ctx, 440, 400, 0.24, 0.45, 290);
+        break;
+
+      case "undo":
+        // Ascending reverse-thud: suggests "going back"
+        this.click(ctx, 380, 680, 0.065, 0.40);
+        this.click(ctx, 480, 780, 0.045, 0.30, 60);
+        break;
+
+      case "invalid-move":
+        // Short muted buzz
+        this.click(ctx, 280, 180, 0.06, 0.25);
         break;
     }
   }

@@ -134,6 +134,7 @@ export interface AppSettings {
   cameraSensitivity: CameraSensitivity;
   qualityMode: QualityMode;
   manualQualityTier: QualityTier;
+  showCoordinates: boolean;
 }
 
 export interface GameSession {
