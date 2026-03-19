@@ -45,6 +45,24 @@ import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import { RoomEnvironment } from "three/examples/jsm/environments/RoomEnvironment.js";
 import { RoundedBoxGeometry } from "three/examples/jsm/geometries/RoundedBoxGeometry.js";
 import { PostProcessingPipeline } from "./PostProcessingPipeline.js";
+import {
+  clampQualityTier,
+  createQualityMonitorState,
+  createDefaultQualityPreference,
+  createQualityHardwareProbe,
+  createTieredMaterial,
+  getInitialQualityTier,
+  getQualityTierProfile,
+  normalizeQualityPreference,
+  resolveQualityTier,
+  updateQualityMonitorStateForSampleWindow,
+  type QualityMonitorState,
+  type QualityHardwareProbe,
+  type QualityPreference,
+  type QualityTier,
+  type QualityTierProfile,
+} from "./qualityPolicy.js";
+import type { SceneAdapter } from "./SceneAdapter";
 import type { Color as PieceColor, PieceSymbol, Square } from "chess.js";
 import type { AppSettings, Orientation, SerializableMove, ThemeDefinition } from "../types/game";
 import { fenToPieces, files, squareToCoords, type BoardPiece } from "../utils/board";
@@ -72,25 +90,10 @@ const DEFAULT_BOARD_PALETTE = {
   groutHex: "#050505",
 } satisfies BoardMaterialPalette;
 
-const SQUARE_WOOD_MATERIAL = {
-  bumpScale: 0.015,
-  roughness: 0.65,
-  metalness: 0.0,
-  clearcoat: 0.04,
-  clearcoatRoughness: 0.5,
-} as const;
-
-const FRAME_WOOD_MATERIAL = {
-  bumpScale: 0.015,
-  roughness: 0.6,
-  metalness: 0.0,
-  clearcoat: 0.06,
-  clearcoatRoughness: 0.4,
-} as const;
-
 interface HighlightState {
   selectedSquare: Square | null;
   legalTargets: Square[];
+  castlingTargets: Square[];
   hintMove: { from: Square; to: Square } | null;
 }
 
@@ -108,6 +111,7 @@ interface RenderState extends HighlightState {
 type AnimationMode = AppSettings["animationMode"];
 type CameraPreset = "classic" | "side" | "topdown" | "2d";
 type ViewMode = "3d" | "topdown" | "2d";
+type QualityMaterial = MeshStandardMaterial | MeshPhysicalMaterial;
 
 interface TransitionComparableState {
   fen: string;
@@ -311,6 +315,7 @@ interface WoodMaterialTuning {
   metalness: number;
   clearcoat: number;
   clearcoatRoughness: number;
+  envMapIntensity: number;
 }
 
 interface BoardIntersection {
@@ -357,7 +362,6 @@ interface CameraPresetProfile {
 
 interface ActiveCameraTransition {
   preset: CameraPreset;
-  viewMode: ViewMode;
   startedAt: number;
   durationMs: number;
   fromPosition: Vector3;
@@ -431,6 +435,7 @@ function createWoodTexture(
   baseHex: string,
   veinHex: string,
   isKnotty = false,
+  maxAnisotropy = 1,
 ): CanvasTexture {
   const SIZE = 2048;
   const canvas = document.createElement("canvas");
@@ -501,7 +506,7 @@ function createWoodTexture(
   ctx.fillRect(0, 0, SIZE, SIZE);
 
   const texture = new CanvasTexture(canvas);
-  texture.anisotropy = renderer.capabilities.getMaxAnisotropy();
+  texture.anisotropy = Math.min(renderer.capabilities.getMaxAnisotropy(), maxAnisotropy);
   texture.wrapS = RepeatWrapping;
   texture.wrapT = RepeatWrapping;
   texture.colorSpace = SRGBColorSpace;
@@ -525,22 +530,31 @@ function collectMaterialTextures(
 
 function applyWoodMaterialTheme(
   renderer: WebGLRenderer,
-  material: MeshPhysicalMaterial,
+  material: QualityMaterial,
   role: keyof Omit<BoardMaterialPalette, "groutHex">,
   palette: WoodPalette,
   tuning: WoodMaterialTuning,
+  textureAnisotropy: number,
 ): void {
   const previousTextures = collectMaterialTextures(material);
-  const texture = createWoodTexture(renderer, palette.baseHex, palette.veinHex, palette.isKnotty);
+  const texture = createWoodTexture(
+    renderer,
+    palette.baseHex,
+    palette.veinHex,
+    palette.isKnotty,
+    textureAnisotropy,
+  );
 
   material.map = texture;
   material.bumpMap = texture;
   material.bumpScale = tuning.bumpScale;
   material.roughness = tuning.roughness;
   material.metalness = tuning.metalness;
-  material.clearcoat = tuning.clearcoat;
-  material.clearcoatRoughness = tuning.clearcoatRoughness;
-  material.envMapIntensity = 0.03;
+  material.envMapIntensity = tuning.envMapIntensity;
+  if (material instanceof MeshPhysicalMaterial) {
+    material.clearcoat = tuning.clearcoat;
+    material.clearcoatRoughness = tuning.clearcoatRoughness;
+  }
   material.userData.boardRole = role;
   material.userData.boardPalette = { ...palette };
   material.needsUpdate = true;
@@ -551,7 +565,7 @@ function applyWoodMaterialTheme(
 // ─── Piece Prototype Builders ──────────────────────────────────────────────
 
 function createPieceBase(
-  material: MeshPhysicalMaterial,
+  material: QualityMaterial,
   feltMat: MeshStandardMaterial,
 ): Group {
   const group = new Group();
@@ -572,7 +586,7 @@ function createPieceBase(
   return group;
 }
 
-function createPawnPrototype(mat: MeshPhysicalMaterial): Group {
+function createPawnPrototype(mat: QualityMaterial): Group {
   const group = new Group();
 
   const points: Vector2[] = [
@@ -602,7 +616,7 @@ function createPawnPrototype(mat: MeshPhysicalMaterial): Group {
   return group;
 }
 
-function createRookPrototype(mat: MeshPhysicalMaterial): Group {
+function createRookPrototype(mat: QualityMaterial): Group {
   const group = new Group();
 
   const points: Vector2[] = [
@@ -662,9 +676,9 @@ function createRookPrototype(mat: MeshPhysicalMaterial): Group {
 }
 
 function createKnightPrototype(
-  mat: MeshPhysicalMaterial,
+  mat: QualityMaterial,
   feltMat: MeshStandardMaterial,
-  eyeMat: MeshPhysicalMaterial,
+  eyeMat: QualityMaterial,
 ): Group {
   const group = new Group();
 
@@ -727,7 +741,7 @@ function createKnightPrototype(
   return group;
 }
 
-function createBishopPrototype(mat: MeshPhysicalMaterial): Group {
+function createBishopPrototype(mat: QualityMaterial): Group {
   const group = new Group();
 
   const points: Vector2[] = [
@@ -760,7 +774,7 @@ function createBishopPrototype(mat: MeshPhysicalMaterial): Group {
   return group;
 }
 
-function createQueenPrototype(mat: MeshPhysicalMaterial): Group {
+function createQueenPrototype(mat: QualityMaterial): Group {
   const group = new Group();
 
   const points: Vector2[] = [
@@ -795,7 +809,7 @@ function createQueenPrototype(mat: MeshPhysicalMaterial): Group {
   return group;
 }
 
-function createKingPrototype(mat: MeshPhysicalMaterial): Group {
+function createKingPrototype(mat: QualityMaterial): Group {
   const group = new Group();
 
   const points: Vector2[] = [
@@ -1190,7 +1204,7 @@ function disposeObjectResources(root: Group | Mesh): void {
 
 // ─── ChessStage Class ──────────────────────────────────────────────────────
 
-export class ChessStage {
+export class ChessStage implements SceneAdapter {
   private readonly container: HTMLDivElement;
   private readonly onSquareSelect: (square: Square) => void;
   private readonly scene = new Scene();
@@ -1209,33 +1223,53 @@ export class ChessStage {
     new PlaneGeometry(8, 8),
     new MeshStandardMaterial({ transparent: true, opacity: 0 }),
   );
-  private readonly lightSquareMats: MeshPhysicalMaterial[] = [];
-  private readonly darkSquareMats: MeshPhysicalMaterial[] = [];
-  private readonly frameMats: MeshPhysicalMaterial[] = [];
+  private readonly lightSquareMats: QualityMaterial[] = [];
+  private readonly darkSquareMats: QualityMaterial[] = [];
+  private readonly frameMats: QualityMaterial[] = [];
   private readonly prototypes = new Map<string, Group>();
   private readonly spriteTextures = new Map<string, Texture>();
   private readonly resizeObserver: ResizeObserver;
-  private readonly eyeMat: MeshPhysicalMaterial;
+  private readonly eyeMat: QualityMaterial;
+  private readonly handlePreventRightClick = (event: PointerEvent): void => {
+    if (event.button === 2) {
+      event.preventDefault();
+    }
+  };
+  private readonly handleContextMenu = (event: MouseEvent): void => {
+    event.preventDefault();
+  };
   // Initialized in buildBoard() / init() before first use
-  private lightPieceMat!: MeshPhysicalMaterial;
-  private darkPieceMat!: MeshPhysicalMaterial;
+  private lightPieceMat!: QualityMaterial;
+  private darkPieceMat!: QualityMaterial;
   private feltMat!: MeshStandardMaterial;
-  private accentMat!: MeshPhysicalMaterial;
+  private accentMat!: QualityMaterial;
   private groutMat!: MeshStandardMaterial;
   private environmentTarget: WebGLRenderTarget | null = null;
   private pipeline: PostProcessingPipeline | null = null;
+  private qualityPreference: QualityPreference = createDefaultQualityPreference();
+  private qualityDetectedTier: QualityTier = 2;
+  private qualityTier: QualityTier = 2;
+  private qualityProfile: QualityTierProfile = getQualityTierProfile(2);
+  private qualityLastFrameAt = 0;
+  private qualitySampleWindowMs = 0;
+  private qualitySampleFrames = 0;
+  private qualityMonitorState: QualityMonitorState = createQualityMonitorState();
+  private initialized = false;
+  private keyLight: SpotLight | null = null;
+  private leftRimLight: SpotLight | null = null;
+  private rightRimLight: SpotLight | null = null;
+  private hemisphereLight: HemisphereLight | null = null;
   private activeCaptureParticles: CaptureParticleBurst[] = [];
   private animationFrame = 0;
   private disposed = false;
   private paused = false;
-  private viewMode: ViewMode = "3d";
-  private cameraPreset: CameraPreset = "classic";
   private activeCameraTransition: ActiveCameraTransition | null = null;
+  private cameraPreset: CameraPreset = "classic";
+  private viewMode: ViewMode = "3d";
   private cameraSensitivity: AppSettings["cameraSensitivity"] = { rotate: 1, zoom: 1 };
   private pieceRepresentationOpacity = 1;
   private spriteRepresentationOpacity = 0;
   private activePointerId: number | null = null;
-  private activePointerType = "";
   private readonly touchPointerIds = new Set<number>();
   private multiTouchGesture = false;
   private animationMode: AnimationMode = "normal";
@@ -1276,7 +1310,7 @@ export class ChessStage {
     this.renderer.shadowMap.enabled = true;
     this.renderer.shadowMap.type = PCFSoftShadowMap;
     this.renderer.toneMapping = ACESFilmicToneMapping;
-    this.renderer.toneMappingExposure = 0.68;
+    this.renderer.toneMappingExposure = 1.0;
     this.renderer.domElement.className = "board-canvas";
     this.container.appendChild(this.renderer.domElement);
 
@@ -1317,10 +1351,8 @@ export class ChessStage {
     });
 
     this.renderer.domElement.addEventListener("pointerdown", this.handlePointerDown);
-    window.addEventListener("pointerdown", (e) => {
-      if (e.button === 2) e.preventDefault();
-    });
-    window.addEventListener("contextmenu", (e) => e.preventDefault());
+    window.addEventListener("pointerdown", this.handlePreventRightClick);
+    window.addEventListener("contextmenu", this.handleContextMenu);
     window.addEventListener("pointermove", this.handlePointerMove);
     window.addEventListener("pointerup", this.handlePointerUp);
     window.addEventListener("pointercancel", this.handlePointerCancel);
@@ -1331,6 +1363,12 @@ export class ChessStage {
   }
 
   async init(): Promise<void> {
+    const probe = this.getHardwareProbe();
+    this.qualityDetectedTier = getInitialQualityTier(probe);
+    this.qualityTier = resolveQualityTier(this.qualityPreference, this.qualityDetectedTier);
+    this.qualityProfile = getQualityTierProfile(this.qualityTier);
+    this.applyQualityRuntimeSettings();
+
     const pmremGenerator = new PMREMGenerator(this.renderer);
     this.environmentTarget = pmremGenerator.fromScene(new RoomEnvironment(), 0.008);
     this.scene.environment = this.environmentTarget.texture;
@@ -1338,36 +1376,12 @@ export class ChessStage {
 
     this.setupLighting();
     this.buildBoard();
+    this.buildPiecePrototypes();
 
     this.pipeline = new PostProcessingPipeline(this.renderer, this.scene, this.camera);
-
-    this.lightPieceMat = new MeshPhysicalMaterial({
-      color: 0x5a544d, // Clean deep bone tone
-      roughness: 0.28, // Smoother for more distinct highlights
-      metalness: 0.05,
-      sheen: 1.0, 
-      sheenColor: 0xffffff,
-      sheenRoughness: 0.1,
-      clearcoat: 0.65, // Increased polish for white pieces
-      clearcoatRoughness: 0.12,
-      envMapIntensity: 0.45,
-    });
-    this.darkPieceMat = new MeshPhysicalMaterial({
-      color: 0x010101, // Deepest black
-      roughness: 0.65, // More matte for black pieces
-      metalness: 0.0,
-      sheen: 0.0,
-      clearcoat: 0.05, // Very subtle sheen only
-      clearcoatRoughness: 0.45,
-      envMapIntensity: 0.05,
-    });
-
-    this.prototypes.set("p", createPawnPrototype(this.lightPieceMat));
-    this.prototypes.set("r", createRookPrototype(this.lightPieceMat));
-    this.prototypes.set("n", createKnightPrototype(this.lightPieceMat, this.feltMat, this.eyeMat));
-    this.prototypes.set("b", createBishopPrototype(this.lightPieceMat));
-    this.prototypes.set("q", createQueenPrototype(this.lightPieceMat));
-    this.prototypes.set("k", createKingPrototype(this.lightPieceMat));
+    this.applyQualityRuntimeSettings();
+    this.initialized = true;
+    this.resetPerformanceMonitor();
 
     this.startLoop();
   }
@@ -1569,6 +1583,7 @@ export class ChessStage {
     const highlightKey = [
       state.selectedSquare ?? "",
       state.legalTargets.join(","),
+      (state.castlingTargets ?? []).join(","),
       state.hintMove?.from ?? "",
       state.hintMove?.to ?? "",
       state.lastMove?.from ?? "",
@@ -1585,13 +1600,50 @@ export class ChessStage {
 
   setPaused(paused: boolean): void {
     this.paused = paused;
+    this.resetPerformanceMonitor();
     if (!paused) {
       this.startLoop();
     }
   }
 
+  setQualityPreference(preference: QualityPreference): void {
+    const nextPreference = normalizeQualityPreference(preference);
+    if (
+      this.qualityPreference.qualityMode === nextPreference.qualityMode &&
+      this.qualityPreference.manualQualityTier === nextPreference.manualQualityTier
+    ) {
+      return;
+    }
+
+    this.qualityPreference = nextPreference;
+    if (!this.initialized) {
+      return;
+    }
+
+    const nextTier = resolveQualityTier(this.qualityPreference, this.qualityDetectedTier);
+    this.applyQualityTier(nextTier, {
+      rebuildScene: nextTier !== this.qualityTier,
+    });
+  }
+
+  setQualityTier(tier: QualityTier): void {
+    this.setQualityPreference({
+      qualityMode: "manual",
+      manualQualityTier: clampQualityTier(tier),
+    });
+  }
+
   setCameraPreset(preset: CameraPreset): void {
     const profile = getCameraPresetProfile(preset);
+    if (
+      this.cameraPreset === preset &&
+      this.viewMode === profile.viewMode &&
+      this.activeCameraTransition === null
+    ) {
+      return;
+    }
+
+    this.viewMode = profile.viewMode;
 
     if (this.animationMode === "off") {
       this.applyCameraPresetState(preset);
@@ -1599,11 +1651,8 @@ export class ChessStage {
     }
 
     const durationMs = CAMERA_TRANSITION_DURATION_MS[this.animationMode];
-    this.cameraPreset = preset;
-    this.viewMode = profile.viewMode;
     this.activeCameraTransition = {
       preset,
-      viewMode: profile.viewMode,
       startedAt: performance.now(),
       durationMs,
       fromPosition: this.camera.position.clone(),
@@ -1666,6 +1715,188 @@ export class ChessStage {
     }
   }
 
+  private applyQualityTier(
+    tier: QualityTier,
+    options: { rebuildScene?: boolean } = {},
+  ): void {
+    this.qualityTier = clampQualityTier(tier);
+    this.qualityProfile = getQualityTierProfile(this.qualityTier);
+    this.applyQualityRuntimeSettings();
+
+    if (options.rebuildScene && this.initialized) {
+      this.rebuildQualitySensitiveScene();
+    }
+
+    this.resetPerformanceMonitor();
+    this.resize();
+  }
+
+  private applyQualityRuntimeSettings(): void {
+    this.renderer.shadowMap.enabled = this.qualityProfile.shadowMapEnabled;
+    this.renderer.shadowMap.type = PCFSoftShadowMap;
+
+    const profile = this.qualityProfile;
+    const shadowSize = profile.shadowMapSize;
+
+    for (const light of [this.keyLight, this.leftRimLight]) {
+      if (!light) {
+        continue;
+      }
+
+      light.castShadow = profile.shadowMapEnabled;
+      if (profile.shadowMapEnabled && shadowSize > 0) {
+        light.shadow.mapSize.width = shadowSize;
+        light.shadow.mapSize.height = shadowSize;
+      }
+    }
+
+    if (this.keyLight) {
+      this.keyLight.shadow.radius = profile.shadowRadiusPrimary;
+    }
+    if (this.leftRimLight) {
+      this.leftRimLight.shadow.radius = profile.shadowRadiusRim;
+    }
+    if (this.rightRimLight) {
+      this.rightRimLight.castShadow = false;
+    }
+    if (this.hemisphereLight) {
+      this.hemisphereLight.intensity = profile.hemisphereIntensity;
+    }
+
+    this.pipeline?.setEnabled(profile.bloomEnabled);
+    this.pipeline?.setBloomResolutionScale(profile.bloomResolutionScale);
+  }
+
+  private rebuildQualitySensitiveScene(): void {
+    const currentState = this.currentState;
+
+    this.clearDragState();
+    this.returnAnimation = null;
+    this.activeCameraTransition = null;
+    this.activeStageTransition = null;
+    this.transitionQueue.length = 0;
+    this.clearSelectedPieceHighlight();
+    this.disposeHighlights();
+    this.clearPieceEffectMaterials(this.pieceGroup);
+    this.clearSprites();
+
+    const geometries = new Set<BufferGeometry>();
+    const materials = new Set<Material>();
+    collectMeshResources(this.boardGroup, geometries, materials);
+    collectMeshResources(this.pieceGroup, geometries, materials);
+    this.prototypes.forEach((prototype) => {
+      collectMeshResources(prototype, geometries, materials);
+    });
+
+    this.pieceBySquare.clear();
+    this.pieceGroup.clear();
+    this.boardGroup.clear();
+    this.prototypes.clear();
+    disposeCollectedResources(geometries, materials);
+
+    this.buildBoard();
+    this.buildPiecePrototypes();
+    this.applyQualityRuntimeSettings();
+
+    if (currentState) {
+      this.currentHighlightKey = "";
+      this.applyTheme(currentState.theme);
+      this.updateHighlights(currentState);
+    }
+  }
+
+  private getHardwareProbe(): QualityHardwareProbe {
+    const gl = this.renderer.getContext();
+    let rendererName: string | null = null;
+    let vendorName: string | null = null;
+
+    if (gl) {
+      const debugInfo = gl.getExtension("WEBGL_debug_renderer_info") as
+        | {
+            UNMASKED_RENDERER_WEBGL: number;
+            UNMASKED_VENDOR_WEBGL: number;
+          }
+        | null;
+
+      if (debugInfo) {
+        rendererName = String(gl.getParameter(debugInfo.UNMASKED_RENDERER_WEBGL));
+        vendorName = String(gl.getParameter(debugInfo.UNMASKED_VENDOR_WEBGL));
+      } else {
+        rendererName = String(gl.getParameter(gl.RENDERER));
+        vendorName = String(gl.getParameter(gl.VENDOR));
+      }
+    }
+
+    const navigatorWithMemory = navigator as Navigator & {
+      deviceMemory?: number;
+      hardwareConcurrency?: number;
+    };
+
+    return createQualityHardwareProbe(
+      rendererName,
+      vendorName,
+      typeof navigatorWithMemory.deviceMemory === "number" ? navigatorWithMemory.deviceMemory : null,
+      typeof navigatorWithMemory.hardwareConcurrency === "number"
+        ? navigatorWithMemory.hardwareConcurrency
+        : null,
+      (window.matchMedia?.("(pointer: coarse)").matches ?? false) ||
+        navigator.maxTouchPoints > 0 ||
+        /iphone|ipad|ipod|android|mobile/i.test(navigator.userAgent),
+    );
+  }
+
+  private resetPerformanceMonitor(timestamp = performance.now()): void {
+    this.qualityLastFrameAt = timestamp;
+    this.qualitySampleWindowMs = 0;
+    this.qualitySampleFrames = 0;
+    this.qualityMonitorState = {
+      ...this.qualityMonitorState,
+      lowFpsSinceMs: null,
+    };
+  }
+
+  private updatePerformanceMonitor(now: number): void {
+    if (
+      this.paused ||
+      this.disposed ||
+      document.hidden ||
+      this.qualityPreference.qualityMode === "manual"
+    ) {
+      this.resetPerformanceMonitor(now);
+      return;
+    }
+
+    if (this.qualityLastFrameAt === 0) {
+      this.resetPerformanceMonitor(now);
+      return;
+    }
+
+    const delta = Math.max(0, now - this.qualityLastFrameAt);
+    this.qualityLastFrameAt = now;
+    this.qualitySampleWindowMs += delta;
+    this.qualitySampleFrames += 1;
+
+    if (this.qualitySampleWindowMs < 1000) {
+      return;
+    }
+
+    const fps = (this.qualitySampleFrames * 1000) / Math.max(1, this.qualitySampleWindowMs);
+    const qualityUpdate = updateQualityMonitorStateForSampleWindow(this.qualityMonitorState, {
+      currentTier: this.qualityTier,
+      fps,
+      nowMs: now,
+      sampleWindowMs: this.qualitySampleWindowMs,
+    });
+    this.qualityMonitorState = qualityUpdate.nextState;
+
+    if (qualityUpdate.nextTier !== null && qualityUpdate.nextTier !== this.qualityTier) {
+      this.applyQualityTier(qualityUpdate.nextTier, { rebuildScene: this.initialized });
+    }
+
+    this.qualitySampleWindowMs = 0;
+    this.qualitySampleFrames = 0;
+  }
+
   private applyCameraSensitivity(sensitivity: AppSettings["cameraSensitivity"]): void {
     this.controls.rotateSpeed = sensitivity.rotate;
     this.controls.zoomSpeed = sensitivity.zoom;
@@ -1691,6 +1922,8 @@ export class ChessStage {
     this.controls.dispose();
     const { domElement } = this.renderer;
     domElement.removeEventListener("pointerdown", this.handlePointerDown);
+    window.removeEventListener("pointerdown", this.handlePreventRightClick);
+    window.removeEventListener("contextmenu", this.handleContextMenu);
     window.removeEventListener("pointermove", this.handlePointerMove);
     window.removeEventListener("pointerup", this.handlePointerUp);
     window.removeEventListener("pointercancel", this.handlePointerCancel);
@@ -1758,7 +1991,7 @@ export class ChessStage {
       return;
     }
 
-    const pixelRatio = Math.min(window.devicePixelRatio, width < 900 ? 1.5 : 2);
+    const pixelRatio = Math.min(window.devicePixelRatio, this.qualityProfile.pixelRatioCap);
     this.renderer.setPixelRatio(pixelRatio);
     this.renderer.setSize(width, height, false);
     this.pipeline?.setSize(width, height, pixelRatio);
@@ -1784,59 +2017,45 @@ export class ChessStage {
     // Jazz Club / Pub Atmosphere
     
     // Key Light - High-contrast side lighting to reveal texture and volume
-    const overheadLamp = new SpotLight(0xffdfba, 96);
-    overheadLamp.position.set(20, 20, 10);
-    overheadLamp.angle = Math.PI / 5;
-    overheadLamp.penumbra = 1.0;
-    overheadLamp.decay = 2.4;
-    overheadLamp.distance = 150;
-    overheadLamp.castShadow = true;
-    overheadLamp.shadow.mapSize.width = 4096;
-    overheadLamp.shadow.mapSize.height = 4096;
-    overheadLamp.shadow.camera.near = 10;
-    overheadLamp.shadow.camera.far = 40;
-    overheadLamp.shadow.bias = -0.0001;
-    overheadLamp.shadow.normalBias = 0.002;
-    overheadLamp.shadow.radius = 2.0;
-    this.scene.add(overheadLamp);
+    this.keyLight = new SpotLight(0xffdfba, 55);
+    this.keyLight.position.set(20, 20, 10);
+    this.keyLight.angle = Math.PI / 5;
+    this.keyLight.penumbra = 1.0;
+    this.keyLight.decay = 2.4;
+    this.keyLight.distance = 150;
+    this.keyLight.castShadow = true;
+    this.keyLight.shadow.camera.near = 10;
+    this.keyLight.shadow.camera.far = 40;
+    this.keyLight.shadow.bias = -0.0001;
+    this.keyLight.shadow.normalBias = 0.002;
+    this.scene.add(this.keyLight);
 
     // Rim Light 1 - Left - Defines silhouette
-    const neonRim = new SpotLight(0x7a68ff, 32);
-    neonRim.position.set(-20, 12, -25);
-    neonRim.angle = Math.PI / 3;
-    neonRim.penumbra = 1.0;
-    neonRim.decay = 2.0;
-    neonRim.distance = 140;
-    neonRim.castShadow = true;
-    neonRim.shadow.mapSize.width = 1024;
-    neonRim.shadow.mapSize.height = 1024;
-    neonRim.shadow.bias = -0.0005;
-    neonRim.shadow.radius = 3.0;
-    this.scene.add(neonRim);
+    this.leftRimLight = new SpotLight(0x7a68ff, 28);
+    this.leftRimLight.position.set(-20, 12, -25);
+    this.leftRimLight.angle = Math.PI / 3;
+    this.leftRimLight.penumbra = 1.0;
+    this.leftRimLight.decay = 2.0;
+    this.leftRimLight.distance = 140;
+    this.leftRimLight.castShadow = true;
+    this.leftRimLight.shadow.bias = -0.0005;
+    this.scene.add(this.leftRimLight);
 
     // Rim Light 2 - Right - Definitions for overlapping pieces
-    const rimLightRight = new SpotLight(0x8878ff, 18);
-    rimLightRight.position.set(22, 10, -22);
-    rimLightRight.angle = Math.PI / 3.5;
-    rimLightRight.penumbra = 1.0;
-    rimLightRight.decay = 2.0;
-    rimLightRight.distance = 130;
-    rimLightRight.castShadow = false;
-    this.scene.add(rimLightRight);
-
-    // Fill Light - Subtle front pre-fill for minimal visibility in shadows
-    const ambientGlow = new SpotLight(0xffb577, 12);
-    ambientGlow.position.set(0, 4, 30);
-    ambientGlow.angle = Math.PI / 2.5;
-    ambientGlow.penumbra = 1.0;
-    ambientGlow.decay = 2.5;
-    ambientGlow.distance = 140;
-    ambientGlow.castShadow = false;
-    this.scene.add(ambientGlow);
+    this.rightRimLight = new SpotLight(0x8878ff, 12);
+    this.rightRimLight.position.set(22, 10, -22);
+    this.rightRimLight.angle = Math.PI / 3.5;
+    this.rightRimLight.penumbra = 1.0;
+    this.rightRimLight.decay = 2.0;
+    this.rightRimLight.distance = 130;
+    this.rightRimLight.castShadow = false;
+    this.scene.add(this.rightRimLight);
 
     // Environmental Ambient - Almost black for maximum contrast
-    const envLight = new HemisphereLight(0x0a0502, 0x010103, 0.02);
-    this.scene.add(envLight);
+    this.hemisphereLight = new HemisphereLight(0x0a0502, 0x010103, 0.5);
+    this.scene.add(this.hemisphereLight);
+
+    this.applyQualityRuntimeSettings();
   }
 
   private buildBoard(): void {
@@ -1844,28 +2063,38 @@ export class ChessStage {
     this.darkSquareMats.length = 0;
     this.frameMats.length = 0;
 
-    const lightMats: MeshPhysicalMaterial[] = [];
-    const darkMats: MeshPhysicalMaterial[] = [];
+    const lightMats: QualityMaterial[] = [];
+    const darkMats: QualityMaterial[] = [];
 
     this.feltMat = new MeshStandardMaterial({ color: 0x081c0c, roughness: 1.0 });
 
     for (let i = 0; i < BOARD_TEXTURE_VARIATIONS; i++) {
-      const lightMat = new MeshPhysicalMaterial();
-      const darkMat = new MeshPhysicalMaterial();
+      const lightMat = createTieredMaterial(
+        this.qualityProfile.usePhysicalMaterials,
+        0xffffff,
+        this.qualityProfile.boardLight,
+      );
+      const darkMat = createTieredMaterial(
+        this.qualityProfile.usePhysicalMaterials,
+        0xffffff,
+        this.qualityProfile.boardDark,
+      );
 
       applyWoodMaterialTheme(
         this.renderer,
         lightMat,
         "lightSquares",
         DEFAULT_BOARD_PALETTE.lightSquares,
-        SQUARE_WOOD_MATERIAL,
+        this.qualityProfile.boardLight,
+        this.qualityProfile.textureAnisotropy,
       );
       applyWoodMaterialTheme(
         this.renderer,
         darkMat,
         "darkSquares",
         DEFAULT_BOARD_PALETTE.darkSquares,
-        SQUARE_WOOD_MATERIAL,
+        this.qualityProfile.boardDark,
+        this.qualityProfile.textureAnisotropy,
       );
 
       lightMats.push(lightMat);
@@ -1908,13 +2137,18 @@ export class ChessStage {
     grout.receiveShadow = true;
     this.boardGroup.add(grout);
 
-    const baseMat = new MeshPhysicalMaterial();
+    const baseMat = createTieredMaterial(
+      this.qualityProfile.usePhysicalMaterials,
+      0xffffff,
+      this.qualityProfile.boardFrame,
+    );
     applyWoodMaterialTheme(
       this.renderer,
       baseMat,
       "frame",
       DEFAULT_BOARD_PALETTE.frame,
-      FRAME_WOOD_MATERIAL,
+      this.qualityProfile.boardFrame,
+      this.qualityProfile.textureAnisotropy,
     );
     this.frameMats.push(baseMat);
 
@@ -1939,19 +2173,37 @@ export class ChessStage {
     feltPad.castShadow = true;
     this.boardGroup.add(feltPad);
 
-    this.accentMat = new MeshPhysicalMaterial({
-      color: 0xd4af37,
-      roughness: 0.25,
-      metalness: 1.0,
-      clearcoat: 0.3,
-      clearcoatRoughness: 0.15,
-      envMapIntensity: 0.07,
-    });
+    this.accentMat = createTieredMaterial(
+      this.qualityProfile.usePhysicalMaterials,
+      0xd4af37,
+      this.qualityProfile.boardAccent,
+    );
     const accent = new Mesh(new RoundedBoxGeometry(9.35, 0.12, 9.35, 3, 0.05), this.accentMat);
     accent.position.set(0, -0.35, 0);
     accent.castShadow = true;
     accent.receiveShadow = true;
     this.boardGroup.add(accent);
+  }
+
+  private buildPiecePrototypes(): void {
+    this.prototypes.clear();
+    this.lightPieceMat = createTieredMaterial(
+      this.qualityProfile.usePhysicalMaterials,
+      0x5a544d,
+      this.qualityProfile.pieceWhite,
+    );
+    this.darkPieceMat = createTieredMaterial(
+      this.qualityProfile.usePhysicalMaterials,
+      0x010101,
+      this.qualityProfile.pieceBlack,
+    );
+
+    this.prototypes.set("p", createPawnPrototype(this.lightPieceMat));
+    this.prototypes.set("r", createRookPrototype(this.lightPieceMat));
+    this.prototypes.set("n", createKnightPrototype(this.lightPieceMat, this.feltMat, this.eyeMat));
+    this.prototypes.set("b", createBishopPrototype(this.lightPieceMat));
+    this.prototypes.set("q", createQueenPrototype(this.lightPieceMat));
+    this.prototypes.set("k", createKingPrototype(this.lightPieceMat));
   }
 
   private spawnCaptureBurst(position: Vector3, accentHex: string): void {
@@ -2061,6 +2313,7 @@ export class ChessStage {
       } else {
         this.renderer.render(this.scene, this.camera);
       }
+      this.updatePerformanceMonitor(now);
       this.animationFrame = requestAnimationFrame(tick);
     };
 
@@ -2577,15 +2830,24 @@ export class ChessStage {
     }
 
     state.legalTargets.forEach((target) => {
+      const isCastling = (state.castlingTargets ?? []).includes(target);
+      const color = isCastling
+        ? shiftHex(state.theme.highlightSecondary, 0.08, 0.06)
+        : state.theme.highlightSecondary;
+      const opacity = isCastling ? 0.44 : 0.34;
+
       this.addAnimatedHighlight(
         createTargetIndicator(
           target,
-          state.theme.highlightSecondary,
-          0.34,
+          color,
+          opacity,
           this.pieceBySquare.has(target),
         ),
-        "static",
-        0.34,
+        isCastling ? "pulse" : "static",
+        opacity,
+        isCastling
+          ? { durationMs: HINT_HIGHLIGHT_MS, startedAt: performance.now() }
+          : undefined,
       );
     });
 
@@ -2653,7 +2915,8 @@ export class ChessStage {
         material,
         "lightSquares",
         boardPalette.lightSquares,
-        SQUARE_WOOD_MATERIAL,
+        this.qualityProfile.boardLight,
+        this.qualityProfile.textureAnisotropy,
       ),
     );
     this.darkSquareMats.forEach((material) =>
@@ -2662,7 +2925,8 @@ export class ChessStage {
         material,
         "darkSquares",
         boardPalette.darkSquares,
-        SQUARE_WOOD_MATERIAL,
+        this.qualityProfile.boardDark,
+        this.qualityProfile.textureAnisotropy,
       ),
     );
     this.frameMats.forEach((material) =>
@@ -2671,7 +2935,8 @@ export class ChessStage {
         material,
         "frame",
         boardPalette.frame,
-        FRAME_WOOD_MATERIAL,
+        this.qualityProfile.boardFrame,
+        this.qualityProfile.textureAnisotropy,
       ),
     );
     if (this.groutMat) {
@@ -2756,11 +3021,14 @@ export class ChessStage {
       }
 
       const baseMaterial = child.userData.baseMaterial;
-      if (!(baseMaterial instanceof MeshPhysicalMaterial)) {
+      if (
+        !(baseMaterial instanceof MeshPhysicalMaterial) &&
+        !(baseMaterial instanceof MeshStandardMaterial)
+      ) {
         return;
       }
 
-      const highlightMaterial = baseMaterial.clone();
+      const highlightMaterial = baseMaterial.clone() as MeshStandardMaterial | MeshPhysicalMaterial;
       highlightMaterial.emissive = new Color(color);
       highlightMaterial.emissiveIntensity = 0.35;
       highlightMaterial.transparent = this.pieceRepresentationOpacity < 0.999;
@@ -2961,7 +3229,6 @@ export class ChessStage {
 
   private resetPointerTracking(): void {
     this.activePointerId = null;
-    this.activePointerType = "";
     this.pointerMaxTravel = 0;
     this.pointerDownOwnPieceSquare = null;
   }
@@ -2988,7 +3255,6 @@ export class ChessStage {
     }
 
     this.activePointerId = event.pointerId;
-    this.activePointerType = event.pointerType ?? "";
     this.pointerDownPosition.set(event.clientX, event.clientY);
     this.pointerMaxTravel = 0;
     this.pointerDownOwnPieceSquare = null;

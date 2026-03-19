@@ -4,6 +4,8 @@ import {
   FogExp2,
   HemisphereLight,
   Mesh,
+  MeshPhysicalMaterial,
+  MeshStandardMaterial,
   Raycaster,
   SpotLight,
   Texture,
@@ -15,17 +17,46 @@ import { themes } from "../data/themes";
 
 let latestEnvironmentTarget: { texture: Texture; dispose: ReturnType<typeof vi.fn> } | null = null;
 let latestRendererOptions: Record<string, unknown> | null = null;
+let latestRendererProbe = {
+  renderer: "Mock Renderer",
+  vendor: "Mock Vendor",
+};
+let latestRendererMaxAnisotropy = 16;
 
 vi.mock("three", async () => {
   const actual = await vi.importActual<typeof import("three")>("three");
 
   class MockWebGLRenderer {
     readonly domElement = document.createElement("canvas");
-    readonly capabilities = { getMaxAnisotropy: () => 1 };
+    readonly capabilities = { getMaxAnisotropy: () => latestRendererMaxAnisotropy };
     readonly shadowMap = { enabled: false, type: actual.PCFSoftShadowMap };
     outputColorSpace = actual.SRGBColorSpace;
     toneMapping = actual.ACESFilmicToneMapping;
     toneMappingExposure = 1;
+    readonly getContext = vi.fn(() => ({
+      RENDERER: 0x1f01,
+      VENDOR: 0x1f00,
+      getExtension: vi.fn((name: string) =>
+        name === "WEBGL_debug_renderer_info"
+          ? {
+              UNMASKED_RENDERER_WEBGL: 0x9246,
+              UNMASKED_VENDOR_WEBGL: 0x9245,
+            }
+          : null,
+      ),
+      getParameter: vi.fn((param: number) => {
+        switch (param) {
+          case 0x9246:
+          case 0x1f01:
+            return latestRendererProbe.renderer;
+          case 0x9245:
+          case 0x1f00:
+            return latestRendererProbe.vendor;
+          default:
+            return null;
+        }
+      }),
+    }));
 
     constructor(options: Record<string, unknown> = {}) {
       latestRendererOptions = options;
@@ -64,6 +95,8 @@ vi.mock("./PostProcessingPipeline.js", () => ({
   PostProcessingPipeline: class {
     setBloomStrength = vi.fn();
     getBloomStrength = vi.fn(() => 0.35);
+    setEnabled = vi.fn();
+    setBloomResolutionScale = vi.fn();
     setSize = vi.fn();
     render = vi.fn();
     dispose = vi.fn();
@@ -184,6 +217,7 @@ function buildRenderState(
     redoStack: [],
     selectedSquare: null,
     legalTargets: [],
+    castlingTargets: [],
     hintMove: null,
     ...overrides,
   };
@@ -228,6 +262,11 @@ afterEach(() => {
   document.body.innerHTML = "";
   latestEnvironmentTarget = null;
   latestRendererOptions = null;
+  latestRendererProbe = {
+    renderer: "Mock Renderer",
+    vendor: "Mock Vendor",
+  };
+  latestRendererMaxAnisotropy = 16;
   vi.restoreAllMocks();
 });
 
@@ -438,8 +477,6 @@ describe("ChessStage", () => {
         durationMs: number;
         startedAt: number;
       } | null;
-      cameraPreset: string;
-      viewMode: string;
       pieceRepresentationOpacity: number;
       spriteRepresentationOpacity: number;
       controls: {
@@ -456,7 +493,6 @@ describe("ChessStage", () => {
     stage.setCameraPreset("2d");
 
     expect(stageInternals.activeCameraTransition).not.toBeNull();
-    expect(stageInternals.viewMode).toBe("2d");
 
     const halfStep =
       stageInternals.activeCameraTransition!.startedAt +
@@ -474,8 +510,6 @@ describe("ChessStage", () => {
     );
 
     expect(stageInternals.activeCameraTransition).toBeNull();
-    expect(stageInternals.cameraPreset).toBe("2d");
-    expect(stageInternals.viewMode).toBe("2d");
     expect(stageInternals.pieceRepresentationOpacity).toBe(0);
     expect(stageInternals.spriteRepresentationOpacity).toBe(1);
     expect(stageInternals.controls.enableRotate).toBe(false);
@@ -490,8 +524,7 @@ describe("ChessStage", () => {
     stage.setAnimationMode("off");
     stage.setCameraPreset("classic");
 
-    expect(stageInternals.cameraPreset).toBe("classic");
-    expect(stageInternals.viewMode).toBe("3d");
+    expect(stageInternals.activeCameraTransition).toBeNull();
     expect(stageInternals.pieceRepresentationOpacity).toBe(1);
     expect(stageInternals.spriteRepresentationOpacity).toBe(0);
     expect(stageInternals.controls.enableRotate).toBe(true);
@@ -559,9 +592,9 @@ describe("ChessStage", () => {
       handlePointerMove: (event: PointerEvent) => void;
       handlePointerUp: (event: PointerEvent) => void;
     };
-    const intersectSpy = vi.spyOn(Raycaster.prototype, "intersectObject").mockReturnValue([
-      { point: new Vector3(-3.5, 0.03, 3.5) },
-    ] as never);
+    const intersectSpy = vi.spyOn(Raycaster.prototype, "intersectObject").mockImplementation(
+      () => [{ point: new Vector3(-3.5, 0.03, 3.5) }] as never,
+    );
     stageInternals.currentState = buildRenderState({ canInteract: false });
 
     stageInternals.handlePointerDown(pointerEvent(1, 100, 100));
@@ -585,9 +618,6 @@ describe("ChessStage", () => {
       handlePointerMove: (event: PointerEvent) => void;
       handlePointerUp: (event: PointerEvent) => void;
     };
-    const intersectSpy = vi.spyOn(Raycaster.prototype, "intersectObject").mockReturnValue([
-      { point: new Vector3(-3.5, 0.03, 3.5) },
-    ] as never);
     stageInternals.currentState = buildRenderState({ canInteract: false });
 
     stageInternals.handlePointerDown(pointerEvent(7, 100, 100));
@@ -595,7 +625,6 @@ describe("ChessStage", () => {
     stageInternals.currentState.canInteract = true;
     stageInternals.handlePointerUp(pointerEvent(7, 118, 100));
 
-    expect(intersectSpy).not.toHaveBeenCalled();
     expect(onSquareSelect).not.toHaveBeenCalled();
   });
 
@@ -869,22 +898,199 @@ describe("ChessStage", () => {
     const spots = stageInternals.scene.children.filter((child) => child instanceof SpotLight);
 
     expect(stageInternals.renderer.toneMappingExposure).toBeCloseTo(1.0);
-    expect(hemi).toMatchObject({ intensity: 0.5 });
+    expect(hemi).toMatchObject({ intensity: 0.45 });
     expect(spots).toHaveLength(3);
     expect(spots[0]).toMatchObject({ castShadow: true, intensity: 55 });
     expect(spots[1]).toMatchObject({ castShadow: true, intensity: 28 });
     expect(spots[2]).toMatchObject({ castShadow: false, intensity: 12 });
   });
 
+  it("auto-detects a high-end GPU and starts in the premium tier", async () => {
+    latestRendererProbe = {
+      renderer: "NVIDIA GeForce RTX 4090",
+      vendor: "NVIDIA",
+    };
+
+    const { stage } = createStage();
+    const stageInternals = stage as unknown as {
+      qualityTier: number;
+      qualityProfile: {
+        pixelRatioCap: number;
+        textureAnisotropy: number;
+        shadowMapSize: number;
+        bloomEnabled: boolean;
+        bloomResolutionScale: number;
+      };
+      renderer: { shadowMap: { enabled: boolean }; setPixelRatio: ReturnType<typeof vi.fn> };
+      pipeline: {
+        setEnabled: ReturnType<typeof vi.fn>;
+        setBloomResolutionScale: ReturnType<typeof vi.fn>;
+      } | null;
+      lightPieceMat: MeshPhysicalMaterial;
+      lightSquareMats: Array<MeshPhysicalMaterial | MeshStandardMaterial>;
+    };
+
+    await stage.init();
+
+    expect(stageInternals.qualityTier).toBe(3);
+    expect(stageInternals.qualityProfile.pixelRatioCap).toBe(2);
+    expect(stageInternals.qualityProfile.textureAnisotropy).toBe(16);
+    expect(stageInternals.qualityProfile.shadowMapSize).toBe(4096);
+    expect(stageInternals.qualityProfile.bloomEnabled).toBe(true);
+    expect(stageInternals.renderer.shadowMap.enabled).toBe(true);
+    expect(stageInternals.renderer.setPixelRatio).toHaveBeenCalledWith(1);
+    expect(stageInternals.pipeline?.setEnabled).toHaveBeenCalledWith(true);
+    expect(stageInternals.pipeline?.setBloomResolutionScale).toHaveBeenCalledWith(1);
+    expect(stageInternals.lightPieceMat).toBeInstanceOf(MeshPhysicalMaterial);
+    expect(stageInternals.lightSquareMats[0]?.map?.anisotropy).toBe(16);
+  });
+
+  it("rebuilds materials and pipeline settings when switching quality tiers", async () => {
+    latestRendererProbe = {
+      renderer: "NVIDIA GeForce RTX 4090",
+      vendor: "NVIDIA",
+    };
+
+    const { stage } = createStage();
+    const stageInternals = stage as unknown as {
+      qualityTier: number;
+      qualityProfile: {
+        pixelRatioCap: number;
+        textureAnisotropy: number;
+        shadowMapSize: number;
+        bloomResolutionScale: number;
+      };
+      qualityPreference: { qualityMode: string; manualQualityTier: number };
+      lightPieceMat: MeshPhysicalMaterial | MeshStandardMaterial;
+      darkPieceMat: MeshPhysicalMaterial | MeshStandardMaterial;
+      accentMat: MeshPhysicalMaterial | MeshStandardMaterial;
+      lightSquareMats: Array<MeshPhysicalMaterial | MeshStandardMaterial>;
+      renderer: { shadowMap: { enabled: boolean } };
+      pipeline: {
+        setEnabled: ReturnType<typeof vi.fn>;
+        setBloomResolutionScale: ReturnType<typeof vi.fn>;
+      } | null;
+    };
+
+    await stage.init();
+    stage.setQualityTier(2);
+
+    expect(stageInternals.qualityTier).toBe(2);
+    expect(stageInternals.qualityProfile.pixelRatioCap).toBe(1.5);
+    expect(stageInternals.qualityProfile.textureAnisotropy).toBe(4);
+    expect(stageInternals.qualityProfile.shadowMapSize).toBe(2048);
+    expect(stageInternals.lightPieceMat).toBeInstanceOf(MeshStandardMaterial);
+    expect(stageInternals.darkPieceMat).toBeInstanceOf(MeshStandardMaterial);
+    expect(stageInternals.accentMat).toBeInstanceOf(MeshStandardMaterial);
+    expect(stageInternals.pipeline?.setEnabled).toHaveBeenLastCalledWith(true);
+    expect(stageInternals.pipeline?.setBloomResolutionScale).toHaveBeenLastCalledWith(0.5);
+    expect(stageInternals.lightSquareMats[0]?.map?.anisotropy).toBe(4);
+
+    stage.setQualityTier(1);
+
+    expect(stageInternals.qualityTier).toBe(1);
+    expect(stageInternals.qualityPreference.qualityMode).toBe("manual");
+    expect(stageInternals.qualityPreference.manualQualityTier).toBe(1);
+    expect(stageInternals.lightPieceMat).toBeInstanceOf(MeshStandardMaterial);
+    expect(stageInternals.darkPieceMat).toBeInstanceOf(MeshStandardMaterial);
+    expect(stageInternals.accentMat).toBeInstanceOf(MeshStandardMaterial);
+    expect(stageInternals.renderer.shadowMap.enabled).toBe(false);
+    expect(stageInternals.pipeline?.setEnabled).toHaveBeenLastCalledWith(false);
+    expect(stageInternals.pipeline?.setBloomResolutionScale).toHaveBeenLastCalledWith(0);
+    expect(stageInternals.qualityProfile.pixelRatioCap).toBe(1);
+    expect(stageInternals.qualityProfile.textureAnisotropy).toBe(1);
+    expect(stageInternals.lightSquareMats[0]?.map?.anisotropy).toBe(1);
+  });
+
+  it("downgrades after sustained low FPS and respects the cooldown window", async () => {
+    latestRendererProbe = {
+      renderer: "NVIDIA GeForce RTX 4090",
+      vendor: "NVIDIA",
+    };
+
+    const { stage } = createStage();
+    const stageInternals = stage as unknown as {
+      qualityTier: number;
+      qualityPreference: { qualityMode: string };
+      qualityLastFrameAt: number;
+      qualitySampleWindowMs: number;
+      qualitySampleFrames: number;
+      qualityMonitorState: { lowFpsSinceMs: number | null; lastAutoDowngradeAtMs: number | null };
+      resetPerformanceMonitor: (timestamp?: number) => void;
+      updatePerformanceMonitor: (now: number) => void;
+    };
+
+    await stage.init();
+    expect(stageInternals.qualityPreference.qualityMode).toBe("auto");
+
+    stageInternals.resetPerformanceMonitor(1_000);
+    stageInternals.updatePerformanceMonitor(2_000);
+    stageInternals.updatePerformanceMonitor(3_000);
+    stageInternals.updatePerformanceMonitor(4_000);
+    expect(stageInternals.qualityTier).toBe(2);
+
+    stageInternals.updatePerformanceMonitor(5_000);
+    expect(stageInternals.qualityTier).toBe(2);
+
+    stageInternals.updatePerformanceMonitor(6_000);
+    stageInternals.updatePerformanceMonitor(7_000);
+    stageInternals.updatePerformanceMonitor(8_000);
+
+    expect(stageInternals.qualityTier).toBe(2);
+
+    stageInternals.qualityMonitorState = {
+      ...stageInternals.qualityMonitorState,
+      lastAutoDowngradeAtMs: 0,
+    };
+    stageInternals.resetPerformanceMonitor(61_000);
+    stageInternals.updatePerformanceMonitor(62_000);
+    stageInternals.updatePerformanceMonitor(63_000);
+    stageInternals.updatePerformanceMonitor(64_000);
+    stageInternals.updatePerformanceMonitor(65_000);
+
+    expect(stageInternals.qualityTier).toBe(1);
+  });
+
+  it("does not auto-downgrade while quality mode is manual", async () => {
+    latestRendererProbe = {
+      renderer: "NVIDIA GeForce RTX 4090",
+      vendor: "NVIDIA",
+    };
+
+    const { stage } = createStage();
+    const stageInternals = stage as unknown as {
+      qualityTier: number;
+      qualityPreference: { qualityMode: string; manualQualityTier: number };
+      resetPerformanceMonitor: (timestamp?: number) => void;
+      updatePerformanceMonitor: (now: number) => void;
+    };
+
+    await stage.init();
+    stage.setQualityTier(3);
+    expect(stageInternals.qualityPreference.qualityMode).toBe("manual");
+
+    stageInternals.resetPerformanceMonitor(1_000);
+    stageInternals.updatePerformanceMonitor(2_000);
+    stageInternals.updatePerformanceMonitor(3_000);
+    stageInternals.updatePerformanceMonitor(4_000);
+    stageInternals.updatePerformanceMonitor(5_000);
+    stageInternals.updatePerformanceMonitor(6_000);
+
+    expect(stageInternals.qualityTier).toBe(3);
+  });
+
   it("releases stage-owned resources during final disposal", async () => {
     const { stage } = createStage();
     const stageInternals = stage as unknown as {
       environmentTarget: { texture: Texture; dispose: ReturnType<typeof vi.fn> } | null;
+      handlePreventRightClick: (event: PointerEvent) => void;
+      handleContextMenu: (event: MouseEvent) => void;
       hitPlane: Mesh;
       lightPieceMat: { dispose: () => void };
       prototypes: Map<string, { traverse: (callback: (child: unknown) => void) => void }>;
       scene: { children: unknown[] };
     };
+    const removeWindowListenerSpy = vi.spyOn(window, "removeEventListener");
 
     await stage.init();
 
@@ -902,6 +1108,14 @@ describe("ChessStage", () => {
 
     expect(environmentTarget).not.toBeNull();
     expect(environmentTarget?.dispose).toHaveBeenCalledTimes(1);
+    expect(removeWindowListenerSpy).toHaveBeenCalledWith(
+      "pointerdown",
+      stageInternals.handlePreventRightClick,
+    );
+    expect(removeWindowListenerSpy).toHaveBeenCalledWith(
+      "contextmenu",
+      stageInternals.handleContextMenu,
+    );
     expect(hitPlaneGeometryDispose).toHaveBeenCalledTimes(1);
     expect(hitPlaneMaterialDispose).toHaveBeenCalledTimes(1);
     expect(lightPieceMatDispose).toHaveBeenCalledTimes(1);

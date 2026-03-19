@@ -1,6 +1,6 @@
 import { useEffect, useEffectEvent, useRef } from "react";
 import type { Square } from "chess.js";
-import { ChessStage } from "../scene/ChessStage";
+import { createSceneAdapter, type SceneAdapter } from "../scene/SceneAdapter";
 import { useGameStore } from "../state/gameStore";
 import type { GameSession, ThemeDefinition } from "../types/game";
 
@@ -12,9 +12,13 @@ interface ChessSceneProps {
   promotionAnchorSquare: Square | null;
   selectedSquare: Square | null;
   legalTargets: Square[];
+  castlingTargets: Square[];
   hintMove: { from: Square; to: Square } | null;
+  invalidMoveSquare: Square | null;
   onSquareSelect: (square: Square) => void;
   onPromotionAnchorChange: (anchor: { x: number; y: number } | null) => void;
+  onInvalidMoveAnchorChange: (anchor: { x: number; y: number } | null) => void;
+  onCastlingAnchorChange: (anchor: { x: number; y: number } | null) => void;
 }
 
 export function ChessScene({
@@ -25,14 +29,20 @@ export function ChessScene({
   promotionAnchorSquare,
   selectedSquare,
   legalTargets,
+  castlingTargets,
   hintMove,
+  invalidMoveSquare,
   onSquareSelect,
   onPromotionAnchorChange,
+  onInvalidMoveAnchorChange,
+  onCastlingAnchorChange,
 }: ChessSceneProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
-  const stageRef = useRef<ChessStage | null>(null);
+  const stageRef = useRef<SceneAdapter | null>(null);
   const handleSquareSelect = useEffectEvent(onSquareSelect);
   const handlePromotionAnchorChange = useEffectEvent(onPromotionAnchorChange);
+  const handleInvalidMoveAnchorChange = useEffectEvent(onInvalidMoveAnchorChange);
+  const handleCastlingAnchorChange = useEffectEvent(onCastlingAnchorChange);
   const cameraPreset = useGameStore((state) => state.cameraPreset);
 
   useEffect(() => {
@@ -40,8 +50,12 @@ export function ChessScene({
       return;
     }
 
-    const stage = new ChessStage(containerRef.current, handleSquareSelect);
+    const stage = createSceneAdapter(containerRef.current, handleSquareSelect);
     stageRef.current = stage;
+    stage.setQualityPreference({
+      qualityMode: session.settings.qualityMode,
+      manualQualityTier: session.settings.manualQualityTier,
+    });
     void stage.init();
 
     const visibilityHandler = () => {
@@ -74,11 +88,13 @@ export function ChessScene({
       redoStack: session.redoStack,
       selectedSquare,
       legalTargets,
+      castlingTargets,
       hintMove,
     });
   }, [
     hintMove,
     legalTargets,
+    castlingTargets,
     selectedSquare,
     session.moveEntries,
     session.playerColor,
@@ -95,6 +111,13 @@ export function ChessScene({
   useEffect(() => {
     stageRef.current?.setAnimationMode(session.settings.animationMode);
   }, [session.settings.animationMode]);
+
+  useEffect(() => {
+    stageRef.current?.setQualityPreference({
+      qualityMode: session.settings.qualityMode,
+      manualQualityTier: session.settings.manualQualityTier,
+    });
+  }, [session.settings.manualQualityTier, session.settings.qualityMode]);
 
   useEffect(() => {
     stageRef.current?.setCameraPreset(cameraPreset);
@@ -123,6 +146,46 @@ export function ChessScene({
       handlePromotionAnchorChange(null);
     };
   }, [promotionAnchorSquare]);
+
+  useEffect(() => {
+    if (!invalidMoveSquare) {
+      handleInvalidMoveAnchorChange(null);
+      return;
+    }
+
+    let frame = 0;
+    const updateAnchor = () => {
+      handleInvalidMoveAnchorChange(stageRef.current?.projectSquareToViewport(invalidMoveSquare, 0.6) ?? null);
+      frame = window.requestAnimationFrame(updateAnchor);
+    };
+
+    updateAnchor();
+
+    return () => {
+      window.cancelAnimationFrame(frame);
+      handleInvalidMoveAnchorChange(null);
+    };
+  }, [invalidMoveSquare]);
+
+  useEffect(() => {
+    if (castlingTargets.length === 0) {
+      handleCastlingAnchorChange(null);
+      return;
+    }
+
+    let frame = 0;
+    const updateAnchor = () => {
+      handleCastlingAnchorChange(stageRef.current?.projectSquareToViewport(castlingTargets[0], 0.7) ?? null);
+      frame = window.requestAnimationFrame(updateAnchor);
+    };
+
+    updateAnchor();
+
+    return () => {
+      window.cancelAnimationFrame(frame);
+      handleCastlingAnchorChange(null);
+    };
+  }, [castlingTargets]);
 
   return (
     <div

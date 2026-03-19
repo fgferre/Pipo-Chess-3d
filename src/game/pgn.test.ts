@@ -19,6 +19,8 @@ describe("PGN headers", () => {
         rotate: 1.5,
         zoom: 0.75,
       },
+      qualityMode: "manual",
+      manualQualityTier: 3 as const,
     });
 
     const restored = sessionFromPgn(session.snapshot.pgn, createNewSession().settings);
@@ -35,6 +37,8 @@ describe("PGN headers", () => {
       rotate: 1.5,
       zoom: 0.75,
     });
+    expect(restored.settings.qualityMode).toBe("manual");
+    expect(restored.settings.manualQualityTier).toBe(3);
   });
 
   it("falls back to the current clock config when custom clock headers are missing", () => {
@@ -58,6 +62,8 @@ describe("PGN headers", () => {
     expect(restored.settings.animationMode).toBe(fallback.animationMode);
     expect(restored.settings.defaultViewMode).toBe(fallback.defaultViewMode);
     expect(restored.settings.cameraSensitivity).toEqual(fallback.cameraSensitivity);
+    expect(restored.settings.qualityMode).toBe(fallback.qualityMode);
+    expect(restored.settings.manualQualityTier).toBe(fallback.manualQualityTier);
   });
 
   it("retains fallback animationMode and defaultViewMode when PGN headers do not define them", () => {
@@ -71,5 +77,18 @@ describe("PGN headers", () => {
 
     expect(restored.settings.animationMode).toBe("reduced");
     expect(restored.settings.defaultViewMode).toBe("2d");
+  });
+
+  it("retains fallback quality settings when PGN headers do not define them", () => {
+    const fallback = {
+      ...createNewSession().settings,
+      qualityMode: "manual" as const,
+      manualQualityTier: 1 as const,
+    };
+
+    const restored = sessionFromPgn("1. c4 e5", fallback);
+
+    expect(restored.settings.qualityMode).toBe("manual");
+    expect(restored.settings.manualQualityTier).toBe(1);
   });
 });

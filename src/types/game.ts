@@ -1,4 +1,5 @@
 import type { Color, PieceSymbol, Square } from "chess.js";
+import type { QualityMode, QualityTier } from "../quality/qualityPolicy";
 
 export type Locale = "pt-BR" | "en";
 export type Orientation = "white" | "black";
@@ -131,6 +132,8 @@ export interface AppSettings {
   animationMode: 'normal' | 'reduced' | 'off';
   defaultViewMode: '3d' | '2d';
   cameraSensitivity: CameraSensitivity;
+  qualityMode: QualityMode;
+  manualQualityTier: QualityTier;
 }
 
 export interface GameSession {

@@ -1,6 +1,7 @@
 import { Chess, type Color } from "chess.js";
 import { getDifficultyPreset } from "../data/difficulties";
 import type { AppSettings, ClockConfig } from "../types/game";
+import { normalizeQualitySettings } from "../quality/qualityPolicy";
 
 const VERSION = "0.1.0";
 
@@ -29,6 +30,8 @@ export function applyPipoHeaders(
   chess.setHeader("PipoDefaultViewMode", settings.defaultViewMode);
   chess.setHeader("PipoCameraRotateSensitivity", String(settings.cameraSensitivity.rotate));
   chess.setHeader("PipoCameraZoomSensitivity", String(settings.cameraSensitivity.zoom));
+  chess.setHeader("PipoQualityMode", settings.qualityMode);
+  chess.setHeader("PipoManualQualityTier", String(settings.manualQualityTier));
   chess.setHeader("PipoPlayerColor", playerColor);
   chess.setHeader("PipoClockEnabled", String(clock.enabled));
   chess.setHeader("PipoClockLabel", clock.label);
@@ -50,6 +53,11 @@ export function extractSettingsFromHeaders(
   const incrementMs = Number(headers.PipoClockIncrementMs);
   const rotateSensitivity = Number(headers.PipoCameraRotateSensitivity);
   const zoomSensitivity = Number(headers.PipoCameraZoomSensitivity);
+  const qualityMode =
+    headers.PipoQualityMode === "auto" || headers.PipoQualityMode === "manual"
+      ? headers.PipoQualityMode
+      : fallback.qualityMode;
+  const manualQualityTier = Number(headers.PipoManualQualityTier);
   const enabled =
     headers.PipoClockEnabled === undefined
       ? fallback.clockConfig.enabled
@@ -61,6 +69,10 @@ export function extractSettingsFromHeaders(
     baseMs: Number.isFinite(baseMs) ? baseMs : fallback.clockConfig.baseMs,
     incrementMs: Number.isFinite(incrementMs) ? incrementMs : fallback.clockConfig.incrementMs,
   };
+  const qualitySettings = normalizeQualitySettings({
+    qualityMode,
+    manualQualityTier: Number.isFinite(manualQualityTier) ? manualQualityTier : fallback.manualQualityTier,
+  });
 
   return {
     settings: {
@@ -79,6 +91,8 @@ export function extractSettingsFromHeaders(
         zoom: Number.isFinite(zoomSensitivity) ? zoomSensitivity : fallback.cameraSensitivity.zoom,
       },
       clockConfig,
+      qualityMode: qualitySettings.qualityMode,
+      manualQualityTier: qualitySettings.manualQualityTier,
     },
     playerColor: headers.PipoPlayerColor === "b" ? "b" : "w",
   };

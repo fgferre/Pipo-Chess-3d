@@ -99,6 +99,7 @@ describe("App integration", () => {
     render(<App />);
 
     await screen.findByText("Pipo Chess 3D");
+    await screen.findByText("Pronto para jogar");
     fireEvent.click(screen.getByRole("button", { name: "Menu" }));
     fireEvent.click(await screen.findByRole("button", { name: "Emerald" }));
     fireEvent.click(await screen.findByRole("button", { name: "English" }));
@@ -115,6 +116,33 @@ describe("App integration", () => {
       expect(bootstrapData.settings?.locale).toBe("en");
       expect(bootstrapData.autosave?.session.snapshot.moveList).toHaveLength(2);
       expect(bootstrapData.autosave?.session.snapshot.clockState.running).toBe(false);
+    });
+  });
+
+  it("persists the quality override from the settings drawer", async () => {
+    const { default: App } = await import("./App");
+    const { loadBootstrapData } = await import("./persistence/db");
+    render(<App />);
+
+    await screen.findByText("Pipo Chess 3D");
+    await screen.findByText("Pronto para jogar");
+    fireEvent.click(screen.getByRole("button", { name: "Menu" }));
+    fireEvent.click(screen.getByRole("button", { name: "Ultra" }));
+
+    await waitFor(async () => {
+      const bootstrapData = await loadBootstrapData();
+      const settings = bootstrapData.settings as { qualityMode?: string; manualQualityTier?: number } | null;
+      expect(settings?.qualityMode).toBe("manual");
+      expect(settings?.manualQualityTier).toBe(3);
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Auto" }));
+
+    await waitFor(async () => {
+      const bootstrapData = await loadBootstrapData();
+      const settings = bootstrapData.settings as { qualityMode?: string; manualQualityTier?: number } | null;
+      expect(settings?.qualityMode).toBe("auto");
+      expect(settings?.manualQualityTier).toBe(3);
     });
   });
 

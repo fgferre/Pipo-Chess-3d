@@ -1,5 +1,15 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { applyEngineMove, applyPlayerMove, createNewSession, redoTurn, sessionFromPgn, undoTurn } from "./gameService";
+import {
+  applyEngineMove,
+  applyPlayerMove,
+  createDefaultSettings,
+  createNewSession,
+  getCastlingTargetsForSquare,
+  hydrateSession,
+  redoTurn,
+  sessionFromPgn,
+  undoTurn,
+} from "./gameService";
 
 describe("gameService", () => {
   afterEach(() => {
@@ -105,5 +115,51 @@ describe("gameService", () => {
 
     expect(session.snapshot.sideToMove).toBe("b");
     expect(session.snapshot.moveList[0]?.uci).toBe("e2e4");
+  });
+
+  it("hydrates legacy sessions without quality fields using the fallback quality settings", () => {
+    const fallback = {
+      ...createDefaultSettings(),
+      qualityMode: "manual" as const,
+      manualQualityTier: 1 as const,
+    };
+    const legacySession = createNewSession();
+    const legacySettings = { ...legacySession.settings } as Partial<typeof legacySession.settings>;
+    delete (legacySettings as { qualityMode?: unknown }).qualityMode;
+    delete (legacySettings as { manualQualityTier?: unknown }).manualQualityTier;
+
+    const hydrated = hydrateSession(
+      {
+        ...legacySession,
+        settings: legacySettings as typeof legacySession.settings,
+      },
+      fallback,
+    );
+
+    expect(hydrated.settings.qualityMode).toBe("manual");
+    expect(hydrated.settings.manualQualityTier).toBe(1);
+  });
+
+  it("returns castling target squares when castling is available", () => {
+    const session = createNewSession();
+    const targets = getCastlingTargetsForSquare(session, "e1");
+    expect(targets).toHaveLength(0);
+
+    let advanced = applyPlayerMove(session, "e2", "e4")!;
+    advanced = applyEngineMove(advanced, "e7e5")!;
+    advanced = applyPlayerMove(advanced, "g1", "f3")!;
+    advanced = applyEngineMove(advanced, "b8c6")!;
+    advanced = applyPlayerMove(advanced, "f1", "c4")!;
+    advanced = applyEngineMove(advanced, "d7d6")!;
+
+    const castlingTargets = getCastlingTargetsForSquare(advanced, "e1");
+    expect(castlingTargets).toContain("g1");
+    expect(castlingTargets).toHaveLength(1);
+  });
+
+  it("returns empty castling targets for non-king pieces", () => {
+    const session = createNewSession();
+    const targets = getCastlingTargetsForSquare(session, "e2");
+    expect(targets).toHaveLength(0);
   });
 });

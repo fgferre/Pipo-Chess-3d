@@ -2,6 +2,10 @@ import { Chess, type Color, type Move, type Square } from "chess.js";
 import { defaultClockConfig, normalizeClockConfig } from "../data/clocks";
 import { defaultDifficultyId } from "../data/difficulties";
 import { defaultThemeId } from "../data/themes";
+import {
+  normalizeQualitySettings,
+  QUALITY_DEFAULT_TIER,
+} from "../quality/qualityPolicy";
 import type {
   AppSettings,
   ClockConfig,
@@ -17,6 +21,8 @@ const DEFAULT_PLAYER_COLOR: Color = "w";
 const START_FEN = new Chess().fen();
 
 export function createDefaultSettings(): AppSettings {
+  const qualitySettings = normalizeQualitySettings();
+
   return {
     difficultyId: defaultDifficultyId,
     themeId: defaultThemeId,
@@ -29,6 +35,8 @@ export function createDefaultSettings(): AppSettings {
       rotate: 1,
       zoom: 1,
     },
+    qualityMode: qualitySettings.qualityMode,
+    manualQualityTier: qualitySettings.manualQualityTier,
   };
 }
 
@@ -100,6 +108,15 @@ export function getLegalMovesForSquare(session: GameSession, square: Square): Sq
   const chess = replayMoveEntries(session.moveEntries);
 
   return chess.moves({ square, verbose: true }).map((move) => move.to);
+}
+
+export function getCastlingTargetsForSquare(session: GameSession, square: Square): Square[] {
+  const chess = replayMoveEntries(session.moveEntries);
+
+  return chess
+    .moves({ square, verbose: true })
+    .filter((move) => move.flags.includes("k") || move.flags.includes("q"))
+    .map((move) => move.to);
 }
 
 export function applyPlayerMove(
@@ -500,6 +517,10 @@ function markTimeout(session: GameSession, clockState: ClockState): GameSession 
 
 function normalizeSettings(settings: AppSettings): AppSettings {
   const orientation: Orientation = settings.orientation === "black" ? "black" : "white";
+  const qualitySettings = normalizeQualitySettings({
+    qualityMode: settings.qualityMode,
+    manualQualityTier: settings.manualQualityTier ?? QUALITY_DEFAULT_TIER,
+  });
 
   return {
     difficultyId: settings.difficultyId || defaultDifficultyId,
@@ -510,6 +531,8 @@ function normalizeSettings(settings: AppSettings): AppSettings {
     animationMode: settings.animationMode ?? "normal",
     defaultViewMode: settings.defaultViewMode ?? "3d",
     cameraSensitivity: normalizeCameraSensitivity(settings.cameraSensitivity),
+    qualityMode: qualitySettings.qualityMode,
+    manualQualityTier: qualitySettings.manualQualityTier,
   };
 }
 

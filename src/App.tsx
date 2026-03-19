@@ -11,7 +11,7 @@ import {
   type ReactNode,
 } from "react";
 import { AnimatePresence, motion } from "framer-motion";
-import type { Color, PieceSymbol } from "chess.js";
+import type { Color, PieceSymbol, Square } from "chess.js";
 import { soundService } from "./audio/soundService";
 import { haptics } from "./hooks/useHaptics";
 import { ChessScene } from "./components/ChessScene";
@@ -31,6 +31,7 @@ import type {
   NewGameColorChoice,
   PositionEvaluation,
 } from "./types/game";
+import { fenToPieces } from "./utils/board";
 import { clamp, formatAbsoluteTimestamp, formatClock, formatRelativeTimestamp } from "./utils/format";
 import { exportTextContent, readTextFile, type ExportTextResult } from "./utils/files";
 
@@ -42,6 +43,17 @@ const CAMERA_PRESETS: Array<{ id: CameraPreset; icon: string; labelKey: Translat
   { id: "side", icon: "▤", labelKey: "camera.side" },
   { id: "topdown", icon: "▣", labelKey: "camera.topdown" },
   { id: "2d", icon: "□", labelKey: "camera.2d" },
+];
+const QUALITY_PRESETS: Array<
+  | { id: "auto"; labelKey: TranslationKey }
+  | { id: "eco"; labelKey: TranslationKey; tier: 1 }
+  | { id: "high"; labelKey: TranslationKey; tier: 2 }
+  | { id: "ultra"; labelKey: TranslationKey; tier: 3 }
+> = [
+  { id: "auto", labelKey: "quality.auto" },
+  { id: "eco", labelKey: "quality.eco", tier: 1 },
+  { id: "high", labelKey: "quality.high", tier: 2 },
+  { id: "ultra", labelKey: "quality.ultra", tier: 3 },
 ];
 const PROMOTION_CHOICES = ["q", "r", "b", "n"] as const;
 
@@ -55,6 +67,7 @@ function App() {
     saveSlots,
     selectedSquare,
     legalTargets,
+    castlingTargets,
     hintMove,
     pendingPromotion,
     analysisCursor,
@@ -76,6 +89,8 @@ function App() {
     setAnimationMode,
     setDefaultViewMode,
     setCameraSensitivity,
+    setQualityMode,
+    setQualityTier,
     setCameraPreset,
     setAnalysisCursor,
     setAnalysisAutoplay,
@@ -106,6 +121,9 @@ function App() {
   const [transientNotice, setTransientNotice] = useState<string | null>(null);
   const [transientError, setTransientError] = useState<string | null>(null);
   const [promotionAnchor, setPromotionAnchor] = useState<{ x: number; y: number } | null>(null);
+  const [invalidMoveSquare, setInvalidMoveSquare] = useState<Square | null>(null);
+  const [invalidMoveAnchor, setInvalidMoveAnchor] = useState<{ x: number; y: number } | null>(null);
+  const [castlingAnchor, setCastlingAnchor] = useState<{ x: number; y: number } | null>(null);
   const appShellRef = useRef<HTMLDivElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const lastFinishedGameRef = useRef<string | null>(null);
@@ -113,6 +131,8 @@ function App() {
   const locale = session.settings.locale;
   const theme = getTheme(session.settings.themeId);
   const style = getThemeCssVariables(theme) as CSSProperties;
+  const qualityMode = session.settings.qualityMode;
+  const manualQualityTier = session.settings.manualQualityTier;
   const activeDifficulty = getDifficultyPreset(session.settings.difficultyId);
   const boardSession = analysisCursor === null ? session : deriveSessionAtPly(session, analysisCursor);
   const analysisMode = analysisCursor !== null;
@@ -179,7 +199,17 @@ function App() {
   const prevMoveLengthRef = useRef(0);
   useEffect(() => {
     const moveCount = session.moveEntries.length;
-    if (!booted || moveCount === 0 || moveCount <= prevMoveLengthRef.current) {
+    if (!booted) {
+      prevMoveLengthRef.current = moveCount;
+      return;
+    }
+    if (moveCount < prevMoveLengthRef.current) {
+      prevMoveLengthRef.current = moveCount;
+      soundService.play("undo");
+      haptics.light();
+      return;
+    }
+    if (moveCount === 0 || moveCount === prevMoveLengthRef.current) {
       prevMoveLengthRef.current = moveCount;
       return;
     }
@@ -238,6 +268,12 @@ function App() {
       window.clearTimeout(timeout);
     };
   }, [transientError, transientNotice]);
+
+  useEffect(() => {
+    if (!invalidMoveSquare) return;
+    const timeout = window.setTimeout(() => setInvalidMoveSquare(null), 1800);
+    return () => window.clearTimeout(timeout);
+  }, [invalidMoveSquare]);
 
   useEffect(() => {
     if (!analysisAutoplay || analysisCursor === null) {
@@ -442,15 +478,34 @@ function App() {
           selectedSquare={analysisMode ? null : selectedSquare}
           legalTargets={analysisMode ? [] : legalTargets}
           hintMove={analysisMode ? null : hintMove}
+          invalidMoveSquare={invalidMoveSquare}
+          castlingTargets={analysisMode ? [] : castlingTargets}
           onSquareSelect={(square) => {
             if (analysisMode) {
               return;
+            }
+            if (
+              selectedSquare &&
+              legalTargets.length > 0 &&
+              !legalTargets.includes(square)
+            ) {
+              const pieces = fenToPieces(session.snapshot.fen);
+              const isPlayerPiece = pieces.some(
+                (p) => p.square === square && p.color === session.playerColor,
+              );
+              if (!isPlayerPiece) {
+                setInvalidMoveSquare(square);
+                soundService.play("invalid-move");
+                haptics.light();
+              }
             }
             haptics.light();
             soundService.play("piece-select");
             void selectSquare(square);
           }}
           onPromotionAnchorChange={setPromotionAnchor}
+          onInvalidMoveAnchorChange={setInvalidMoveAnchor}
+          onCastlingAnchorChange={setCastlingAnchor}
         />
         {analysisMode ? (
           <EvalBar evaluation={currentEvaluation} locale={locale} />
@@ -796,6 +851,39 @@ function App() {
         <MenuSection title={t(locale, "menu.settings")}>
           <div className="settings-stack">
             <div className="settings-group">
+              <h3>{t(locale, "menu.quality")}</h3>
+              <div className="chip-row">
+                {QUALITY_PRESETS.map((option) => {
+                  if (option.id === "auto") {
+                    return (
+                      <ChipButton
+                        key={option.id}
+                        active={qualityMode === "auto"}
+                        onClick={() => {
+                          void setQualityMode("auto");
+                        }}
+                      >
+                        {t(locale, option.labelKey)}
+                      </ChipButton>
+                    );
+                  }
+
+                  return (
+                    <ChipButton
+                      key={option.id}
+                      active={qualityMode === "manual" && manualQualityTier === option.tier}
+                      onClick={() => {
+                        void setQualityTier(option.tier);
+                      }}
+                    >
+                      {t(locale, option.labelKey)}
+                    </ChipButton>
+                  );
+                })}
+              </div>
+            </div>
+
+            <div className="settings-group">
               <h3>{t(locale, "menu.animation")}</h3>
               <div className="chip-row">
                 {(["normal", "reduced", "off"] as const).map((mode) => (
@@ -1115,6 +1203,38 @@ function App() {
         </section>
       ) : null}
 
+      <AnimatePresence>
+        {invalidMoveSquare && invalidMoveAnchor ? (
+          <motion.div
+            className="board-cue board-cue--invalid"
+            key="invalid-move-cue"
+            style={getBoardCueStyle(invalidMoveAnchor)}
+            initial={{ scale: 0.85, opacity: 0 }}
+            animate={{ scale: 1, opacity: 1 }}
+            exit={{ scale: 0.92, opacity: 0 }}
+            transition={{ type: "spring", stiffness: 400, damping: 30 }}
+          >
+            {t(locale, "feedback.invalidMove")}
+          </motion.div>
+        ) : null}
+      </AnimatePresence>
+
+      <AnimatePresence>
+        {castlingTargets.length > 0 && castlingAnchor ? (
+          <motion.div
+            className="board-cue board-cue--castling"
+            key="castling-cue"
+            style={getBoardCueStyle(castlingAnchor)}
+            initial={{ scale: 0.85, opacity: 0 }}
+            animate={{ scale: 1, opacity: 1 }}
+            exit={{ scale: 0.92, opacity: 0 }}
+            transition={{ type: "spring", stiffness: 400, damping: 30 }}
+          >
+            {"♜ " + t(locale, "feedback.castling")}
+          </motion.div>
+        ) : null}
+      </AnimatePresence>
+
       {replacePromptOpen ? (
         <>
           <div className="overlay-scrim overlay-scrim--strong" aria-hidden="true" />
@@ -1404,6 +1524,15 @@ function getExportToastKey(result: ExportTextResult): TranslationKey {
     default:
       return "save.exportDownloaded";
   }
+}
+
+function getBoardCueStyle(anchor: { x: number; y: number }): CSSProperties {
+  const viewportWidth = typeof window === "undefined" ? 0 : window.innerWidth;
+  const clampedX = clamp(anchor.x, 60, Math.max(60, viewportWidth - 60));
+  return {
+    left: `${clampedX}px`,
+    top: `${Math.max(24, anchor.y)}px`,
+  };
 }
 
 function getPromotionPopupStyle(anchor: { x: number; y: number } | null): CSSProperties | undefined {

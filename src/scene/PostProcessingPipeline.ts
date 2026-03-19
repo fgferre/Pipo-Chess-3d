@@ -46,15 +46,26 @@ const VignetteShader = {
 };
 
 export class PostProcessingPipeline {
+  private readonly renderer: WebGLRenderer;
+  private readonly scene: Scene;
+  private readonly camera: Camera;
   private composer: EffectComposer;
   private bloomPass: UnrealBloomPass;
   private vignettePass: ShaderPass;
+  private enabled = true;
+  private bloomResolutionScale = 1;
+  private size = new Vector2();
+  private pixelRatio = 1;
 
   constructor(renderer: WebGLRenderer, scene: Scene, camera: Camera) {
+    this.renderer = renderer;
+    this.scene = scene;
+    this.camera = camera;
     const size = renderer.getSize(new Vector2());
-    const pixelRatio = renderer.getPixelRatio();
-    const w = size.width * pixelRatio;
-    const h = size.height * pixelRatio;
+    this.pixelRatio = renderer.getPixelRatio();
+    this.size.copy(size);
+    const w = size.width * this.pixelRatio;
+    const h = size.height * this.pixelRatio;
 
     // Use HalfFloat render target to preserve HDR values for bloom
     const renderTarget = new WebGLRenderTarget(w, h, {
@@ -85,6 +96,11 @@ export class PostProcessingPipeline {
     this.composer.addPass(outputPass);
   }
 
+  setEnabled(enabled: boolean): void {
+    this.enabled = enabled;
+    this.bloomPass.enabled = enabled && this.bloomResolutionScale > 0;
+  }
+
   setBloomStrength(strength: number): void {
     this.bloomPass.strength = Math.max(0, strength);
   }
@@ -93,16 +109,39 @@ export class PostProcessingPipeline {
     return this.bloomPass.strength;
   }
 
+  setBloomResolutionScale(scale: number): void {
+    this.bloomResolutionScale = Math.max(0, scale);
+    this.syncBloomResolution();
+  }
+
   setSize(width: number, height: number, pixelRatio: number): void {
+    this.size.set(width, height);
+    this.pixelRatio = pixelRatio;
     this.composer.setSize(width * pixelRatio, height * pixelRatio);
-    this.bloomPass.resolution.set(width * pixelRatio, height * pixelRatio);
+    this.syncBloomResolution();
   }
 
   render(): void {
+    if (!this.enabled) {
+      this.renderer.render(this.scene, this.camera);
+      return;
+    }
+
     this.composer.render();
   }
 
   dispose(): void {
     this.composer.dispose();
+  }
+
+  private syncBloomResolution(): void {
+    const width = this.size.x * this.pixelRatio;
+    const height = this.size.y * this.pixelRatio;
+    const targetWidth = Math.max(1, Math.round(width * this.bloomResolutionScale));
+    const targetHeight = Math.max(1, Math.round(height * this.bloomResolutionScale));
+
+    this.bloomPass.enabled = this.enabled && this.bloomResolutionScale > 0;
+    this.bloomPass.setSize(targetWidth, targetHeight);
+    this.bloomPass.resolution.set(targetWidth, targetHeight);
   }
 }
