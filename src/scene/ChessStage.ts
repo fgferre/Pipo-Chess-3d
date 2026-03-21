@@ -76,7 +76,7 @@ const LAST_MOVE_HIGHLIGHT_MS = 1800;
 const HINT_HIGHLIGHT_MS = 4200;
 const BOARD_TEXTURE_VARIATIONS = 4;
 const BASE_FOV = 40;
-const MAX_PORTRAIT_FOV = 65;
+const MAX_PORTRAIT_FOV = 58;
 
 // Reusable scratch vectors to avoid per-frame allocations in hot paths
 const _motionResult = new Vector3();
@@ -219,8 +219,8 @@ const CAMERA_TRANSITION_DURATION_MS: Record<Exclude<AnimationMode, "off">, numbe
 
 const CAMERA_PRESET_PROFILES: Record<CameraPreset, CameraPresetProfile> = {
   classic: {
-    position: [0, 24, 32],
-    target: [0, 0, 0],
+    position: [0, 18.75, 29.5],
+    target: [0, 0.35, 0],
     minPolarAngle: 0.55,
     maxPolarAngle: Math.PI / 2 - 0.05,
     minDistance: 8,
@@ -231,8 +231,8 @@ const CAMERA_PRESET_PROFILES: Record<CameraPreset, CameraPresetProfile> = {
     spriteOpacity: 0,
   },
   side: {
-    position: [0, 10, 36],
-    target: [0, 0, 0],
+    position: [0, 10.75, 33.5],
+    target: [0, 0.25, 0],
     minPolarAngle: 1,
     maxPolarAngle: Math.PI / 2 - 0.04,
     minDistance: 12,
@@ -243,7 +243,7 @@ const CAMERA_PRESET_PROFILES: Record<CameraPreset, CameraPresetProfile> = {
     spriteOpacity: 0,
   },
   topdown: {
-    position: [0, 34, 4.25],
+    position: [0, 32.5, 4.8],
     target: [0, 0, 0],
     minPolarAngle: 0.08,
     maxPolarAngle: 0.38,
@@ -1305,7 +1305,6 @@ export class ChessStage implements SceneAdapter {
   private currentThemeId = "";
   private currentOrientation: Orientation = "white";
   private coordinatesVisible = false;
-  private coordinateOrientation: Orientation = "white";
   private currentHighlightKey = "";
   private currentState: RenderState | null = null;
   private transitionStateCursor: TransitionComparableState | null = null;
@@ -1330,14 +1329,14 @@ export class ChessStage implements SceneAdapter {
     this.renderer.shadowMap.enabled = true;
     this.renderer.shadowMap.type = PCFSoftShadowMap;
     this.renderer.toneMapping = ACESFilmicToneMapping;
-    this.renderer.toneMappingExposure = 1.0;
+    this.renderer.toneMappingExposure = 0.96;
     this.renderer.domElement.className = "board-canvas";
     this.container.appendChild(this.renderer.domElement);
 
     const aspect = container.clientWidth / Math.max(container.clientHeight, 1);
     this.camera = new PerspectiveCamera(40, aspect, 0.1, 1000);
-    this.camera.position.set(0, 24, 32);
-    this.camera.lookAt(0, 0, 0);
+    this.camera.position.set(0, 18.75, 29.5);
+    this.camera.lookAt(0, 0.35, 0);
 
     this.controls = new OrbitControls(this.camera, this.renderer.domElement);
     this.controls.enableDamping = true;
@@ -1354,7 +1353,7 @@ export class ChessStage implements SceneAdapter {
     this.controls.touches.TWO = TOUCH.DOLLY_ROTATE;
     this.applyCameraSensitivity(this.cameraSensitivity);
 
-    this.scene.fog = new FogExp2(0x050508, 0.012);
+    this.scene.fog = new FogExp2(0x05070b, 0.0095);
 
     this.scene.add(this.root);
     this.root.add(this.boardGroup, this.pieceGroup, this.spriteGroup, this.highlightGroup);
@@ -1937,7 +1936,6 @@ export class ChessStage implements SceneAdapter {
 
   private buildCoordinateLabels(orientation: Orientation): void {
     this.disposeCoordinateLabels();
-    this.coordinateOrientation = orientation;
 
     const palette = this.currentState?.theme
       ? deriveBoardPalette(this.currentState.theme)
@@ -2132,15 +2130,13 @@ export class ChessStage implements SceneAdapter {
   }
 
   private setupLighting(): void {
-    // Jazz Club / Pub Atmosphere
-    
-    // Key Light - High-contrast side lighting to reveal texture and volume
-    this.keyLight = new SpotLight(0xffdfba, 55);
-    this.keyLight.position.set(20, 20, 10);
-    this.keyLight.angle = Math.PI / 5;
-    this.keyLight.penumbra = 1.0;
-    this.keyLight.decay = 2.4;
-    this.keyLight.distance = 150;
+    // Obsidian stage rig: warm key light, cool cyan rim, restrained fill.
+    this.keyLight = new SpotLight(0xf4eadc, 44);
+    this.keyLight.position.set(18, 26, 14);
+    this.keyLight.angle = Math.PI / 4.6;
+    this.keyLight.penumbra = 0.96;
+    this.keyLight.decay = 2.2;
+    this.keyLight.distance = 165;
     this.keyLight.castShadow = true;
     this.keyLight.shadow.camera.near = 10;
     this.keyLight.shadow.camera.far = 40;
@@ -2148,10 +2144,9 @@ export class ChessStage implements SceneAdapter {
     this.keyLight.shadow.normalBias = 0.002;
     this.scene.add(this.keyLight);
 
-    // Rim Light 1 - Left - Defines silhouette
-    this.leftRimLight = new SpotLight(0x7a68ff, 28);
-    this.leftRimLight.position.set(-20, 12, -25);
-    this.leftRimLight.angle = Math.PI / 3;
+    this.leftRimLight = new SpotLight(0x8de8ff, 18);
+    this.leftRimLight.position.set(-20, 14, -28);
+    this.leftRimLight.angle = Math.PI / 3.15;
     this.leftRimLight.penumbra = 1.0;
     this.leftRimLight.decay = 2.0;
     this.leftRimLight.distance = 140;
@@ -2159,18 +2154,16 @@ export class ChessStage implements SceneAdapter {
     this.leftRimLight.shadow.bias = -0.0005;
     this.scene.add(this.leftRimLight);
 
-    // Rim Light 2 - Right - Definitions for overlapping pieces
-    this.rightRimLight = new SpotLight(0x8878ff, 12);
-    this.rightRimLight.position.set(22, 10, -22);
-    this.rightRimLight.angle = Math.PI / 3.5;
+    this.rightRimLight = new SpotLight(0xffc585, 9);
+    this.rightRimLight.position.set(24, 10, -18);
+    this.rightRimLight.angle = Math.PI / 3.9;
     this.rightRimLight.penumbra = 1.0;
     this.rightRimLight.decay = 2.0;
     this.rightRimLight.distance = 130;
     this.rightRimLight.castShadow = false;
     this.scene.add(this.rightRimLight);
 
-    // Environmental Ambient - Almost black for maximum contrast
-    this.hemisphereLight = new HemisphereLight(0x0a0502, 0x010103, 0.5);
+    this.hemisphereLight = new HemisphereLight(0x182734, 0x020304, 0.58);
     this.scene.add(this.hemisphereLight);
 
     this.applyQualityRuntimeSettings();
@@ -3032,7 +3025,9 @@ export class ChessStage implements SceneAdapter {
 
     if (this.scene.fog instanceof FogExp2) {
       this.scene.fog.color.set(theme.canvasFog);
+      this.scene.fog.density = 0.0095;
     }
+    this.applyLightingTheme(theme);
     this.lightSquareMats.forEach((material) =>
       applyWoodMaterialTheme(
         this.renderer,
@@ -3080,6 +3075,28 @@ export class ChessStage implements SceneAdapter {
     }
     if (this.currentFen) {
       this.syncPiecesToCurrentState();
+    }
+  }
+
+  private applyLightingTheme(theme: ThemeDefinition): void {
+    const keyHex = mixHex(theme.whitePiece, "#fff4e1", 0.38);
+    const rimHex = shiftHex(mixHex(theme.highlightSecondary, "#9ef2ff", 0.56), 0.06, 0.08);
+    const accentHex = shiftHex(mixHex(theme.highlightPrimary, theme.canvasAccent, 0.5), 0.08, 0.04);
+    const skyHex = mixHex(theme.canvasFog, theme.whitePiece, 0.14);
+    const groundHex = mixHex(theme.boardFrame, "#010204", 0.74);
+
+    if (this.keyLight) {
+      this.keyLight.color.set(keyHex);
+    }
+    if (this.leftRimLight) {
+      this.leftRimLight.color.set(rimHex);
+    }
+    if (this.rightRimLight) {
+      this.rightRimLight.color.set(accentHex);
+    }
+    if (this.hemisphereLight) {
+      this.hemisphereLight.color.set(skyHex);
+      this.hemisphereLight.groundColor.set(groundHex);
     }
   }
 

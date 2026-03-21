@@ -20,10 +20,34 @@ export function MoveList({ moves, locale, selectedPly = null, onSelectPly, tagsB
     });
   }
 
+  if (groupedMoves.length === 0) {
+    return (
+      <div className="move-list move-list--empty">
+        <div className="move-list__empty">
+          <span className="move-list__empty-glyph" aria-hidden="true">
+            ◫
+          </span>
+          <strong>{t(locale, "hud.moves")}</strong>
+          <p>{t(locale, "section.moves.subtitle.empty")}</p>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="move-list">
+      <div className="move-list__columns" aria-hidden="true">
+        <span className="move-list__column move-list__column--turn">#</span>
+        <span className="move-list__column">{t(locale, "hud.side.white")}</span>
+        <span className="move-list__column">{t(locale, "hud.side.black")}</span>
+      </div>
       {groupedMoves.map((turn) => (
-        <div className="move-row" key={turn.turn}>
+        <div
+          className={`move-row ${
+            selectedPly === turn.white?.ply || selectedPly === turn.black?.ply ? "is-active" : ""
+          }`}
+          key={turn.turn}
+        >
           <span className="move-row__turn">{turn.turn}.</span>
           <MoveCell
             move={turn.white}
@@ -61,7 +85,10 @@ function MoveCell({ move, locale, selectedPly, onSelectPly, tag }: MoveCellProps
   const selected = selectedPly === move.ply;
   const content = (
     <>
-      <span>{move.san}</span>
+      <span className="move-cell__meta">
+        <span className="move-cell__san">{move.san}</span>
+        <small className="move-cell__ply">#{move.ply}</small>
+      </span>
       {tag ? <small className={`move-tag move-tag--${tag}`}>{t(locale, `analysis.${tag}`)}</small> : null}
     </>
   );

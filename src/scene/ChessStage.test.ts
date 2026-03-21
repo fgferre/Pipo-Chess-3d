@@ -546,8 +546,8 @@ describe("ChessStage", () => {
 
     await stage.init();
 
-    // Portrait (aspect 0.5): FOV should widen from base 40 -> 40 / 0.5 = 80, capped at 65
-    expect(stageInternals.camera.fov).toBeCloseTo(65, 0);
+    // Portrait (aspect 0.5): FOV should widen from base 40 -> 40 / 0.5 = 80, capped at 58
+    expect(stageInternals.camera.fov).toBeCloseTo(58, 0);
     expect(stageInternals.camera.aspect).toBeCloseTo(0.5, 2);
 
     // Switch to landscape dimensions
@@ -871,6 +871,10 @@ describe("ChessStage", () => {
     const { stage } = createStage();
     const stageInternals = stage as unknown as {
       scene: { fog: FogExp2 | null };
+      keyLight: SpotLight | null;
+      leftRimLight: SpotLight | null;
+      rightRimLight: SpotLight | null;
+      hemisphereLight: HemisphereLight | null;
       update: (state: unknown) => void;
     };
 
@@ -878,11 +882,37 @@ describe("ChessStage", () => {
 
     stage.update(buildRenderState({ theme: themes[2] }));
 
+    const expectedKey = new Color(themes[2].whitePiece).lerp(new Color("#fff4e1"), 0.38);
+    const expectedRim = new Color(themes[2].highlightSecondary);
+    expectedRim.lerp(new Color("#9ef2ff"), 0.56);
+    const rimHsl = { h: 0, s: 0, l: 0 };
+    expectedRim.getHSL(rimHsl);
+    expectedRim.setHSL(rimHsl.h, Math.min(1, rimHsl.s + 0.06), Math.min(1, rimHsl.l + 0.08));
+    const expectedAccent = new Color(themes[2].highlightPrimary);
+    expectedAccent.lerp(new Color(themes[2].canvasAccent), 0.5);
+    const accentHsl = { h: 0, s: 0, l: 0 };
+    expectedAccent.getHSL(accentHsl);
+    expectedAccent.setHSL(
+      accentHsl.h,
+      Math.min(1, accentHsl.s + 0.08),
+      Math.min(1, accentHsl.l + 0.04),
+    );
+    const expectedSky = new Color(themes[2].canvasFog).lerp(new Color(themes[2].whitePiece), 0.14);
+    const expectedGround = new Color(themes[2].boardFrame).lerp(new Color("#010204"), 0.74);
+
     expect(latestRendererOptions).toMatchObject({ alpha: true });
     expect(stageInternals.scene.fog).toBeInstanceOf(FogExp2);
     expect(stageInternals.scene.fog?.color.getHexString()).toBe(
       new Color(themes[2].canvasFog).getHexString(),
     );
+    expect(stageInternals.scene.fog?.density).toBeCloseTo(0.0095);
+    expect(stageInternals.keyLight?.color.getHexString()).toBe(expectedKey.getHexString());
+    expect(stageInternals.leftRimLight?.color.getHexString()).toBe(expectedRim.getHexString());
+    expect(
+      Math.abs((stageInternals.rightRimLight?.color.getHex() ?? 0) - expectedAccent.getHex()),
+    ).toBeLessThanOrEqual(0x0101);
+    expect(stageInternals.hemisphereLight?.color.getHexString()).toBe(expectedSky.getHexString());
+    expect(stageInternals.hemisphereLight?.groundColor.getHexString()).toBe(expectedGround.getHexString());
   });
 
   it("uses a restrained lighting rig so piece volume and shadows remain readable", async () => {
@@ -897,12 +927,12 @@ describe("ChessStage", () => {
     const hemi = stageInternals.scene.children.find((child) => child instanceof HemisphereLight);
     const spots = stageInternals.scene.children.filter((child) => child instanceof SpotLight);
 
-    expect(stageInternals.renderer.toneMappingExposure).toBeCloseTo(1.0);
+    expect(stageInternals.renderer.toneMappingExposure).toBeCloseTo(0.96);
     expect(hemi).toMatchObject({ intensity: 0.45 });
     expect(spots).toHaveLength(3);
-    expect(spots[0]).toMatchObject({ castShadow: true, intensity: 55 });
-    expect(spots[1]).toMatchObject({ castShadow: true, intensity: 28 });
-    expect(spots[2]).toMatchObject({ castShadow: false, intensity: 12 });
+    expect(spots[0]).toMatchObject({ castShadow: true, intensity: 44 });
+    expect(spots[1]).toMatchObject({ castShadow: true, intensity: 18 });
+    expect(spots[2]).toMatchObject({ castShadow: false, intensity: 9 });
   });
 
   it("auto-detects a high-end GPU and starts in the premium tier", async () => {

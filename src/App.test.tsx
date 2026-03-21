@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 
 const subscribers = new Set<(event: unknown) => void>();
 
@@ -58,12 +58,19 @@ vi.mock("./engine/EngineClient", () => ({
 vi.mock("./components/ChessScene", () => ({
   ChessScene: ({
     onSquareSelect,
+    onPromotionAnchorChange,
+    onInvalidMoveAnchorChange,
   }: {
-    onSquareSelect: (square: "e2" | "e4") => void;
+    onSquareSelect: (square: "e2" | "e4" | "e5") => void;
+    onPromotionAnchorChange?: (anchor: { x: number; y: number } | null) => void;
+    onInvalidMoveAnchorChange?: (anchor: { x: number; y: number } | null) => void;
   }) => (
     <div>
       <button onClick={() => onSquareSelect("e2")}>Square e2</button>
       <button onClick={() => onSquareSelect("e4")}>Square e4</button>
+      <button onClick={() => onSquareSelect("e5")}>Square e5</button>
+      <button onClick={() => onPromotionAnchorChange?.({ x: 160, y: 160 })}>Promotion anchor</button>
+      <button onClick={() => onInvalidMoveAnchorChange?.({ x: 160, y: 160 })}>Invalid anchor</button>
     </div>
   ),
 }));
@@ -322,5 +329,72 @@ describe("App integration", () => {
     await waitFor(() => {
       expect(engineClientMock.analyzeGame).toHaveBeenCalledTimes(1);
     });
+  });
+
+  it("renders the promotion popup when a pending promotion is anchored", async () => {
+    const { default: App } = await import("./App");
+    const { useGameStore } = await import("./state/gameStore");
+    render(<App />);
+
+    await screen.findByText("Pipo Chess 3D");
+
+    act(() => {
+      useGameStore.setState({
+        pendingPromotion: {
+          from: "e7",
+          to: "e8",
+          anchorSquare: "e8",
+        },
+      });
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Promotion anchor" }));
+
+    expect(await screen.findByRole("dialog", { name: "Escolha a promoção" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Dama/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Cavalo/i })).toBeInTheDocument();
+  });
+
+  it("flips the promotion popup below the anchor near the top edge", async () => {
+    const { getPromotionPopupStyle } = await import("./App");
+    const widthDescriptor = Object.getOwnPropertyDescriptor(window, "innerWidth");
+    const heightDescriptor = Object.getOwnPropertyDescriptor(window, "innerHeight");
+
+    Object.defineProperty(window, "innerWidth", {
+      configurable: true,
+      value: 1280,
+    });
+    Object.defineProperty(window, "innerHeight", {
+      configurable: true,
+      value: 720,
+    });
+
+    try {
+      expect(getPromotionPopupStyle({ x: 640, y: 96 })).toMatchObject({
+        left: "640px",
+        top: "96px",
+        transform: "translate(-50%, 0.75rem)",
+      });
+    } finally {
+      if (widthDescriptor) {
+        Object.defineProperty(window, "innerWidth", widthDescriptor);
+      }
+      if (heightDescriptor) {
+        Object.defineProperty(window, "innerHeight", heightDescriptor);
+      }
+    }
+  });
+
+  it("shows invalid move feedback when the player targets an illegal square", async () => {
+    const { default: App } = await import("./App");
+    render(<App />);
+
+    await screen.findByText("Pipo Chess 3D");
+
+    fireEvent.click(screen.getByRole("button", { name: "Invalid anchor" }));
+    fireEvent.click(screen.getByText("Square e2"));
+    fireEvent.click(screen.getByText("Square e5"));
+
+    expect(await screen.findByText("Lance ilegal")).toBeInTheDocument();
   });
 });

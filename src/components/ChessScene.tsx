@@ -1,4 +1,4 @@
-import { useEffect, useEffectEvent, useRef } from "react";
+import { useEffect, useEffectEvent, useRef, type CSSProperties } from "react";
 import type { Square } from "chess.js";
 import { createSceneAdapter, type SceneAdapter } from "../scene/SceneAdapter";
 import { useGameStore } from "../state/gameStore";
@@ -192,14 +192,17 @@ export function ChessScene({
     };
   }, [castlingTargets]);
 
+  const stageStyle = {
+    "--board-backdrop": theme.backdrop,
+    "--board-fog": theme.canvasFog,
+    "--board-accent": theme.canvasAccent,
+    "--board-felt": theme.canvasFelt,
+    "--board-light": theme.boardLight,
+    "--board-dark": theme.boardDark,
+    "--board-frame": theme.boardFrame,
+  } as CSSProperties;
+
   return (
-    <div
-      className="board-shell"
-      ref={containerRef}
-      style={{
-        backgroundColor: theme.canvasFog,
-        backgroundImage: theme.backdrop,
-      }}
-    />
+    <div className="board-shell" ref={containerRef} style={stageStyle} />
   );
 }

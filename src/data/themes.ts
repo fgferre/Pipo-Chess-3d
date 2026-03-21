@@ -124,6 +124,11 @@ export function getThemeCssVariables(theme: ThemeDefinition): Record<string, str
     "--text-muted": theme.textMuted,
     "--accent-primary": theme.highlightPrimary,
     "--accent-secondary": theme.highlightSecondary,
+    "--canvas-accent": theme.canvasAccent,
+    "--canvas-felt": theme.canvasFelt,
+    "--canvas-fog": theme.canvasFog,
+    "--board-light": theme.boardLight,
+    "--board-dark": theme.boardDark,
+    "--board-frame": theme.boardFrame,
   };
 }
-

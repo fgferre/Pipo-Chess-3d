@@ -27,6 +27,7 @@ import { useGameStore } from "./state/gameStore";
 import type {
   CameraPreset,
   ClockConfig,
+  EnginePhase,
   GameSession,
   NewGameColorChoice,
   PositionEvaluation,
@@ -140,9 +141,13 @@ function App() {
   const activeDifficulty = getDifficultyPreset(session.settings.difficultyId);
   const boardSession = analysisCursor === null ? session : deriveSessionAtPly(session, analysisCursor);
   const analysisMode = analysisCursor !== null;
+  const toastMessage = restoreNotice ?? transientNotice ?? transientError ?? lastError;
+  const isErrorToast = !restoreNotice && !transientNotice && !!(transientError || lastError);
   const currentPly = analysisCursor ?? session.moveEntries.length;
   const currentEvaluation = getEvaluationForPly(session.analysisSummary?.evaluationsByPly, currentPly);
   const autosaveTimestamp = autosave ? formatRelativeTimestamp(autosave.updatedAt, locale) : null;
+  const bootProgress = getBootProgress(enginePhase);
+  const analysisSummaryCount = session.analysisSummary?.criticalMoments.length ?? 0;
   const gameLastMove = session.moveEntries.at(-1);
   const analysisLastMove = analysisMode ? boardSession.moveEntries.at(-1) ?? null : null;
   const boardLastMove =
@@ -162,13 +167,24 @@ function App() {
     session.snapshot.sideToMove !== session.playerColor ||
     enginePhase === "thinking" ||
     enginePhase === "analyzing";
-  const isGameInProgress =
-    session.moveEntries.length > 0 &&
-    (session.snapshot.status === "active" || session.snapshot.status === "idle");
   const selectedDifficultyIndex = Math.max(
     0,
     difficultyPresets.findIndex((preset) => preset.id === newGameDifficultyId),
   );
+  const analysisSectionSubtitle = getAnalysisSectionSubtitle(
+    session,
+    locale,
+    analysisSummaryCount,
+    analysisProgress,
+  );
+  const librarySectionSubtitle = getLibrarySectionSubtitle(autosaveTimestamp, saveSlots.length, locale);
+  const settingsSectionSubtitle = `${theme.label} · ${getLocaleLabel(locale)}`;
+  const historySessionSubtitle = t(locale, "section.game.subtitle", {
+    difficulty: activeDifficulty.label,
+    clock: session.settings.clockConfig.label,
+  });
+  const historySummary = buildMoveHistorySummary(session, locale);
+  const historyProgress = getHistoryProgress(session.moveEntries.length, currentPly, analysisMode);
 
   useEffect(() => {
     void bootstrap();
@@ -431,7 +447,7 @@ function App() {
   };
 
   const applyNewGame = async (forceReplace = false) => {
-    if (isGameInProgress && !forceReplace) {
+    if (hasReplaceableGame(useGameStore.getState().session) && !forceReplace) {
       setReplacePromptOpen(true);
       return;
     }
@@ -472,60 +488,83 @@ function App() {
   const bottomSide = buildClockSide(bottomColor, session, locale);
 
   return (
-    <div className="app-shell" ref={appShellRef} style={style}>
+    <div
+      className={`app-shell${analysisMode ? " is-analysis" : ""}${isZenMode ? " is-zen" : ""}`}
+      ref={appShellRef}
+      style={style}
+    >
       <div className="canvas-backdrop" />
       <div className="backdrop-orb backdrop-orb--primary" />
       <div className="backdrop-orb backdrop-orb--secondary" />
-      <p className="app-title-badge">Pipo Chess 3D</p>
 
       <main className="stage-root">
-        <ChessScene
-          session={boardSession}
-          theme={theme}
-          interactionEnabled={!analysisMode}
-          lastMove={boardLastMove}
-          promotionAnchorSquare={pendingPromotion?.anchorSquare ?? null}
-          selectedSquare={analysisMode ? null : selectedSquare}
-          legalTargets={analysisMode ? [] : legalTargets}
-          hintMove={analysisMode ? null : hintMove}
-          invalidMoveSquare={invalidMoveSquare}
-          castlingTargets={analysisMode ? [] : castlingTargets}
-          onSquareSelect={(square) => {
-            if (analysisMode) {
-              return;
-            }
-            if (
-              selectedSquare &&
-              legalTargets.length > 0 &&
-              !legalTargets.includes(square)
-            ) {
-              const pieces = fenToPieces(session.snapshot.fen);
-              const isPlayerPiece = pieces.some(
-                (p) => p.square === square && p.color === session.playerColor,
-              );
-              if (!isPlayerPiece) {
-                const diagnosis = diagnoseIllegalMove(session, selectedSquare, square);
-                const formatted = formatIllegalMoveDiagnosis(diagnosis, locale);
-                setInvalidMoveSummary(formatted.summary);
-                setInvalidMoveDetail(formatted.detail);
-                setInvalidMoveExpanded(false);
-                setInvalidMoveSquare(square);
-                soundService.play("invalid-move");
-                haptics.light();
+        <div className="stage-playfield">
+          <ChessScene
+            session={boardSession}
+            theme={theme}
+            interactionEnabled={!analysisMode}
+            lastMove={boardLastMove}
+            promotionAnchorSquare={pendingPromotion?.anchorSquare ?? null}
+            selectedSquare={analysisMode ? null : selectedSquare}
+            legalTargets={analysisMode ? [] : legalTargets}
+            hintMove={analysisMode ? null : hintMove}
+            invalidMoveSquare={invalidMoveSquare}
+            castlingTargets={analysisMode ? [] : castlingTargets}
+            onSquareSelect={(square) => {
+              if (analysisMode) {
+                return;
               }
-            }
-            haptics.light();
-            soundService.play("piece-select");
-            void selectSquare(square);
-          }}
-          onPromotionAnchorChange={setPromotionAnchor}
-          onInvalidMoveAnchorChange={setInvalidMoveAnchor}
-          onCastlingAnchorChange={setCastlingAnchor}
-        />
+              if (
+                selectedSquare &&
+                legalTargets.length > 0 &&
+                !legalTargets.includes(square)
+              ) {
+                const pieces = fenToPieces(session.snapshot.fen);
+                const isPlayerPiece = pieces.some(
+                  (p) => p.square === square && p.color === session.playerColor,
+                );
+                if (!isPlayerPiece) {
+                  const diagnosis = diagnoseIllegalMove(session, selectedSquare, square);
+                  const formatted = formatIllegalMoveDiagnosis(diagnosis, locale);
+                  setInvalidMoveSummary(formatted.summary);
+                  setInvalidMoveDetail(formatted.detail);
+                  setInvalidMoveExpanded(false);
+                  setInvalidMoveSquare(square);
+                  soundService.play("invalid-move");
+                  haptics.light();
+                }
+              }
+              haptics.light();
+              soundService.play("piece-select");
+              void selectSquare(square);
+            }}
+            onPromotionAnchorChange={setPromotionAnchor}
+            onInvalidMoveAnchorChange={setInvalidMoveAnchor}
+            onCastlingAnchorChange={setCastlingAnchor}
+          />
+        </div>
         {analysisMode ? (
           <EvalBar evaluation={currentEvaluation} locale={locale} />
         ) : null}
       </main>
+
+      <AnimatePresence>
+        {isZenMode && (
+          <motion.button
+            className="zen-exit"
+            key="zen-exit"
+            type="button"
+            aria-label={t(locale, "hud.exitZen")}
+            initial={{ opacity: 0, scale: 0.8 }}
+            animate={{ opacity: 1, scale: 1 }}
+            exit={{ opacity: 0, scale: 0.8 }}
+            transition={{ duration: 0.25, ease: "easeOut" }}
+            onClick={() => setIsZenMode(false)}
+          >
+            ◎
+          </motion.button>
+        )}
+      </AnimatePresence>
 
       <motion.button
         className={`history-tab ${historyOpen ? "is-open" : ""}`}
@@ -540,7 +579,15 @@ function App() {
           });
         }}
       >
-        <span>{analysisMode ? t(locale, "history.analysis") : "PGN"}</span>
+        <span className="history-tab__icon" aria-hidden="true">
+          ◫
+        </span>
+        <span className="history-tab__dots" aria-hidden="true">
+          <i />
+          <i />
+          <i />
+        </span>
+        <span className="history-tab__label">{analysisMode ? t(locale, "history.analysis") : "PGN"}</span>
       </motion.button>
 
       <motion.section
@@ -554,27 +601,44 @@ function App() {
         transition={{ duration: 0.3, ease: "easeInOut" }}
         style={{ overflow: "hidden", pointerEvents: isZenMode ? "none" : undefined }}
       >
-        <button
-          className="bar-toggle"
-          type="button"
-          aria-label={t(locale, topBarExpanded ? "panel.close" : "hud.expandStatus")}
-          onClick={() => {
-            startTransition(() => {
-              setTopBarExpanded((value) => !value);
-            });
-          }}
-        >
-          {topBarExpanded ? "−" : "+"}
-        </button>
-        <ClockPill side={topSide} collapsed={!topBarExpanded} />
-        <div className={`top-bar__meta ${topBarExpanded ? "is-visible" : ""}`}>
-          <div className="top-bar__engine">
-            <span className={`status-pill status-pill--${enginePhase}`}>{t(locale, getStatusKey(enginePhase))}</span>
-            <strong>{activeDifficulty.label}</strong>
-            <small>{engineMessage || t(locale, getStatusKey(enginePhase))}</small>
+        <div className="top-bar__nav">
+          <div className="top-bar__island top-bar__island--brand">
+            <div className="top-bar__brand">
+              <span className="top-bar__brand-mark" aria-hidden="true">
+                ◧
+              </span>
+              <div className="top-bar__brand-copy">
+                <strong>Pipo Chess 3D</strong>
+                <small>{analysisMode ? t(locale, "history.analysis") : t(locale, "hud.localAi")}</small>
+              </div>
+            </div>
+          </div>
+          <div className="top-bar__island top-bar__island--timers">
+            <div className="top-bar__timers">
+              <ClockPill side={topSide} collapsed={!topBarExpanded} />
+              <ClockPill side={bottomSide} collapsed={!topBarExpanded} />
+            </div>
+          </div>
+          <div className="top-bar__island top-bar__island--engine">
+            <div className="top-bar__engine">
+              <span className={`status-pill status-pill--${enginePhase}`}>{t(locale, getStatusKey(enginePhase))}</span>
+              <strong>{activeDifficulty.label}</strong>
+              <small>{engineMessage || t(locale, getStatusKey(enginePhase))}</small>
+            </div>
+            <button
+              className="bar-toggle top-bar__toggle"
+              type="button"
+              aria-label={t(locale, topBarExpanded ? "panel.close" : "hud.expandStatus")}
+              onClick={() => {
+                startTransition(() => {
+                  setTopBarExpanded((value) => !value);
+                });
+              }}
+            >
+              {topBarExpanded ? "−" : "+"}
+            </button>
           </div>
         </div>
-        <ClockPill side={bottomSide} collapsed={!topBarExpanded} />
       </motion.section>
 
       <motion.section
@@ -588,134 +652,140 @@ function App() {
         transition={{ duration: 0.3, ease: "easeInOut" }}
         style={{ overflow: "hidden", pointerEvents: isZenMode ? "none" : undefined }}
       >
-        <button
-          className="bar-toggle"
-          type="button"
-          aria-label={t(locale, bottomBarExpanded ? "panel.close" : "hud.expandActions")}
-          onClick={() => {
-            startTransition(() => {
-              setBottomBarExpanded((value) => !value);
-            });
-          }}
-        >
-          {bottomBarExpanded ? "−" : "+"}
-        </button>
-        {analysisMode ? (
-          <>
-            <ActionButton
-              icon="⏮"
-              label={t(locale, "analysis.start")}
-              compact={!bottomBarExpanded}
-              onClick={() => {
-                setAnalysisAutoplay(false);
-                setAnalysisCursor(0);
-              }}
-            />
-            <ActionButton
-              icon="◀"
-              label={t(locale, "analysis.previous")}
-              compact={!bottomBarExpanded}
-              disabled={currentPly <= 0}
-              onClick={() => {
-                setAnalysisAutoplay(false);
-                setAnalysisCursor(currentPly - 1);
-              }}
-            />
-            <ActionButton
-              icon={analysisAutoplay ? "⏸" : "▶"}
-              label={t(locale, analysisAutoplay ? "analysis.pause" : "analysis.play")}
-              compact={!bottomBarExpanded}
-              onClick={() => setAnalysisAutoplay(!analysisAutoplay)}
-            />
-            <ActionButton
-              icon="▶"
-              label={t(locale, "analysis.next")}
-              compact={!bottomBarExpanded}
-              disabled={currentPly >= session.moveEntries.length}
-              onClick={() => {
-                setAnalysisAutoplay(false);
-                setAnalysisCursor(currentPly + 1);
-              }}
-            />
-            <ActionButton
-              icon="⏭"
-              label={t(locale, "analysis.end")}
-              compact={!bottomBarExpanded}
-              onClick={() => {
-                setAnalysisAutoplay(false);
-                setAnalysisCursor(session.moveEntries.length);
-              }}
-            />
-            <ActionButton
-              icon="↩"
-              label={t(locale, "analysis.exit")}
-              compact={!bottomBarExpanded}
-              onClick={() => {
-                setAnalysisAutoplay(false);
-                setAnalysisCursor(null);
-              }}
-            />
-          </>
-        ) : (
-          <>
-            <ActionButton
-              icon="＋"
-              label={t(locale, "hud.newGame")}
-              compact={!bottomBarExpanded}
-              onClick={openNewGameSheet}
-            />
-            <ActionButton
-              icon="↺"
-              label={t(locale, "hud.undo")}
-              compact={!bottomBarExpanded}
-              disabled={!session.snapshot.canUndo}
-              onClick={() => void undo()}
-            />
-            <ActionButton
-              icon="↻"
-              label={t(locale, "hud.redo")}
-              compact={!bottomBarExpanded}
-              disabled={!session.snapshot.canRedo}
-              onClick={() => void redo()}
-            />
-            <ActionButton
-              icon="💡"
-              label={t(locale, "hud.hint")}
-              compact={!bottomBarExpanded}
-              disabled={isHintDisabled}
-              loading={enginePhase === "thinking" && session.snapshot.sideToMove === session.playerColor}
-              onClick={() => void requestHint()}
-            />
-          </>
-        )}
-        <ActionButton
-          icon={isZenMode ? "◎" : "○"}
-          label="Zen"
-          compact={!bottomBarExpanded}
-          onClick={() => setIsZenMode((v) => !v)}
-        />
-        <ActionButton
-          icon="🎥"
-          label={t(locale, "hud.camera")}
-          compact={!bottomBarExpanded}
-          onClick={() => {
-            startTransition(() => {
-              setCameraPickerOpen((value) => !value);
-              setMenuOpen(false);
-            });
-          }}
-        />
-        <ActionButton
-          icon="☰"
-          label={t(locale, "hud.menu")}
-          compact={!bottomBarExpanded}
-          onClick={() => {
-            startTransition(() => {
-              setMenuOpen((value) => !value);
-              setCameraPickerOpen(false);
-            });
-          }}
-        />
+        <div className="bottom-bar__cluster bottom-bar__cluster--primary">
+          {analysisMode ? (
+            <>
+              <ActionButton
+                icon="⏮"
+                label={t(locale, "analysis.start")}
+                compact={!bottomBarExpanded}
+                onClick={() => {
+                  setAnalysisAutoplay(false);
+                  setAnalysisCursor(0);
+                }}
+              />
+              <ActionButton
+                icon="◀"
+                label={t(locale, "analysis.previous")}
+                compact={!bottomBarExpanded}
+                disabled={currentPly <= 0}
+                onClick={() => {
+                  setAnalysisAutoplay(false);
+                  setAnalysisCursor(currentPly - 1);
+                }}
+              />
+              <ActionButton
+                icon={analysisAutoplay ? "⏸" : "▶"}
+                label={t(locale, analysisAutoplay ? "analysis.pause" : "analysis.play")}
+                compact={!bottomBarExpanded}
+                tone="primary"
+                onClick={() => setAnalysisAutoplay(!analysisAutoplay)}
+              />
+              <ActionButton
+                icon="▶"
+                label={t(locale, "analysis.next")}
+                compact={!bottomBarExpanded}
+                disabled={currentPly >= session.moveEntries.length}
+                onClick={() => {
+                  setAnalysisAutoplay(false);
+                  setAnalysisCursor(currentPly + 1);
+                }}
+              />
+              <ActionButton
+                icon="⏭"
+                label={t(locale, "analysis.end")}
+                compact={!bottomBarExpanded}
+                onClick={() => {
+                  setAnalysisAutoplay(false);
+                  setAnalysisCursor(session.moveEntries.length);
+                }}
+              />
+              <ActionButton
+                icon="↩"
+                label={t(locale, "analysis.exit")}
+                compact={!bottomBarExpanded}
+                onClick={() => {
+                  setAnalysisAutoplay(false);
+                  setAnalysisCursor(null);
+                }}
+              />
+            </>
+          ) : (
+            <>
+              <ActionButton
+                icon="＋"
+                label={t(locale, "hud.newGame")}
+                compact={!bottomBarExpanded}
+                tone="primary"
+                onClick={openNewGameSheet}
+              />
+              <ActionButton
+                icon="↺"
+                label={t(locale, "hud.undo")}
+                compact={!bottomBarExpanded}
+                disabled={!session.snapshot.canUndo}
+                onClick={() => void undo()}
+              />
+              <ActionButton
+                icon="↻"
+                label={t(locale, "hud.redo")}
+                compact={!bottomBarExpanded}
+                disabled={!session.snapshot.canRedo}
+                onClick={() => void redo()}
+              />
+              <ActionButton
+                icon="💡"
+                label={t(locale, "hud.hint")}
+                compact={!bottomBarExpanded}
+                disabled={isHintDisabled}
+                loading={enginePhase === "thinking" && session.snapshot.sideToMove === session.playerColor}
+                onClick={() => void requestHint()}
+              />
+            </>
+          )}
+        </div>
+        <div className="bottom-bar__cluster bottom-bar__cluster--utility">
+          <ActionButton
+            icon={isZenMode ? "◎" : "○"}
+            label="Zen"
+            compact={!bottomBarExpanded}
+            onClick={() => setIsZenMode((v) => !v)}
+          />
+          <ActionButton
+            icon="🎥"
+            label={t(locale, "hud.camera")}
+            compact={!bottomBarExpanded}
+            onClick={() => {
+              startTransition(() => {
+                setCameraPickerOpen((value) => !value);
+                setMenuOpen(false);
+              });
+            }}
+          />
+          <ActionButton
+            icon="☰"
+            label={t(locale, "hud.menu")}
+            compact={!bottomBarExpanded}
+            onClick={() => {
+              startTransition(() => {
+                setMenuOpen((value) => !value);
+                setCameraPickerOpen(false);
+              });
+            }}
+          />
+          <button
+            className="bar-toggle bottom-bar__toggle"
+            type="button"
+            aria-label={t(locale, bottomBarExpanded ? "panel.close" : "hud.expandActions")}
+            onClick={() => {
+              startTransition(() => {
+                setBottomBarExpanded((value) => !value);
+              });
+            }}
+          >
+            {bottomBarExpanded ? "−" : "+"}
+          </button>
+        </div>
       </motion.section>
 
       <AnimatePresence>
@@ -728,30 +798,63 @@ function App() {
             transition={{ type: "spring", stiffness: 280, damping: 32 }}
             style={{ pointerEvents: "auto" }}
           >
-            <div className="panel-header">
-              <div>
-                <p className="panel-kicker">{t(locale, "history.kicker")}</p>
-                <h2>{t(locale, "hud.moves")}</h2>
+            <div className="history-panel__shell">
+              <div className="panel-header panel-header--history">
+                <div>
+                  <p className="panel-kicker">{t(locale, "history.kicker")}</p>
+                  <h2>{t(locale, "hud.moves")}</h2>
+                </div>
+                <div className="panel-header__meta">
+                  <span className="panel-header__badge">{analysisMode ? t(locale, "history.analysis") : "PGN"}</span>
+                  <button
+                    className="ghost-icon-button"
+                    type="button"
+                    aria-label={t(locale, "panel.close")}
+                    onClick={() => setHistoryOpen(false)}
+                  >
+                    ×
+                  </button>
+                </div>
               </div>
-              <button
-                className="ghost-icon-button"
-                type="button"
-                aria-label={t(locale, "panel.close")}
-                onClick={() => setHistoryOpen(false)}
-              >
-                ×
-              </button>
+              <section className="history-panel__session">
+                <div className="history-panel__session-indicator" aria-hidden="true" />
+                <div className="history-panel__session-copy">
+                  <strong>{t(locale, "section.game.title")}</strong>
+                  <small>{historySessionSubtitle}</small>
+                </div>
+                <span className={`status-pill status-pill--${analysisMode ? "analyzing" : enginePhase}`}>
+                  {analysisMode ? t(locale, "history.analysis") : t(locale, getStatusKey(enginePhase))}
+                </span>
+              </section>
+              <div className="history-panel__body">
+                <MoveList
+                  moves={deferredMoves}
+                  locale={locale}
+                  selectedPly={analysisMode ? currentPly : null}
+                  onSelectPly={(ply) => {
+                    setAnalysisAutoplay(false);
+                    setAnalysisCursor(ply);
+                  }}
+                  tagsByPly={session.analysisSummary?.tagsByPly}
+                />
+              </div>
+              <footer className="history-panel__footer">
+                <div className="history-panel__metrics">
+                  <article className="history-panel__metric">
+                    <span>{t(locale, "hud.moves")}</span>
+                    <strong>{session.moveEntries.length}</strong>
+                  </article>
+                  <article className="history-panel__metric">
+                    <span>{t(locale, "hud.engine")}</span>
+                    <strong>{analysisMode ? t(locale, "history.analysis") : activeDifficulty.label}</strong>
+                  </article>
+                </div>
+                <div aria-hidden="true" className="history-panel__progress">
+                  <span className="history-panel__progress-fill" style={{ width: `${historyProgress}%` }} />
+                </div>
+                <p className="history-panel__summary">{historySummary}</p>
+              </footer>
             </div>
-            <MoveList
-              moves={deferredMoves}
-              locale={locale}
-              selectedPly={analysisMode ? currentPly : null}
-              onSelectPly={(ply) => {
-                setAnalysisAutoplay(false);
-                setAnalysisCursor(ply);
-              }}
-              tagsByPly={session.analysisSummary?.tagsByPly}
-            />
           </motion.aside>
         )}
       </AnimatePresence>
@@ -768,9 +871,9 @@ function App() {
         {cameraPickerOpen && (
           <motion.section
             className="camera-picker"
-            initial={{ y: "110%", opacity: 0 }}
-            animate={{ y: 0, opacity: 1 }}
-            exit={{ y: "110%", opacity: 0 }}
+            initial={{ x: "110%", opacity: 0 }}
+            animate={{ x: 0, opacity: 1 }}
+            exit={{ x: "110%", opacity: 0 }}
             transition={{ type: "spring", stiffness: 320, damping: 36 }}
             style={{ pointerEvents: "auto" }}
           >
@@ -810,416 +913,461 @@ function App() {
 
       <AnimatePresence>
         {menuOpen && (
-      <motion.aside
-        className="menu-drawer"
-        initial={{ y: "110%", opacity: 0 }}
-        animate={{ y: 0, opacity: 1 }}
-        exit={{ y: "110%", opacity: 0 }}
-        transition={{ type: "spring", stiffness: 300, damping: 36 }}
-        style={{ pointerEvents: "auto" }}
-      >
-        <div className="panel-header">
-          <div>
-            <p className="panel-kicker">{t(locale, "menu.kicker")}</p>
-            <h2>{t(locale, "hud.menu")}</h2>
-          </div>
-          <button
-            className="ghost-icon-button"
-            type="button"
-            aria-label={t(locale, "panel.close")}
-            onClick={() => setMenuOpen(false)}
+          <motion.aside
+            className="menu-drawer"
+            initial={{ x: "110%", opacity: 0 }}
+            animate={{ x: 0, opacity: 1 }}
+            exit={{ x: "110%", opacity: 0 }}
+            transition={{ type: "spring", stiffness: 300, damping: 36 }}
+            style={{ pointerEvents: "auto" }}
           >
-            ×
-          </button>
-        </div>
-
-        <MenuSection title={t(locale, "section.analysis.title")}>
-          <div className="inline-actions">
-            <button
-              className="primary-button"
-              type="button"
-              disabled={session.moveEntries.length === 0}
-              onClick={() => void enterAnalysis()}
-            >
-              {analysisProgress ? t(locale, "analysis.running") : t(locale, "analysis.open")}
-            </button>
-            <button
-              className="ghost-button"
-              type="button"
-              disabled={session.moveEntries.length === 0 || !!analysisProgress}
-              onClick={() => void runAnalysis()}
-            >
-              {t(locale, "panel.analysis.run")}
-            </button>
-          </div>
-          {analysisProgress ? (
-            <p className="muted-copy">
-              {t(locale, "section.analysis.subtitle.progress", {
-                completed: analysisProgress.completed,
-                total: analysisProgress.total,
-              })}
-            </p>
-          ) : null}
-          <AnalysisSummaryView summary={session.analysisSummary} locale={locale} />
-        </MenuSection>
-
-        <MenuSection title={t(locale, "menu.settings")}>
-          <div className="settings-stack">
-            <div className="settings-group">
-              <h3>{t(locale, "menu.quality")}</h3>
-              <div className="chip-row">
-                {QUALITY_PRESETS.map((option) => {
-                  if (option.id === "auto") {
-                    return (
-                      <ChipButton
-                        key={option.id}
-                        active={qualityMode === "auto"}
-                        onClick={() => {
-                          void setQualityMode("auto");
-                        }}
-                      >
-                        {t(locale, option.labelKey)}
-                      </ChipButton>
-                    );
-                  }
-
-                  return (
-                    <ChipButton
-                      key={option.id}
-                      active={qualityMode === "manual" && manualQualityTier === option.tier}
-                      onClick={() => {
-                        void setQualityTier(option.tier);
-                      }}
-                    >
-                      {t(locale, option.labelKey)}
-                    </ChipButton>
-                  );
-                })}
-              </div>
-            </div>
-
-            <div className="settings-group">
-              <h3>{t(locale, "menu.coordinates")}</h3>
-              <div className="chip-row">
-                <ChipButton
-                  active={session.settings.showCoordinates}
-                  onClick={() => void setShowCoordinates(true)}
-                >
-                  {t(locale, "menu.coordinates.show")}
-                </ChipButton>
-                <ChipButton
-                  active={!session.settings.showCoordinates}
-                  onClick={() => void setShowCoordinates(false)}
-                >
-                  {t(locale, "menu.coordinates.hide")}
-                </ChipButton>
-              </div>
-            </div>
-
-            <div className="settings-group">
-              <h3>{t(locale, "menu.animation")}</h3>
-              <div className="chip-row">
-                {(["normal", "reduced", "off"] as const).map((mode) => (
-                  <ChipButton
-                    key={mode}
-                    active={session.settings.animationMode === mode}
-                    onClick={() => void setAnimationMode(mode)}
-                  >
-                    {t(locale, `animation.${mode}`)}
-                  </ChipButton>
-                ))}
-              </div>
-            </div>
-
-            <div className="settings-group">
-              <h3>{t(locale, "menu.defaultView")}</h3>
-              <div className="chip-row">
-                {(["3d", "2d"] as const).map((mode) => (
-                  <ChipButton
-                    key={mode}
-                    active={session.settings.defaultViewMode === mode}
-                    onClick={() => void setDefaultViewMode(mode)}
-                  >
-                    {t(locale, mode === "3d" ? "view.3d" : "view.2d")}
-                  </ChipButton>
-                ))}
-              </div>
-            </div>
-
-            <div className="settings-group">
-              <h3>{t(locale, "menu.cameraSensitivity")}</h3>
-              <div className="slider-block">
-                <label>
-                  <span>{t(locale, "menu.cameraSensitivity.rotate")}</span>
-                  <strong>{formatSensitivityValue(session.settings.cameraSensitivity.rotate)}</strong>
-                  <input
-                    aria-label={t(locale, "menu.cameraSensitivity.rotate")}
-                    max={1.75}
-                    min={0.5}
-                    step={0.25}
-                    type="range"
-                    value={session.settings.cameraSensitivity.rotate}
-                    onChange={(event) => {
-                      void setCameraSensitivity({
-                        ...session.settings.cameraSensitivity,
-                        rotate: Number(event.target.value),
-                      });
-                    }}
-                  />
-                </label>
-                <label>
-                  <span>{t(locale, "menu.cameraSensitivity.zoom")}</span>
-                  <strong>{formatSensitivityValue(session.settings.cameraSensitivity.zoom)}</strong>
-                  <input
-                    aria-label={t(locale, "menu.cameraSensitivity.zoom")}
-                    max={1.75}
-                    min={0.5}
-                    step={0.25}
-                    type="range"
-                    value={session.settings.cameraSensitivity.zoom}
-                    onChange={(event) => {
-                      void setCameraSensitivity({
-                        ...session.settings.cameraSensitivity,
-                        zoom: Number(event.target.value),
-                      });
-                    }}
-                  />
-                </label>
-              </div>
-            </div>
-
-            <div className="settings-group">
-              <h3>{t(locale, "panel.themes.title")}</h3>
-              <div className="theme-grid">
-                {themes.map((option) => (
-                  <button
-                    className={`theme-card ${session.settings.themeId === option.id ? "is-selected" : ""}`}
-                    key={option.id}
-                    type="button"
-                    onClick={() => void setTheme(option.id)}
-                  >
-                    <strong>{option.label}</strong>
-                    <span className="theme-swatch-row">
-                      <i style={{ background: option.boardLight }} />
-                      <i style={{ background: option.boardDark }} />
-                      <i style={{ background: option.highlightPrimary }} />
-                    </span>
-                  </button>
-                ))}
-              </div>
-            </div>
-
-            <div className="settings-group">
-              <h3>{t(locale, "panel.language.title")}</h3>
-              <div className="chip-row">
-                {locales.map((option) => (
-                  <ChipButton
-                    key={option}
-                    active={session.settings.locale === option}
-                    onClick={() => void setLocale(option)}
-                  >
-                    {getLocaleLabel(option)}
-                  </ChipButton>
-                ))}
-              </div>
-            </div>
-
-            <div className="inline-actions">
-              <button className="ghost-button" type="button" onClick={() => void toggleOrientation()}>
-                {t(locale, "hud.flip")}
-              </button>
-            </div>
-          </div>
-        </MenuSection>
-
-        <MenuSection title={t(locale, "section.library.title")}>
-          {autosave ? (
-            <article className="save-row">
-              <div className="save-row__copy">
-                <strong>{t(locale, "panel.saveLoad.autosave")}</strong>
-                <span>{autosaveTimestamp}</span>
-                <small>{buildSaveSummary(autosave.session, autosave.updatedAt, locale)}</small>
-              </div>
-              <div className="save-row__actions">
-                {canResumeSession(autosave.session) ? (
-                  <button className="ghost-button" type="button" onClick={() => void resumeSavedSession(restoreAutosave)}>
-                    {t(locale, "save.restore")}
-                  </button>
-                ) : null}
-                {canAnalyzeSession(autosave.session) ? (
-                  <button
-                    className="ghost-button"
-                    type="button"
-                    onClick={() => void openSavedAnalysis(autosave.session, restoreAutosave)}
-                  >
-                    {t(locale, "analysis.open")}
-                  </button>
-                ) : null}
-                <button className="ghost-button" type="button" onClick={() => void handleExportSession(autosave.session, "autosave")}>
-                  {t(locale, "hud.export")}
-                </button>
-              </div>
-            </article>
-          ) : null}
-
-          <div className="inline-actions">
-            <button className="primary-button" type="button" onClick={() => void createManualSave()}>
-              {t(locale, "panel.saveLoad.create")}
-            </button>
-            <button className="ghost-button" type="button" onClick={() => fileInputRef.current?.click()}>
-              {t(locale, "hud.import")}
-            </button>
-            <button className="ghost-button" type="button" onClick={() => void handleExportSession(session)}>
-              {t(locale, "hud.export")}
-            </button>
-          </div>
-
-          <div className="save-list">
-            {saveSlots.map((save) => (
-              <article className="save-row" key={save.id}>
-                <div className="save-row__copy">
-                  <strong>{save.label}</strong>
-                  <span>{formatRelativeTimestamp(save.updatedAt, locale)}</span>
-                  <small>{buildSaveSummary(save.session, save.updatedAt, locale)}</small>
+            <div className="menu-drawer__shell">
+              <div className="panel-header menu-drawer__header">
+                <div className="panel-header__cluster">
+                  <span className="panel-header__glyph" aria-hidden="true">
+                    ☰
+                  </span>
+                  <div>
+                    <p className="panel-kicker">{t(locale, "menu.kicker")}</p>
+                    <h2>{t(locale, "hud.menu")}</h2>
+                    <p className="menu-drawer__subtitle">{historySessionSubtitle}</p>
+                  </div>
                 </div>
-                <div className="save-row__actions">
-                  {canResumeSession(save.session) ? (
+                <div className="panel-header__meta">
+                  <span className={`status-pill status-pill--${enginePhase}`}>{t(locale, getStatusKey(enginePhase))}</span>
+                  <button
+                    className="ghost-icon-button"
+                    type="button"
+                    aria-label={t(locale, "panel.close")}
+                    onClick={() => setMenuOpen(false)}
+                  >
+                    ×
+                  </button>
+                </div>
+              </div>
+              <div className="menu-drawer__scroll">
+
+                <MenuSection
+                  badge={analysisSummaryCount > 0 ? String(analysisSummaryCount) : undefined}
+                  subtitle={analysisSectionSubtitle}
+                  title={t(locale, "section.analysis.title")}
+                  tone="analysis"
+                >
+                  <div className="inline-actions">
+                    <button
+                      className="primary-button"
+                      type="button"
+                      disabled={session.moveEntries.length === 0}
+                      onClick={() => void enterAnalysis()}
+                    >
+                      {analysisProgress ? t(locale, "analysis.running") : t(locale, "analysis.open")}
+                    </button>
                     <button
                       className="ghost-button"
                       type="button"
-                      onClick={() => void resumeSavedSession(() => loadManualSave(save.id!))}
+                      disabled={session.moveEntries.length === 0 || !!analysisProgress}
+                      onClick={() => void runAnalysis()}
                     >
-                      {t(locale, "save.continue")}
+                      {t(locale, "panel.analysis.run")}
                     </button>
+                  </div>
+                  <AnalysisSummaryView summary={session.analysisSummary} locale={locale} />
+                </MenuSection>
+
+                <MenuSection
+                  subtitle={settingsSectionSubtitle}
+                  title={t(locale, "menu.settings")}
+                  tone="settings"
+                >
+                  <div className="settings-stack">
+                    <div className="settings-group">
+                      <h3>{t(locale, "menu.quality")}</h3>
+                      <div className="chip-row">
+                        {QUALITY_PRESETS.map((option) => {
+                          if (option.id === "auto") {
+                            return (
+                              <ChipButton
+                                key={option.id}
+                                active={qualityMode === "auto"}
+                                onClick={() => {
+                                  void setQualityMode("auto");
+                                }}
+                              >
+                                {t(locale, option.labelKey)}
+                              </ChipButton>
+                            );
+                          }
+
+                          return (
+                            <ChipButton
+                              key={option.id}
+                              active={qualityMode === "manual" && manualQualityTier === option.tier}
+                              onClick={() => {
+                                void setQualityTier(option.tier);
+                              }}
+                            >
+                              {t(locale, option.labelKey)}
+                            </ChipButton>
+                          );
+                        })}
+                      </div>
+                    </div>
+
+                    <div className="settings-group">
+                      <h3>{t(locale, "menu.coordinates")}</h3>
+                      <div className="chip-row">
+                        <ChipButton
+                          active={session.settings.showCoordinates}
+                          onClick={() => void setShowCoordinates(true)}
+                        >
+                          {t(locale, "menu.coordinates.show")}
+                        </ChipButton>
+                        <ChipButton
+                          active={!session.settings.showCoordinates}
+                          onClick={() => void setShowCoordinates(false)}
+                        >
+                          {t(locale, "menu.coordinates.hide")}
+                        </ChipButton>
+                      </div>
+                    </div>
+
+                    <div className="settings-group">
+                      <h3>{t(locale, "menu.animation")}</h3>
+                      <div className="chip-row">
+                        {(["normal", "reduced", "off"] as const).map((mode) => (
+                          <ChipButton
+                            key={mode}
+                            active={session.settings.animationMode === mode}
+                            onClick={() => void setAnimationMode(mode)}
+                          >
+                            {t(locale, `animation.${mode}`)}
+                          </ChipButton>
+                        ))}
+                      </div>
+                    </div>
+
+                    <div className="settings-group">
+                      <h3>{t(locale, "menu.defaultView")}</h3>
+                      <div className="chip-row">
+                        {(["3d", "2d"] as const).map((mode) => (
+                          <ChipButton
+                            key={mode}
+                            active={session.settings.defaultViewMode === mode}
+                            onClick={() => void setDefaultViewMode(mode)}
+                          >
+                            {t(locale, mode === "3d" ? "view.3d" : "view.2d")}
+                          </ChipButton>
+                        ))}
+                      </div>
+                    </div>
+
+                    <div className="settings-group">
+                      <h3>{t(locale, "menu.cameraSensitivity")}</h3>
+                      <div className="slider-block">
+                        <label>
+                          <span>{t(locale, "menu.cameraSensitivity.rotate")}</span>
+                          <strong>{formatSensitivityValue(session.settings.cameraSensitivity.rotate)}</strong>
+                          <input
+                            aria-label={t(locale, "menu.cameraSensitivity.rotate")}
+                            max={1.75}
+                            min={0.5}
+                            step={0.25}
+                            type="range"
+                            value={session.settings.cameraSensitivity.rotate}
+                            onChange={(event) => {
+                              void setCameraSensitivity({
+                                ...session.settings.cameraSensitivity,
+                                rotate: Number(event.target.value),
+                              });
+                            }}
+                          />
+                        </label>
+                        <label>
+                          <span>{t(locale, "menu.cameraSensitivity.zoom")}</span>
+                          <strong>{formatSensitivityValue(session.settings.cameraSensitivity.zoom)}</strong>
+                          <input
+                            aria-label={t(locale, "menu.cameraSensitivity.zoom")}
+                            max={1.75}
+                            min={0.5}
+                            step={0.25}
+                            type="range"
+                            value={session.settings.cameraSensitivity.zoom}
+                            onChange={(event) => {
+                              void setCameraSensitivity({
+                                ...session.settings.cameraSensitivity,
+                                zoom: Number(event.target.value),
+                              });
+                            }}
+                          />
+                        </label>
+                      </div>
+                    </div>
+
+                    <div className="settings-group">
+                      <h3>{t(locale, "panel.themes.title")}</h3>
+                      <div className="theme-grid">
+                        {themes.map((option) => (
+                          <button
+                            className={`theme-card ${session.settings.themeId === option.id ? "is-selected" : ""}`}
+                            key={option.id}
+                            type="button"
+                            onClick={() => void setTheme(option.id)}
+                          >
+                            <strong>{option.label}</strong>
+                            <span className="theme-swatch-row">
+                              <i style={{ background: option.boardLight }} />
+                              <i style={{ background: option.boardDark }} />
+                              <i style={{ background: option.highlightPrimary }} />
+                            </span>
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+
+                    <div className="settings-group">
+                      <h3>{t(locale, "panel.language.title")}</h3>
+                      <div className="chip-row">
+                        {locales.map((option) => (
+                          <ChipButton
+                            key={option}
+                            active={session.settings.locale === option}
+                            onClick={() => void setLocale(option)}
+                          >
+                            {getLocaleLabel(option)}
+                          </ChipButton>
+                        ))}
+                      </div>
+                    </div>
+
+                    <div className="inline-actions">
+                      <button className="ghost-button" type="button" onClick={() => void toggleOrientation()}>
+                        {t(locale, "hud.flip")}
+                      </button>
+                    </div>
+                  </div>
+                </MenuSection>
+
+                <MenuSection
+                  badge={saveSlots.length > 0 ? String(saveSlots.length) : undefined}
+                  subtitle={librarySectionSubtitle}
+                  title={t(locale, "section.library.title")}
+                  tone="library"
+                >
+                  {autosave ? (
+                    <article className="save-row save-row--autosave">
+                      <div className="save-row__copy">
+                        <span className="save-row__eyebrow">{t(locale, "section.library.title")}</span>
+                        <strong>{t(locale, "panel.saveLoad.autosave")}</strong>
+                        <span>{autosaveTimestamp}</span>
+                        <small>{buildSaveSummary(autosave.session, autosave.updatedAt, locale)}</small>
+                      </div>
+                      <div className="save-row__actions">
+                        {canResumeSession(autosave.session) ? (
+                          <button className="ghost-button" type="button" onClick={() => void resumeSavedSession(restoreAutosave)}>
+                            {t(locale, "save.restore")}
+                          </button>
+                        ) : null}
+                        {canAnalyzeSession(autosave.session) ? (
+                          <button
+                            className="ghost-button"
+                            type="button"
+                            onClick={() => void openSavedAnalysis(autosave.session, restoreAutosave)}
+                          >
+                            {t(locale, "analysis.open")}
+                          </button>
+                        ) : null}
+                        <button className="ghost-button" type="button" onClick={() => void handleExportSession(autosave.session, "autosave")}>
+                          {t(locale, "hud.export")}
+                        </button>
+                      </div>
+                    </article>
                   ) : null}
-                  {canAnalyzeSession(save.session) ? (
-                    <button
-                      className="ghost-button"
-                      type="button"
-                      onClick={() => void openSavedAnalysis(save.session, () => loadManualSave(save.id!))}
-                    >
-                      {t(locale, "analysis.open")}
+
+                  <div className="inline-actions inline-actions--library">
+                    <button className="primary-button" type="button" onClick={() => void createManualSave()}>
+                      {t(locale, "panel.saveLoad.create")}
                     </button>
-                  ) : null}
-                  <button
-                    className="ghost-button"
-                    type="button"
-                    onClick={() => void handleExportSession(save.session, save.label)}
-                  >
-                    {t(locale, "hud.export")}
-                  </button>
-                  <button className="ghost-button" type="button" onClick={() => void deleteManualSave(save.id!)}>
-                    {t(locale, "panel.saveLoad.delete")}
-                  </button>
-                </div>
-              </article>
-            ))}
-            {saveSlots.length === 0 ? <p className="muted-copy">{t(locale, "panel.saveLoad.empty")}</p> : null}
-          </div>
-        </MenuSection>
-      </motion.aside>
+                    <button className="ghost-button" type="button" onClick={() => fileInputRef.current?.click()}>
+                      {t(locale, "hud.import")}
+                    </button>
+                    <button className="ghost-button" type="button" onClick={() => void handleExportSession(session)}>
+                      {t(locale, "hud.export")}
+                    </button>
+                  </div>
+
+                  <div className="save-list">
+                    {saveSlots.map((save) => (
+                      <article className="save-row" key={save.id}>
+                        <div className="save-row__copy">
+                          <strong>{save.label}</strong>
+                          <span>{formatRelativeTimestamp(save.updatedAt, locale)}</span>
+                          <small>{buildSaveSummary(save.session, save.updatedAt, locale)}</small>
+                        </div>
+                        <div className="save-row__actions">
+                          {canResumeSession(save.session) ? (
+                            <button
+                              className="ghost-button"
+                              type="button"
+                              onClick={() => void resumeSavedSession(() => loadManualSave(save.id!))}
+                            >
+                              {t(locale, "save.continue")}
+                            </button>
+                          ) : null}
+                          {canAnalyzeSession(save.session) ? (
+                            <button
+                              className="ghost-button"
+                              type="button"
+                              onClick={() => void openSavedAnalysis(save.session, () => loadManualSave(save.id!))}
+                            >
+                              {t(locale, "analysis.open")}
+                            </button>
+                          ) : null}
+                          <button
+                            className="ghost-button"
+                            type="button"
+                            onClick={() => void handleExportSession(save.session, save.label)}
+                          >
+                            {t(locale, "hud.export")}
+                          </button>
+                          <button className="ghost-button" type="button" onClick={() => void deleteManualSave(save.id!)}>
+                            {t(locale, "panel.saveLoad.delete")}
+                          </button>
+                        </div>
+                      </article>
+                    ))}
+                    {saveSlots.length === 0 ? <p className="muted-copy">{t(locale, "panel.saveLoad.empty")}</p> : null}
+                  </div>
+                </MenuSection>
+              </div>
+            </div>
+          </motion.aside>
         )}
       </AnimatePresence>
 
-      {newGameOpen ? (
-        <div
-          className="overlay-scrim"
-          aria-hidden="true"
-          onClick={() => setNewGameOpen(false)}
-        />
-      ) : null}
+      <AnimatePresence>
+        {newGameOpen && (
+          <motion.div
+            className="overlay-scrim"
+            key="new-game-scrim"
+            aria-hidden="true"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            transition={{ duration: 0.2 }}
+            onClick={() => setNewGameOpen(false)}
+          />
+        )}
+      </AnimatePresence>
 
-      {newGameOpen ? (
-        <section className="new-game-sheet is-open" role="dialog" aria-modal="true" aria-label={t(locale, "panel.newGame.title")}>
-          <div className="sheet-handle" />
-          <div className="panel-header panel-header--sheet">
-            <div>
-              <p className="panel-kicker">{t(locale, "newGame.kicker")}</p>
-              <h2>{t(locale, "panel.newGame.title")}</h2>
+      <AnimatePresence>
+        {newGameOpen && (
+          <motion.section
+            className="new-game-sheet"
+            key="new-game-sheet"
+            role="dialog"
+            aria-modal="true"
+            aria-label={t(locale, "panel.newGame.title")}
+            initial={{ scale: 0.92, opacity: 0 }}
+            animate={{ scale: 1, opacity: 1 }}
+            exit={{ scale: 0.95, opacity: 0 }}
+            transition={{ type: "spring", stiffness: 300, damping: 34 }}
+            style={{ pointerEvents: "auto" }}
+          >
+            <div className="panel-header panel-header--sheet">
+              <div className="panel-header__cluster">
+                <span className="panel-header__glyph" aria-hidden="true">
+                  ✦
+                </span>
+                <div>
+                  <p className="panel-kicker">{t(locale, "newGame.kicker")}</p>
+                  <h2>{t(locale, "panel.newGame.title")}</h2>
+                </div>
+              </div>
             </div>
-          </div>
 
-          <div className="settings-group">
-            <h3>{t(locale, "newGame.color")}</h3>
-            <div className="chip-row chip-row--three">
-              {(["white", "random", "black"] as const).map((colorChoice) => (
-                <ChipButton
-                  key={colorChoice}
-                  active={newGameColor === colorChoice}
-                  onClick={() => setNewGameColor(colorChoice)}
-                >
-                  {t(locale, `newGame.color.${colorChoice}`)}
-                </ChipButton>
-              ))}
-            </div>
-          </div>
-
-          <div className="settings-group">
-            <h3>{t(locale, "newGame.level")}</h3>
-            <div className="slider-block">
-              <strong>{getDifficultyPreset(newGameDifficultyId).label}</strong>
-              <input
-                aria-label={t(locale, "newGame.level")}
-                max={difficultyPresets.length - 1}
-                min={0}
-                type="range"
-                value={selectedDifficultyIndex}
-                onChange={(event) => {
-                  const index = Number(event.target.value);
-                  setNewGameDifficultyId(difficultyPresets[index]?.id ?? difficultyPresets[0].id);
-                }}
-              />
-              <div className="slider-labels">
-                {difficultyPresets.map((preset) => (
-                  <span key={preset.id}>{preset.label}</span>
+            <div className="settings-group">
+              <h3>{t(locale, "newGame.color")}</h3>
+              <div className="chip-row chip-row--three">
+                {(["white", "random", "black"] as const).map((colorChoice) => (
+                  <ChipButton
+                    key={colorChoice}
+                    active={newGameColor === colorChoice}
+                    onClick={() => setNewGameColor(colorChoice)}
+                  >
+                    {t(locale, `newGame.color.${colorChoice}`)}
+                  </ChipButton>
                 ))}
               </div>
             </div>
-          </div>
 
-          <div className="settings-group">
-            <h3>{t(locale, "panel.clock.title")}</h3>
-            <div className="chip-row chip-row--wrap">
-              {NEW_GAME_CLOCK_PRESETS.map((preset) => (
-                <ChipButton
-                  key={getClockKey(preset)}
-                  active={selectedClockKey === getClockKey(preset)}
-                  onClick={() => setSelectedClockKey(getClockKey(preset))}
-                >
-                  {formatClockPresetLabel(preset, locale)}
-                </ChipButton>
-              ))}
-              <ChipButton active={selectedClockKey === "custom"} onClick={() => setSelectedClockKey("custom")}>
-                {t(locale, "panel.clock.custom")}
-              </ChipButton>
-            </div>
-            {selectedClockKey === "custom" ? (
-              <div className="custom-clock">
-                <label>
-                  {t(locale, "panel.clock.minutes")}
-                  <input value={customMinutes} onChange={(event) => setCustomMinutes(event.target.value)} />
-                </label>
-                <label>
-                  {t(locale, "panel.clock.increment")}
-                  <input value={customIncrement} onChange={(event) => setCustomIncrement(event.target.value)} />
-                </label>
+            <div className="settings-group">
+              <h3>{t(locale, "newGame.level")}</h3>
+              <div className="slider-block">
+                <strong>{getDifficultyPreset(newGameDifficultyId).label}</strong>
+                <input
+                  aria-label={t(locale, "newGame.level")}
+                  max={difficultyPresets.length - 1}
+                  min={0}
+                  type="range"
+                  value={selectedDifficultyIndex}
+                  onChange={(event) => {
+                    const index = Number(event.target.value);
+                    setNewGameDifficultyId(difficultyPresets[index]?.id ?? difficultyPresets[0].id);
+                  }}
+                />
+                <div className="slider-labels">
+                  {difficultyPresets.map((preset) => (
+                    <span key={preset.id}>{preset.label}</span>
+                  ))}
+                </div>
               </div>
-            ) : null}
-          </div>
+            </div>
 
-          <button className="primary-button primary-button--full" type="button" onClick={() => void applyNewGame()}>
-            {t(locale, "panel.newGame.confirm")}
-          </button>
-        </section>
-      ) : null}
+            <div className="settings-group">
+              <h3>{t(locale, "panel.clock.title")}</h3>
+              <div className="chip-row chip-row--wrap">
+                {NEW_GAME_CLOCK_PRESETS.map((preset) => (
+                  <ChipButton
+                    key={getClockKey(preset)}
+                    active={selectedClockKey === getClockKey(preset)}
+                    onClick={() => setSelectedClockKey(getClockKey(preset))}
+                  >
+                    {formatClockPresetLabel(preset, locale)}
+                  </ChipButton>
+                ))}
+                <ChipButton active={selectedClockKey === "custom"} onClick={() => setSelectedClockKey("custom")}>
+                  {t(locale, "panel.clock.custom")}
+                </ChipButton>
+              </div>
+              {selectedClockKey === "custom" ? (
+                <div className="custom-clock">
+                  <label>
+                    {t(locale, "panel.clock.minutes")}
+                    <input value={customMinutes} onChange={(event) => setCustomMinutes(event.target.value)} />
+                  </label>
+                  <label>
+                    {t(locale, "panel.clock.increment")}
+                    <input value={customIncrement} onChange={(event) => setCustomIncrement(event.target.value)} />
+                  </label>
+                </div>
+              ) : null}
+            </div>
+
+            <button className="primary-button primary-button--full" type="button" onClick={() => void applyNewGame()}>
+              {t(locale, "panel.newGame.confirm")}
+            </button>
+          </motion.section>
+        )}
+      </AnimatePresence>
 
       {pendingPromotion ? (
         <section
           className="promotion-popup"
+          role="dialog"
           aria-label={t(locale, "promotion.title")}
           style={getPromotionPopupStyle(promotionAnchor)}
         >
-          <p className="panel-kicker">{t(locale, "promotion.title")}</p>
+          <p className="panel-kicker promotion-popup__kicker">{t(locale, "promotion.title")}</p>
           <div className="promotion-options">
             {PROMOTION_CHOICES.map((piece) => (
               <button
@@ -1228,8 +1376,8 @@ function App() {
                 type="button"
                 onClick={() => void confirmPromotion(piece)}
               >
-                <span>{getPromotionGlyph(piece, session.playerColor)}</span>
-                <small>{t(locale, getPromotionKey(piece))}</small>
+                <span className="promotion-option__glyph">{getPromotionGlyph(piece, session.playerColor)}</span>
+                <small className="promotion-option__label">{t(locale, getPromotionKey(piece))}</small>
               </button>
             ))}
           </div>
@@ -1252,7 +1400,10 @@ function App() {
             onClick={invalidMoveDetail ? () => setInvalidMoveExpanded((v) => !v) : undefined}
           >
             <span className="board-cue__summary">
-              {invalidMoveSummary ?? t(locale, "feedback.invalidMove")}
+              <span className="board-cue__glyph" aria-hidden="true">!</span>
+              <span className="board-cue__summary-text">
+                {invalidMoveSummary ?? t(locale, "feedback.invalidMove")}
+              </span>
               {invalidMoveDetail ? (
                 <span className="board-cue__expand-indicator">{invalidMoveExpanded ? "−" : "+"}</span>
               ) : null}
@@ -1286,17 +1437,43 @@ function App() {
             exit={{ scale: 0.92, opacity: 0 }}
             transition={{ type: "spring", stiffness: 400, damping: 30 }}
           >
-            {"♜ " + t(locale, "feedback.castling")}
+            <span className="board-cue__summary">
+              <span className="board-cue__glyph" aria-hidden="true">♜</span>
+              <span className="board-cue__summary-text">{t(locale, "feedback.castling")}</span>
+            </span>
           </motion.div>
         ) : null}
       </AnimatePresence>
 
-      {replacePromptOpen ? (
-        <>
-          <div className="overlay-scrim overlay-scrim--strong" aria-hidden="true" />
-          <section className="dialog-card">
-            <h2>{t(locale, "confirm.newGame.title")}</h2>
-            <p>{t(locale, "confirm.newGame.body")}</p>
+      <AnimatePresence>
+        {replacePromptOpen && (
+          <motion.div
+            className="overlay-scrim overlay-scrim--strong"
+            key="replace-scrim"
+            aria-hidden="true"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            transition={{ duration: 0.18 }}
+          />
+        )}
+        {replacePromptOpen && (
+          <motion.section
+            className="dialog-card"
+            key="replace-dialog"
+            initial={{ scale: 0.92, opacity: 0 }}
+            animate={{ scale: 1, opacity: 1 }}
+            exit={{ scale: 0.95, opacity: 0 }}
+            transition={{ type: "spring", stiffness: 400, damping: 30 }}
+          >
+            <span className="dialog-card__badge">{t(locale, "panel.newGame.title")}</span>
+            <div className="dialog-card__icon" aria-hidden="true">
+              ↺
+            </div>
+            <div className="dialog-card__copy">
+              <h2>{t(locale, "confirm.newGame.title")}</h2>
+              <p>{t(locale, "confirm.newGame.body")}</p>
+            </div>
             <div className="inline-actions">
               <button className="ghost-button" type="button" onClick={() => setReplacePromptOpen(false)}>
                 {t(locale, "confirm.newGame.keep")}
@@ -1308,9 +1485,9 @@ function App() {
                 {t(locale, "confirm.newGame.replace")}
               </button>
             </div>
-          </section>
-        </>
-      ) : null}
+          </motion.section>
+        )}
+      </AnimatePresence>
 
       <AnimatePresence>
         {resultModalOpen && (
@@ -1330,9 +1507,30 @@ function App() {
               exit={{ scale: 0.92, opacity: 0 }}
               transition={{ type: "spring", stiffness: 400, damping: 30 }}
             >
-              <p className="panel-kicker">{t(locale, "result.kicker")}</p>
-              <h2>{t(locale, getFriendlyResultKey(session))}</h2>
-              <p className="muted-copy">{t(locale, getResultStatusKey(session.snapshot.status))}</p>
+              <p className="panel-kicker result-modal__kicker">{t(locale, "result.kicker")}</p>
+              <div className="result-modal__hero">
+                <span className="result-modal__icon" aria-hidden="true">
+                  {getResultGlyph(session)}
+                </span>
+                <div className="result-modal__hero-copy">
+                  <h2>{t(locale, getFriendlyResultKey(session))}</h2>
+                  <p className="muted-copy">{t(locale, getResultStatusKey(session.snapshot.status))}</p>
+                </div>
+              </div>
+              <div className="result-modal__metrics">
+                <article className="result-metric">
+                  <span>{t(locale, "hud.moves")}</span>
+                  <strong>{session.moveEntries.length}</strong>
+                </article>
+                <article className="result-metric">
+                  <span>{t(locale, "newGame.level")}</span>
+                  <strong>{getDifficultyPreset(session.settings.difficultyId).label}</strong>
+                </article>
+                <article className="result-metric">
+                  <span>{t(locale, "panel.clock.title")}</span>
+                  <strong>{session.settings.clockConfig.label}</strong>
+                </article>
+              </div>
               <div className="inline-actions">
                 <button className="primary-button" type="button" onClick={() => void enterAnalysis()}>
                   {t(locale, "analysis.open")}
@@ -1356,13 +1554,50 @@ function App() {
         )}
       </AnimatePresence>
 
-      {restoreNotice || transientNotice || transientError || lastError ? (
-        <div className={`toast ${!restoreNotice && !transientNotice && (transientError || lastError) ? "is-error" : ""}`}>
-          {restoreNotice ?? transientNotice ?? transientError ?? lastError}
-        </div>
-      ) : null}
+      <AnimatePresence>
+        {toastMessage ? (
+          <motion.div
+            aria-live={isErrorToast ? "assertive" : "polite"}
+            className={`toast ${isErrorToast ? "is-error" : "is-notice"}`}
+            key="toast"
+            role={isErrorToast ? "alert" : "status"}
+            initial={{ opacity: 0, y: -12 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -12 }}
+            transition={{ duration: 0.22, ease: "easeOut" }}
+          >
+            <span className="toast__icon" aria-hidden="true">
+              {isErrorToast ? "!" : restoreNotice ? "↺" : "•"}
+            </span>
+            <span className="toast__message">{toastMessage}</span>
+          </motion.div>
+        ) : null}
+      </AnimatePresence>
 
-      {!booted ? <div className="boot-scrim">{t(locale, "status.loading")}</div> : null}
+      <AnimatePresence>
+        {!booted && (
+          <motion.div
+            className="boot-scrim"
+            key="boot-scrim"
+            exit={{ opacity: 0 }}
+            transition={{ duration: 0.4 }}
+          >
+            <div className="boot-scrim__content">
+              <span className="boot-scrim__icon" aria-hidden="true">
+                ♜
+              </span>
+              <div className="boot-scrim__copy">
+                <strong className="boot-scrim__title">Pipo Chess 3D</strong>
+                <span className="boot-scrim__subtitle">{t(locale, "status.loading")}</span>
+              </div>
+              <div className="boot-scrim__track" aria-hidden="true">
+                <span className="boot-scrim__fill" style={{ width: `${bootProgress}%` }} />
+              </div>
+              <small className="boot-scrim__meta">{engineMessage || t(locale, getStatusKey(enginePhase))}</small>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
 
       <input
         hidden
@@ -1390,9 +1625,11 @@ function ClockPill({ side, collapsed }: { side: ClockSideState; collapsed: boole
     <article className={`clock-pill ${side.active ? "is-active" : ""} ${collapsed ? "is-collapsed" : ""}`}>
       <div className="clock-pill__dot" aria-hidden="true" />
       <div className="clock-pill__copy">
-        {!collapsed ? <span>{side.subtitle}</span> : null}
-        <strong>{formatClock(side.time)}</strong>
-        {!collapsed ? <small className={side.thinking ? "is-thinking" : ""}>{side.label}</small> : null}
+        {!collapsed ? <span className="clock-pill__eyebrow">{side.subtitle}</span> : null}
+        <strong className="clock-pill__time">{formatClock(side.time)}</strong>
+        {!collapsed ? (
+          <small className={`clock-pill__label ${side.thinking ? "is-thinking" : ""}`}>{side.label}</small>
+        ) : null}
       </div>
     </article>
   );
@@ -1404,6 +1641,7 @@ function ActionButton({
   compact,
   disabled,
   loading,
+  tone = "default",
   onClick,
 }: {
   icon: string;
@@ -1411,27 +1649,48 @@ function ActionButton({
   compact: boolean;
   disabled?: boolean;
   loading?: boolean;
+  tone?: "default" | "primary" | "secondary";
   onClick: () => void;
 }) {
   return (
     <button
-      className={`action-pill ${compact ? "is-compact" : ""}`}
+      className={`action-pill action-pill--${tone} ${compact ? "is-compact" : ""} ${loading ? "is-loading" : ""}`}
       aria-label={label}
       disabled={disabled}
       title={label}
       type="button"
       onClick={onClick}
     >
-      <span aria-hidden="true">{loading ? "…" : icon}</span>
-      {!compact ? <strong>{label}</strong> : null}
+      <span className="action-pill__icon" aria-hidden="true">
+        {loading ? "…" : icon}
+      </span>
+      {!compact ? <strong className="action-pill__label">{label}</strong> : null}
     </button>
   );
 }
 
-function MenuSection({ title, children }: { title: string; children: ReactNode }) {
+function MenuSection({
+  title,
+  subtitle,
+  badge,
+  tone = "default",
+  children,
+}: {
+  title: string;
+  subtitle?: string;
+  badge?: string;
+  tone?: "default" | "analysis" | "settings" | "library";
+  children: ReactNode;
+}) {
   return (
-    <section className="menu-section">
-      <h2>{title}</h2>
+    <section className={`menu-section menu-section--${tone}`}>
+      <div className="menu-section__header">
+        <div className="menu-section__copy">
+          <h2 className="menu-section__title">{title}</h2>
+          {subtitle ? <p className="menu-section__subtitle">{subtitle}</p> : null}
+        </div>
+        {badge ? <span className="menu-section__badge">{badge}</span> : null}
+      </div>
       {children}
     </section>
   );
@@ -1447,7 +1706,12 @@ function ChipButton({
   onClick: () => void;
 }) {
   return (
-    <button className={`chip-button ${active ? "is-active" : ""}`} type="button" onClick={onClick}>
+    <button
+      aria-pressed={active}
+      className={`chip-button ${active ? "is-active" : ""}`}
+      type="button"
+      onClick={onClick}
+    >
       {children}
     </button>
   );
@@ -1475,7 +1739,7 @@ function EvalBar({
           transition={{ type: "spring", stiffness: 60, damping: 18 }}
         />
       </div>
-      <strong>{label}</strong>
+      <strong className="eval-bar__label">{label}</strong>
     </aside>
   );
 }
@@ -1548,6 +1812,13 @@ function canAnalyzeSession(session: GameSession): boolean {
   return session.moveEntries.length > 0;
 }
 
+function hasReplaceableGame(session: GameSession): boolean {
+  return (
+    session.moveEntries.length > 0 &&
+    (session.snapshot.status === "active" || session.snapshot.status === "idle")
+  );
+}
+
 function buildSaveSummary(
   session: GameSession,
   updatedAt: string,
@@ -1559,6 +1830,70 @@ function buildSaveSummary(
     getDifficultyPreset(session.settings.difficultyId).label,
     `${session.moveEntries.length} ${t(locale, "hud.moves").toLowerCase()}`,
   ].join(" · ");
+}
+
+function getAnalysisSectionSubtitle(
+  session: GameSession,
+  locale: GameSession["settings"]["locale"],
+  analysisSummaryCount: number,
+  analysisProgress: { completed: number; total: number } | null,
+): string {
+  if (analysisProgress) {
+    return t(locale, "section.analysis.subtitle.progress", {
+      completed: analysisProgress.completed,
+      total: analysisProgress.total,
+    });
+  }
+
+  if (analysisSummaryCount > 0) {
+    return t(locale, "section.analysis.subtitle.ready", { count: analysisSummaryCount });
+  }
+
+  return session.moveEntries.length > 0
+    ? t(locale, "section.analysis.subtitle.empty")
+    : t(locale, "panel.analysis.empty");
+}
+
+function getLibrarySectionSubtitle(
+  autosaveTimestamp: string | null,
+  saveCount: number,
+  locale: GameSession["settings"]["locale"],
+): string {
+  if (autosaveTimestamp) {
+    return t(locale, "section.library.subtitle.autosave", { time: autosaveTimestamp });
+  }
+
+  if (saveCount > 0) {
+    return t(locale, "section.library.subtitle.ready", { count: saveCount });
+  }
+
+  return t(locale, "section.library.subtitle.empty");
+}
+
+function buildMoveHistorySummary(
+  session: GameSession,
+  locale: GameSession["settings"]["locale"],
+): string {
+  if (session.moveEntries.length === 0) {
+    return t(locale, "section.moves.subtitle.empty");
+  }
+
+  return t(locale, "section.moves.subtitle.last", {
+    count: session.moveEntries.length,
+    move: session.moveEntries.at(-1)?.san ?? "—",
+  });
+}
+
+function getHistoryProgress(moveCount: number, currentPly: number, analysisMode: boolean): number {
+  if (moveCount === 0) {
+    return 0;
+  }
+
+  if (!analysisMode) {
+    return 100;
+  }
+
+  return clamp((currentPly / moveCount) * 100, 8, 100);
 }
 
 function formatSensitivityValue(value: number): string {
@@ -1591,18 +1926,48 @@ function getBoardCueStyle(anchor: { x: number; y: number }): CSSProperties {
   };
 }
 
-function getPromotionPopupStyle(anchor: { x: number; y: number } | null): CSSProperties | undefined {
+export function getPromotionPopupStyle(anchor: { x: number; y: number } | null): CSSProperties | undefined {
   if (!anchor) {
     return undefined;
   }
 
-  const viewportWidth = typeof window === "undefined" ? 0 : window.innerWidth;
-  const clampedX = clamp(anchor.x, 88, Math.max(88, viewportWidth - 88));
+  const popupHalfWidth = 156;
+  const popupHeight = 196;
+  const edgePadding = 24;
+  const safeViewportWidth =
+    typeof window === "undefined" ? popupHalfWidth * 2 : Math.max(window.innerWidth, popupHalfWidth * 2);
+  const safeViewportHeight =
+    typeof window === "undefined"
+      ? popupHeight + edgePadding * 2
+      : Math.max(window.innerHeight, popupHeight + edgePadding * 2);
+  const placeBelow = anchor.y < popupHeight + edgePadding;
+  const clampedX = clamp(anchor.x, popupHalfWidth, Math.max(popupHalfWidth, safeViewportWidth - popupHalfWidth));
+  const clampedTop = placeBelow
+    ? clamp(anchor.y, edgePadding, Math.max(edgePadding, safeViewportHeight - popupHeight - edgePadding))
+    : clamp(anchor.y, popupHeight + edgePadding, Math.max(popupHeight + edgePadding, safeViewportHeight - edgePadding));
+
   return {
     left: `${clampedX}px`,
-    top: `${Math.max(24, anchor.y)}px`,
-    transform: "translate(-50%, calc(-100% - 0.75rem))",
+    top: `${clampedTop}px`,
+    transform: placeBelow ? "translate(-50%, 0.75rem)" : "translate(-50%, calc(-100% - 0.75rem))",
   };
+}
+
+function getBootProgress(phase: EnginePhase): number {
+  switch (phase) {
+    case "booting":
+      return 38;
+    case "ready":
+      return 100;
+    case "thinking":
+      return 86;
+    case "analyzing":
+      return 92;
+    case "error":
+      return 100;
+    default:
+      return 52;
+  }
 }
 
 function getStatusKey(
@@ -1637,6 +2002,16 @@ function getFriendlyResultKey(session: GameSession): TranslationKey {
   }
 
   return "result.drawFriendly";
+}
+
+function getResultGlyph(session: GameSession): string {
+  if (session.snapshot.status === "checkmate") {
+    return session.snapshot.sideToMove === session.playerColor ? "♚" : "♔";
+  }
+  if (session.snapshot.status === "timeout") {
+    return "⌛";
+  }
+  return "½";
 }
 
 function getResultStatusKey(status: GameSession["snapshot"]["status"]): TranslationKey {
