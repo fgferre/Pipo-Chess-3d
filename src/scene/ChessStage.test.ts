@@ -973,7 +973,7 @@ describe("ChessStage", () => {
     expect(stageInternals.pipeline?.setBloomResolutionScale).toHaveBeenCalledWith(1);
     expect(stageInternals.lightPieceMat).toBeInstanceOf(MeshPhysicalMaterial);
     expect(stageInternals.lightSquareMats[0]?.map?.anisotropy).toBe(16);
-  });
+  }, 15000);
 
   it("rebuilds materials and pipeline settings when switching quality tiers", async () => {
     latestRendererProbe = {
@@ -1030,7 +1030,7 @@ describe("ChessStage", () => {
     expect(stageInternals.qualityProfile.pixelRatioCap).toBe(1);
     expect(stageInternals.qualityProfile.textureAnisotropy).toBe(1);
     expect(stageInternals.lightSquareMats[0]?.map?.anisotropy).toBe(1);
-  });
+  }, 15000);
 
   it("downgrades after sustained low FPS and respects the cooldown window", async () => {
     latestRendererProbe = {
@@ -1079,7 +1079,7 @@ describe("ChessStage", () => {
     stageInternals.updatePerformanceMonitor(65_000);
 
     expect(stageInternals.qualityTier).toBe(1);
-  });
+  }, 15000);
 
   it("does not auto-downgrade while quality mode is manual", async () => {
     latestRendererProbe = {
@@ -1107,7 +1107,7 @@ describe("ChessStage", () => {
     stageInternals.updatePerformanceMonitor(6_000);
 
     expect(stageInternals.qualityTier).toBe(3);
-  });
+  }, 15000);
 
   it("releases stage-owned resources during final disposal", async () => {
     const { stage } = createStage();

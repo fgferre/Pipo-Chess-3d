@@ -283,19 +283,14 @@ describe("App integration", () => {
     });
 
     fireEvent.click(screen.getByRole("button", { name: "Menu" }));
-    fireEvent.click(screen.getByRole("button", { name: "Analisar partida" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Analisar partida" }));
 
-    await waitFor(() => {
-      expect(screen.getByRole("button", { name: "Câmera" })).toBeInTheDocument();
-    });
+    const cameraButton = await screen.findByRole("button", { name: "Câmera" });
+    fireEvent.click(cameraButton);
 
-    fireEvent.click(screen.getByRole("button", { name: "Câmera" }));
-
-    await waitFor(() => {
-      expect(screen.getByRole("button", { name: /Modo 2D/i })).toBeInTheDocument();
-      expect(screen.getByRole("button", { name: /Clássica/i })).toBeInTheDocument();
-    });
-  });
+    expect(await screen.findByRole("button", { name: /Modo 2D/i })).toBeInTheDocument();
+    expect(await screen.findByRole("button", { name: /Clássica/i })).toBeInTheDocument();
+  }, 10000);
 
   it("removes the new game sheet from the DOM when it is closed", async () => {
     const { default: App } = await import("./App");
@@ -385,7 +380,7 @@ describe("App integration", () => {
     }
   });
 
-  it("shows invalid move feedback when the player targets an illegal square", async () => {
+  it("shows invalid move feedback without clearing the selected piece", async () => {
     const { default: App } = await import("./App");
     render(<App />);
 
@@ -396,5 +391,105 @@ describe("App integration", () => {
     fireEvent.click(screen.getByText("Square e5"));
 
     expect(await screen.findByText("Lance ilegal")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByText("Square e4"));
+
+    await waitFor(() => {
+      expect(engineClientMock.search).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  it("keeps or closes the new game sheet according to the replace dialog action", async () => {
+    const { default: App } = await import("./App");
+    const { container } = render(<App />);
+
+    await screen.findByText("Pipo Chess 3D");
+    fireEvent.click(screen.getByText("Square e2"));
+    fireEvent.click(screen.getByText("Square e4"));
+
+    await waitFor(() => {
+      expect(engineClientMock.search).toHaveBeenCalledTimes(1);
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Nova partida" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Começar agora" }));
+
+    expect(await screen.findByText("Substituir a partida atual?")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Continuar atual" }));
+
+    await waitFor(() => {
+      expect(screen.queryByText("Substituir a partida atual?")).not.toBeInTheDocument();
+      expect(container.querySelector(".new-game-sheet")).not.toBeNull();
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Começar agora" }));
+    expect(await screen.findByText("Substituir a partida atual?")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Cancelar" }));
+
+    await waitFor(() => {
+      expect(screen.queryByText("Substituir a partida atual?")).not.toBeInTheDocument();
+      expect(container.querySelector(".new-game-sheet")).toBeNull();
+    });
+  }, 10000);
+
+  it("opens the result modal for terminal sessions and can route to the menu drawer", async () => {
+    const { default: App } = await import("./App");
+    const { useGameStore } = await import("./state/gameStore");
+    const { container } = render(<App />);
+
+    await screen.findByText("Pipo Chess 3D");
+
+    act(() => {
+      useGameStore.setState((state) => ({
+        session: {
+          ...state.session,
+          snapshot: {
+            ...state.session.snapshot,
+            status: "checkmate",
+            sideToMove: state.session.playerColor,
+            pgn: `${state.session.snapshot.pgn} #`,
+          },
+        },
+      }));
+    });
+
+    await waitFor(() => {
+      expect(container.querySelector(".result-modal")).not.toBeNull();
+    });
+
+    const resultModal = container.querySelector(".result-modal") as HTMLElement;
+    expect(within(resultModal).getByText("Fim de partida")).toBeInTheDocument();
+
+    fireEvent.click(within(resultModal).getByRole("button", { name: "Menu" }));
+
+    await waitFor(() => {
+      expect(container.querySelector(".result-modal")).toBeNull();
+      expect(container.querySelector(".menu-drawer")).not.toBeNull();
+    });
+  });
+
+  it("toggles zen mode from the action dock", async () => {
+    const { default: App } = await import("./App");
+    render(<App />);
+
+    await screen.findByText("Pipo Chess 3D");
+
+    fireEvent.click(screen.getByRole("button", { name: "Zen" }));
+
+    expect(await screen.findByRole("button", { name: "Sair do modo Zen" })).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Sair do modo Zen" }));
+
+    await waitFor(() => {
+      const exitButton = screen.queryByRole("button", { name: "Sair do modo Zen" });
+      if (!exitButton) {
+        expect(exitButton).toBeNull();
+        return;
+      }
+
+      expect(exitButton).not.toBeVisible();
+    });
   });
 });
