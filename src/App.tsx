@@ -7,9 +7,10 @@ import {
   useState,
   type ChangeEvent,
   type CSSProperties,
+  type ReactNode,
   type Ref,
 } from "react";
-import { AnimatePresence, motion } from "framer-motion";
+import { AnimatePresence, motion, useIsPresent } from "framer-motion";
 import type { Color, PieceSymbol, Square } from "chess.js";
 import { soundService } from "./audio/soundService";
 import { haptics } from "./hooks/useHaptics";
@@ -65,6 +66,49 @@ const QUALITY_PRESETS: Array<
   { id: "ultra", labelKey: "quality.ultra", tier: 3 },
 ];
 const PROMOTION_CHOICES = ["q", "r", "b", "n"] as const;
+
+function PresenceAwareOverlayScrim({ onClick }: { onClick: () => void }) {
+  const isPresent = useIsPresent();
+
+  return (
+    <motion.div
+      className="overlay-scrim"
+      aria-hidden="true"
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      exit={{ opacity: 0 }}
+      transition={{ duration: 0.2 }}
+      style={{ pointerEvents: isPresent ? "auto" : "none" }}
+      onClick={onClick}
+    />
+  );
+}
+
+function PresenceAwareNewGameSheet({
+  ariaLabel,
+  children,
+}: {
+  ariaLabel: string;
+  children: ReactNode;
+}) {
+  const isPresent = useIsPresent();
+
+  return (
+    <motion.section
+      className="new-game-sheet"
+      role="dialog"
+      aria-modal="true"
+      aria-label={ariaLabel}
+      initial={{ scale: 0.92, opacity: 0 }}
+      animate={{ scale: 1, opacity: 1 }}
+      exit={{ scale: 0.95, opacity: 0 }}
+      transition={{ type: "spring", stiffness: 300, damping: 34 }}
+      style={{ pointerEvents: isPresent ? "auto" : "none" }}
+    >
+      {children}
+    </motion.section>
+  );
+}
 
 function App() {
   const {
@@ -837,6 +881,7 @@ function App() {
               setAnalysisAutoplay(false);
               setAnalysisCursor(ply);
             }}
+            pointerEvents={menuOpen ? "none" : "auto"}
           />
         )}
       </AnimatePresence>
@@ -918,24 +963,26 @@ function App() {
                   title={t(locale, "section.analysis.title")}
                   tone="analysis"
                 >
-                  <div className="inline-actions">
-                    <button
-                      className="primary-button"
-                      type="button"
-                      disabled={session.moveEntries.length === 0}
-                      onClick={() => void enterAnalysis()}
-                    >
-                      {analysisProgress ? t(locale, "analysis.running") : t(locale, "analysis.open")}
-                    </button>
-                    <button
-                      className="ghost-button"
-                      type="button"
-                      disabled={session.moveEntries.length === 0 || !!analysisProgress}
-                      onClick={() => void runAnalysis()}
-                    >
-                      {t(locale, "panel.analysis.run")}
-                    </button>
-                  </div>
+                  {session.moveEntries.length > 0 ? (
+                    <div className="inline-actions">
+                      <button
+                        className="primary-button"
+                        type="button"
+                        disabled={session.moveEntries.length === 0}
+                        onClick={() => void enterAnalysis()}
+                      >
+                        {analysisProgress ? t(locale, "analysis.running") : t(locale, "analysis.open")}
+                      </button>
+                      <button
+                        className="ghost-button"
+                        type="button"
+                        disabled={session.moveEntries.length === 0 || !!analysisProgress}
+                        onClick={() => void runAnalysis()}
+                      >
+                        {t(locale, "panel.analysis.run")}
+                      </button>
+                    </div>
+                  ) : null}
                   <AnalysisSummaryView summary={session.analysisSummary} locale={locale} />
                 </MenuSection>
 
@@ -1221,33 +1268,13 @@ function App() {
 
       <AnimatePresence>
         {newGameOpen && (
-          <motion.div
-            className="overlay-scrim"
-            key="new-game-scrim"
-            aria-hidden="true"
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-            transition={{ duration: 0.2 }}
-            onClick={() => setNewGameOpen(false)}
-          />
+          <PresenceAwareOverlayScrim key="new-game-scrim" onClick={() => setNewGameOpen(false)} />
         )}
       </AnimatePresence>
 
       <AnimatePresence>
         {newGameOpen && (
-          <motion.section
-            className="new-game-sheet"
-            key="new-game-sheet"
-            role="dialog"
-            aria-modal="true"
-            aria-label={t(locale, "panel.newGame.title")}
-            initial={{ scale: 0.92, opacity: 0 }}
-            animate={{ scale: 1, opacity: 1 }}
-            exit={{ scale: 0.95, opacity: 0 }}
-            transition={{ type: "spring", stiffness: 300, damping: 34 }}
-            style={{ pointerEvents: "auto" }}
-          >
+          <PresenceAwareNewGameSheet key="new-game-sheet" ariaLabel={t(locale, "panel.newGame.title")}>
             <div className="panel-header panel-header--sheet">
               <div className="panel-header__cluster">
                 <span className="panel-header__glyph" aria-hidden="true">
@@ -1341,7 +1368,7 @@ function App() {
             <button className="primary-button primary-button--full" type="button" onClick={() => void applyNewGame()}>
               {t(locale, "panel.newGame.confirm")}
             </button>
-          </motion.section>
+          </PresenceAwareNewGameSheet>
         )}
       </AnimatePresence>
 

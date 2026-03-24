@@ -270,6 +270,31 @@ describe("App integration", () => {
     });
   });
 
+  it("makes the exiting history panel non-interactive when opening the menu", async () => {
+    const { default: App } = await import("./App");
+    const { container } = render(<App />);
+
+    await screen.findByText("Pipo Chess 3D");
+
+    fireEvent.click(screen.getByRole("button", { name: "Abrir histórico" }));
+    expect(container.querySelector(".history-panel")).not.toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: "Menu" }));
+
+    await waitFor(() => {
+      expect(container.querySelector(".menu-drawer")).not.toBeNull();
+    });
+
+    const exitingHistoryPanel = container.querySelector(".history-panel");
+    if (exitingHistoryPanel) {
+      expect((exitingHistoryPanel as HTMLElement).style.pointerEvents).toBe("none");
+    }
+
+    await waitFor(() => {
+      expect(container.querySelector(".history-panel")).toBeNull();
+    });
+  });
+
   it("keeps camera presets accessible after entering analysis mode", async () => {
     const { default: App } = await import("./App");
     render(<App />);
@@ -303,6 +328,27 @@ describe("App integration", () => {
     expect(container.querySelector(".new-game-sheet")).not.toBeNull();
 
     fireEvent.click(container.querySelector(".overlay-scrim") as Element);
+
+    await waitFor(() => {
+      expect(container.querySelector(".new-game-sheet")).toBeNull();
+    });
+  });
+
+  it("makes the exiting new game sheet non-interactive after clicking close", async () => {
+    const { default: App } = await import("./App");
+    const { container } = render(<App />);
+
+    await screen.findByText("Pipo Chess 3D");
+
+    fireEvent.click(screen.getByRole("button", { name: "Nova partida" }));
+
+    const dialog = await screen.findByRole("dialog", { name: "Iniciar nova partida" });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Fechar" }));
+
+    const exitingSheet = container.querySelector(".new-game-sheet");
+    if (exitingSheet) {
+      expect((exitingSheet as HTMLElement).style.pointerEvents).toBe("none");
+    }
 
     await waitFor(() => {
       expect(container.querySelector(".new-game-sheet")).toBeNull();

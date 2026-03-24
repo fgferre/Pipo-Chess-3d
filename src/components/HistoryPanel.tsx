@@ -1,4 +1,4 @@
-import { motion } from "framer-motion";
+import { motion, useIsPresent } from "framer-motion";
 import { MoveList } from "./MoveList";
 import { t } from "../i18n";
 import type { AnalysisSummary, EnginePhase, GameSession, SerializableMove } from "../types/game";
@@ -18,6 +18,7 @@ interface HistoryPanelProps {
   tagsByPly?: AnalysisSummary["tagsByPly"];
   onClose: () => void;
   onSelectPly: (ply: number) => void;
+  pointerEvents?: "auto" | "none";
 }
 
 export function HistoryPanel({
@@ -35,7 +36,10 @@ export function HistoryPanel({
   tagsByPly,
   onClose,
   onSelectPly,
+  pointerEvents = "auto",
 }: HistoryPanelProps) {
+  const isPresent = useIsPresent();
+
   return (
     <motion.aside
       className="history-panel"
@@ -43,7 +47,7 @@ export function HistoryPanel({
       animate={{ x: 0, opacity: 1 }}
       exit={{ x: "110%", opacity: 0 }}
       transition={{ type: "spring", stiffness: 280, damping: 32 }}
-      style={{ pointerEvents: "auto" }}
+      style={{ pointerEvents: isPresent ? pointerEvents : "none" }}
     >
       <div className="history-panel__shell">
         <div className="panel-header panel-header--history">

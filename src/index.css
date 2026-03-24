@@ -3125,7 +3125,7 @@ input[type="range"]::-moz-range-track {
     display: inline-flex;
     align-items: center;
     gap: 0.55rem;
-    min-height: auto;
+    min-height: 44px;
     top: auto;
     left: 50%;
     right: auto;

@@ -29,3 +29,7 @@ Colar o conteudo so e melhor quando o agente externo nao consegue abrir arquivos
 5. `PROMPT_05_Presets_de_camera_e_modo_2d.md`
 6. `PROMPT_06_UI_glassmorphism_mobile_first.md`
 7. `PROMPT_07_Integracao_final_testes_e_limpeza.md`
+
+## Prompts complementares
+
+1. `PROMPT_08_Fix_pointer_events_overlays.md`
