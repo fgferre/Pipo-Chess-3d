@@ -1670,7 +1670,7 @@ function getAnalysisSectionSubtitle(
 
   return session.moveEntries.length > 0
     ? t(locale, "section.analysis.subtitle.empty")
-    : t(locale, "panel.analysis.empty");
+    : t(locale, "section.analysis.subtitle.waiting");
 }
 
 function getLibrarySectionSubtitle(

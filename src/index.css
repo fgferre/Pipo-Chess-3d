@@ -609,7 +609,6 @@ button {
 .top-bar__engine small {
   min-width: 0;
   color: var(--text-muted);
-  white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
@@ -656,8 +655,8 @@ button {
 
 .bar-toggle,
 .ghost-icon-button {
-  width: 2.25rem;
-  height: 2.25rem;
+  width: 2.75rem;
+  height: 2.75rem;
   border-radius: 999px;
   border: 1px solid color-mix(in srgb, var(--focus-primary) 18%, rgba(255, 255, 255, 0.07));
   background:
