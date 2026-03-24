@@ -3105,6 +3105,7 @@ input[type="range"]::-moz-range-track {
     padding: 0.72rem 0.96rem;
     border-right: 1px solid var(--glass-border-soft);
     border-radius: 999px;
+    z-index: 5;
   }
 
   .history-tab:hover,

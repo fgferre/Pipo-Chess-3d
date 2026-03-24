@@ -440,6 +440,7 @@ function App() {
     startTransition(() => {
       setMenuOpen(false);
       setCameraPickerOpen(false);
+      setHistoryOpen(false);
       setNewGameColor(session.playerColor === "b" ? "black" : "white");
       syncNewGameForm(
         session.settings.clockConfig,
@@ -584,7 +585,14 @@ function App() {
         style={{ pointerEvents: isZenMode ? "none" : undefined }}
         onClick={() => {
           startTransition(() => {
-            setHistoryOpen((value) => !value);
+            setHistoryOpen((value) => {
+              const willOpen = !value;
+              // No mobile, fechar a barra inferior ao abrir o histórico
+              if (willOpen && window.innerWidth < 900) {
+                setBottomBarExpanded(false);
+              }
+              return willOpen;
+            });
           });
         }}
       >
@@ -766,8 +774,14 @@ function App() {
             compact={!bottomBarExpanded}
             onClick={() => {
               startTransition(() => {
-                setCameraPickerOpen((value) => !value);
-                setMenuOpen(false);
+                setCameraPickerOpen((value) => {
+                  if (!value) {
+                    setMenuOpen(false);
+                    setHistoryOpen(false);
+                    setNewGameOpen(false);
+                  }
+                  return !value;
+                });
               });
             }}
           />
@@ -777,8 +791,14 @@ function App() {
             compact={!bottomBarExpanded}
             onClick={() => {
               startTransition(() => {
-                setMenuOpen((value) => !value);
-                setCameraPickerOpen(false);
+                setMenuOpen((value) => {
+                  if (!value) {
+                    setCameraPickerOpen(false);
+                    setHistoryOpen(false);
+                    setNewGameOpen(false);
+                  }
+                  return !value;
+                });
               });
             }}
           />
@@ -1237,6 +1257,16 @@ function App() {
                   <p className="panel-kicker">{t(locale, "newGame.kicker")}</p>
                   <h2>{t(locale, "panel.newGame.title")}</h2>
                 </div>
+              </div>
+              <div className="panel-header__meta">
+                <button
+                  className="ghost-icon-button"
+                  type="button"
+                  aria-label={t(locale, "panel.close")}
+                  onClick={() => setNewGameOpen(false)}
+                >
+                  ×
+                </button>
               </div>
             </div>
 
