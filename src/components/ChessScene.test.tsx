@@ -17,6 +17,8 @@ const stageInstances: Array<{
   setAnimationMode: ReturnType<typeof vi.fn>;
   setQualityPreference: ReturnType<typeof vi.fn>;
   setShowCoordinates: ReturnType<typeof vi.fn>;
+  setOnBeforeRender: ReturnType<typeof vi.fn>;
+  triggerBeforeRender: () => void;
   projectSquareToViewport: ReturnType<typeof vi.fn>;
   dispose: ReturnType<typeof vi.fn>;
 }> = [];
@@ -24,6 +26,7 @@ const stageInstances: Array<{
 vi.mock("../scene/SceneAdapter", () => ({
   createSceneAdapter: (container: HTMLDivElement, onSquareSelect: (square: Square) => void) => {
     void container;
+    let onBeforeRenderCallback: (() => void) | null = null;
     const adapter = {
       onSquareSelect,
       init: vi.fn().mockResolvedValue(undefined),
@@ -34,6 +37,12 @@ vi.mock("../scene/SceneAdapter", () => ({
       setAnimationMode: vi.fn(),
       setQualityPreference: vi.fn(),
       setShowCoordinates: vi.fn(),
+      setOnBeforeRender: vi.fn((callback: (() => void) | null) => {
+        onBeforeRenderCallback = callback;
+      }),
+      triggerBeforeRender: () => {
+        onBeforeRenderCallback?.();
+      },
       projectSquareToViewport: vi.fn().mockReturnValue({ x: 120, y: 140 }),
       dispose: vi.fn(),
     };
@@ -225,6 +234,11 @@ describe("ChessScene", () => {
     renderScene({ session, promotionAnchorSquare: "e8", onPromotionAnchorChange });
 
     await waitFor(() => {
+      expect(stageInstances[0]?.setOnBeforeRender).toHaveBeenCalledWith(expect.any(Function));
+    });
+
+    stageInstances[0]?.triggerBeforeRender();
+    await waitFor(() => {
       expect(stageInstances[0]?.projectSquareToViewport).toHaveBeenCalledWith("e8", 1.15);
       expect(onPromotionAnchorChange).toHaveBeenCalledWith({ x: 120, y: 140 });
     });
@@ -278,7 +292,6 @@ describe("ChessScene", () => {
   });
 
   it("projects invalid and castling anchors and clears them on teardown", async () => {
-    const cancelAnimationFrameSpy = vi.spyOn(window, "cancelAnimationFrame").mockImplementation(() => {});
     const onInvalidMoveAnchorChange = vi.fn();
     const onCastlingAnchorChange = vi.fn();
     const { rerender, unmount } = renderScene({
@@ -288,6 +301,11 @@ describe("ChessScene", () => {
       onCastlingAnchorChange,
     });
 
+    await waitFor(() => {
+      expect(stageInstances[0]?.setOnBeforeRender).toHaveBeenCalledWith(expect.any(Function));
+    });
+
+    stageInstances[0]?.triggerBeforeRender();
     await waitFor(() => {
       expect(stageInstances[0]?.projectSquareToViewport).toHaveBeenCalledWith("e5", 0.6);
       expect(stageInstances[0]?.projectSquareToViewport).toHaveBeenCalledWith("g1", 0.7);
@@ -320,7 +338,7 @@ describe("ChessScene", () => {
     });
 
     unmount();
-    expect(cancelAnimationFrameSpy).toHaveBeenCalled();
+    expect(stageInstances[0]?.setOnBeforeRender).toHaveBeenCalledWith(null);
   });
 
   it("pauses the stage on visibility changes and disposes it on unmount", async () => {

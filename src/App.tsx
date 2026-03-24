@@ -732,14 +732,14 @@ function App() {
               <ActionButton
                 icon="＋"
                 label={t(locale, "hud.newGame")}
-                compact={!bottomBarExpanded}
+                compact={false}
                 tone="primary"
                 onClick={openNewGameSheet}
               />
               <ActionButton
                 icon="↺"
                 label={t(locale, "hud.undo")}
-                compact={!bottomBarExpanded}
+                compact={false}
                 disabled={!session.snapshot.canUndo}
                 onClick={() => void undo()}
               />

@@ -2159,6 +2159,36 @@ input[type="range"]::-moz-range-track {
   gap: 0.08rem;
 }
 
+.analysis-view {
+  display: grid;
+  gap: 0.8rem;
+}
+
+.analysis-view--empty {
+  place-items: center;
+  min-height: 8rem;
+}
+
+.analysis-empty {
+  display: grid;
+  justify-items: center;
+  gap: 0.6rem;
+  padding: 1.2rem;
+  text-align: center;
+}
+
+.analysis-empty__glyph {
+  display: inline-grid;
+  place-items: center;
+  width: 2.4rem;
+  height: 2.4rem;
+  border-radius: 999px;
+  border: 1px solid color-mix(in srgb, var(--focus-primary) 20%, var(--glass-border-soft));
+  background: color-mix(in srgb, var(--focus-primary) 8%, transparent);
+  color: var(--focus-primary);
+  font-size: 0.95rem;
+}
+
 .analysis-view h3 {
   margin: 0;
   font-size: 0.68rem;
@@ -2996,9 +3026,9 @@ input[type="range"]::-moz-range-track {
 @media (max-width: 899px) {
   .stage-root {
     padding:
-      calc(3.15rem + env(safe-area-inset-top))
+      calc(2.6rem + env(safe-area-inset-top))
       0.7rem
-      calc(6.8rem + env(safe-area-inset-bottom));
+      calc(6.2rem + env(safe-area-inset-bottom));
   }
 
   .stage-playfield {
@@ -3028,7 +3058,7 @@ input[type="range"]::-moz-range-track {
     justify-content: center;
     flex-wrap: wrap;
     border-radius: calc(var(--shell-radius-xl) - 0.1rem);
-    padding: 0.55rem 0.7rem;
+    padding: 0.4rem 0.6rem;
   }
 
   .top-bar__island--brand,

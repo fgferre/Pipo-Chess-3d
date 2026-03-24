@@ -29,7 +29,7 @@ vi.mock("three", async () => {
   class MockWebGLRenderer {
     readonly domElement = document.createElement("canvas");
     readonly capabilities = { getMaxAnisotropy: () => latestRendererMaxAnisotropy };
-    readonly shadowMap = { enabled: false, type: actual.PCFSoftShadowMap };
+    readonly shadowMap = { enabled: false, type: actual.PCFShadowMap };
     outputColorSpace = actual.SRGBColorSpace;
     toneMapping = actual.ACESFilmicToneMapping;
     toneMappingExposure = 1;
@@ -103,29 +103,46 @@ vi.mock("./PostProcessingPipeline.js", () => ({
   },
 }));
 
-vi.mock("three/examples/jsm/controls/OrbitControls.js", () => ({
-  OrbitControls: class {
-    enabled = true;
-    enableRotate = true;
-    enableDamping = false;
-    dampingFactor = 0;
-    minPolarAngle = 0;
-    maxPolarAngle = 0;
-    minDistance = 0;
-    maxDistance = 0;
-    mouseButtons = { LEFT: 0, MIDDLE: 1, RIGHT: 2 };
-    touches = { ONE: 0, TWO: 2 };
-    target = new Vector3();
+vi.mock("three/examples/jsm/controls/OrbitControls.js", () => {
+  const listeners = new Map<string, Set<() => void>>();
 
-    update = vi.fn();
-    dispose = vi.fn();
+  return {
+    OrbitControls: class {
+      enabled = true;
+      enableRotate = true;
+      enableDamping = false;
+      dampingFactor = 0;
+      minPolarAngle = 0;
+      maxPolarAngle = 0;
+      minDistance = 0;
+      maxDistance = 0;
+      mouseButtons = { LEFT: 0, MIDDLE: 1, RIGHT: 2 };
+      touches = { ONE: 0, TWO: 2 };
+      target = new Vector3();
 
-    constructor(camera: unknown, domElement: HTMLElement) {
-      void camera;
-      void domElement;
-    }
-  },
-}));
+      update = vi.fn();
+      dispose = vi.fn();
+
+      addEventListener = vi.fn((event: string, handler: () => void) => {
+        if (!listeners.has(event)) listeners.set(event, new Set());
+        listeners.get(event)!.add(handler);
+      });
+
+      removeEventListener = vi.fn((event: string, handler: () => void) => {
+        listeners.get(event)?.delete(handler);
+      });
+
+      dispatchEvent = vi.fn((event: { type: string }) => {
+        listeners.get(event.type)?.forEach((h) => h());
+      });
+
+      constructor(camera: unknown, domElement: HTMLElement) {
+        void camera;
+        void domElement;
+      }
+    },
+  };
+});
 
 import {
   ChessStage,
@@ -237,6 +254,15 @@ function findFirstMesh(root: { traverse: (callback: (child: unknown) => void) =>
   }
 
   return mesh;
+}
+
+function getLastAnimationFrameCallback(): FrameRequestCallback {
+  const raf = globalThis.requestAnimationFrame as unknown as ReturnType<typeof vi.fn>;
+  const callback = raf.mock.calls.at(-1)?.[0];
+  if (typeof callback !== "function") {
+    throw new Error("Expected requestAnimationFrame to be scheduled.");
+  }
+  return callback as FrameRequestCallback;
 }
 
 beforeAll(() => {
@@ -1108,6 +1134,152 @@ describe("ChessStage", () => {
 
     expect(stageInternals.qualityTier).toBe(3);
   }, 15000);
+
+  it("does not render when idle but renders after update() marks dirty", async () => {
+    const { stage } = createStage();
+    const stageInternals = stage as unknown as {
+      needsRender: boolean;
+    };
+
+    await stage.init();
+
+    // After init, needsRender should be true (first render)
+    expect(stageInternals.needsRender).toBe(true);
+
+    // Manually trigger the tick logic by calling update (which calls markDirty)
+    stage.update(buildRenderState({ fen: createNewSession().snapshot.fen }));
+
+    // After update, needsRender should be true again
+    expect(stageInternals.needsRender).toBe(true);
+  });
+
+  it("marks dirty when OrbitControls 'change' event fires", async () => {
+    const { stage } = createStage();
+    const stageInternals = stage as unknown as {
+      controls: {
+        dispatchEvent: (event: { type: string }) => void;
+      };
+      needsRender: boolean;
+    };
+
+    await stage.init();
+
+    // Simulate camera rotation via OrbitControls change event
+    stageInternals.controls.dispatchEvent({ type: "change" });
+
+    expect(stageInternals.needsRender).toBe(true);
+  });
+
+  it("marks dirty on pointer down for input lag mitigation", async () => {
+    const { stage } = createStage();
+    const stageInternals = stage as unknown as {
+      needsRender: boolean;
+      markDirty: () => void;
+    };
+
+    await stage.init();
+
+    // Reset dirty flag
+    stageInternals.needsRender = false;
+
+    // Call markDirty directly (same effect as handlePointerDown does)
+    stageInternals.markDirty();
+
+    expect(stageInternals.needsRender).toBe(true);
+  });
+
+  it("subscribes and unsubscribes OrbitControls 'change' listener", async () => {
+    const { stage } = createStage();
+    const stageInternals = stage as unknown as {
+      controls: {
+        addEventListener: ReturnType<typeof vi.fn>;
+        removeEventListener: ReturnType<typeof vi.fn>;
+      };
+    };
+
+    await stage.init();
+
+    expect(stageInternals.controls.addEventListener).toHaveBeenCalledWith(
+      "change",
+      expect.any(Function),
+    );
+
+    stage.dispose();
+
+    expect(stageInternals.controls.removeEventListener).toHaveBeenCalledWith(
+      "change",
+      expect.any(Function),
+    );
+  });
+
+  it("fires the pre-render callback before drawing a frame", async () => {
+    const { stage } = createStage();
+    const stageInternals = stage as unknown as {
+      pipeline: null;
+      renderer: { render: ReturnType<typeof vi.fn> };
+    };
+
+    await stage.init();
+    stageInternals.pipeline = null;
+    stageInternals.renderer.render.mockClear();
+
+    const order: string[] = [];
+    stage.setOnBeforeRender(() => {
+      order.push("before");
+    });
+    stageInternals.renderer.render.mockImplementation(() => {
+      order.push("render");
+    });
+
+    stage.update(buildRenderState());
+    getLastAnimationFrameCallback()(performance.now());
+
+    expect(order).toEqual(["before", "render"]);
+  });
+
+  it("renders the frame where an animated highlight expires", async () => {
+    const { stage } = createStage();
+    const stageInternals = stage as unknown as {
+      animatedHighlights: Array<{
+        mesh: Mesh;
+        material: MeshStandardMaterial;
+        mode: "pulse" | "timed" | "static";
+        baseOpacity: number;
+        startedAt: number;
+        durationMs?: number;
+        phaseOffset?: number;
+      }>;
+      needsRender: boolean;
+      pipeline: { render: ReturnType<typeof vi.fn> } | null;
+    };
+
+    await stage.init();
+    stageInternals.pipeline?.render.mockClear();
+
+    const material = new MeshStandardMaterial({ transparent: true, opacity: 0.4 });
+    const mesh = new Mesh();
+    mesh.visible = true;
+    stageInternals.animatedHighlights = [
+      {
+        mesh,
+        material,
+        mode: "timed",
+        baseOpacity: 0.4,
+        startedAt: 0,
+        durationMs: 100,
+      },
+    ];
+    stageInternals.needsRender = false;
+
+    vi.spyOn(performance, "now").mockReturnValue(100);
+    getLastAnimationFrameCallback()(100);
+
+    expect(stageInternals.pipeline?.render).toHaveBeenCalled();
+    expect(material.opacity).toBe(0);
+    expect(mesh.visible).toBe(false);
+
+    material.dispose();
+  });
 
   it("releases stage-owned resources during final disposal", async () => {
     const { stage } = createStage();

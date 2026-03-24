@@ -1,7 +1,7 @@
 import {
   WebGLRenderer,
   SRGBColorSpace,
-  PCFSoftShadowMap,
+  PCFShadowMap,
   ACESFilmicToneMapping,
   BufferGeometry,
   Float32BufferAttribute,
@@ -1313,6 +1313,8 @@ export class ChessStage implements SceneAdapter {
   private hintAnimationStartedAt = 0;
   private activeLastMoveKey = "";
   private lastMoveAnimationStartedAt = 0;
+  private needsRender = true;
+  private onBeforeRender: (() => void) | null = null;
 
   constructor(container: HTMLDivElement, onSquareSelect: (square: Square) => void) {
     this.container = container;
@@ -1327,7 +1329,7 @@ export class ChessStage implements SceneAdapter {
     });
     this.renderer.outputColorSpace = SRGBColorSpace;
     this.renderer.shadowMap.enabled = true;
-    this.renderer.shadowMap.type = PCFSoftShadowMap;
+    this.renderer.shadowMap.type = PCFShadowMap;
     this.renderer.toneMapping = ACESFilmicToneMapping;
     this.renderer.toneMappingExposure = 0.96;
     this.renderer.domElement.className = "board-canvas";
@@ -1352,6 +1354,7 @@ export class ChessStage implements SceneAdapter {
     this.controls.touches.ONE = null;
     this.controls.touches.TWO = TOUCH.DOLLY_ROTATE;
     this.applyCameraSensitivity(this.cameraSensitivity);
+    this.controls.addEventListener("change", this.handleControlsChange);
 
     this.scene.fog = new FogExp2(0x05070b, 0.0095);
 
@@ -1405,6 +1408,18 @@ export class ChessStage implements SceneAdapter {
     this.startLoop();
   }
 
+  private markDirty(): void {
+    this.needsRender = true;
+  }
+
+  private handleControlsChange = (): void => {
+    this.markDirty();
+  };
+
+  setOnBeforeRender(callback: (() => void) | null): void {
+    this.onBeforeRender = callback;
+  }
+
   private applyCameraPresetState(preset: CameraPreset): void {
     const profile = getCameraPresetProfile(preset);
     this.cameraPreset = preset;
@@ -1416,6 +1431,7 @@ export class ChessStage implements SceneAdapter {
     this.applyControlProfile(profile);
     this.setRepresentationBlend(profile.pieceOpacity, profile.spriteOpacity);
     this.controls.enabled = true;
+    this.markDirty();
   }
 
   private applyControlProfile(profile: CameraPresetProfile): void {
@@ -1618,12 +1634,15 @@ export class ChessStage implements SceneAdapter {
       this.currentHighlightKey = highlightKey;
       this.updateHighlights(state);
     }
+
+    this.markDirty();
   }
 
   setPaused(paused: boolean): void {
     this.paused = paused;
     this.resetPerformanceMonitor();
     if (!paused) {
+      this.needsRender = true;
       this.startLoop();
     }
   }
@@ -1687,6 +1706,7 @@ export class ChessStage implements SceneAdapter {
       toSpriteOpacity: profile.spriteOpacity,
     };
     this.controls.enabled = false;
+    this.markDirty();
   }
 
   setCameraSensitivity(sensitivity: AppSettings["cameraSensitivity"]): void {
@@ -1699,6 +1719,7 @@ export class ChessStage implements SceneAdapter {
 
     this.cameraSensitivity = { ...sensitivity };
     this.applyCameraSensitivity(this.cameraSensitivity);
+    this.markDirty();
   }
 
   projectSquareToViewport(square: Square, yOffset = 0): { x: number; y: number } | null {
@@ -1725,6 +1746,7 @@ export class ChessStage implements SceneAdapter {
 
   setBloomStrength(strength: number): void {
     this.pipeline?.setBloomStrength(strength);
+    this.markDirty();
   }
 
   setAnimationMode(mode: "normal" | "reduced" | "off"): void {
@@ -1735,6 +1757,7 @@ export class ChessStage implements SceneAdapter {
       }
       this.syncPiecesToCurrentState();
     }
+    this.markDirty();
   }
 
   private applyQualityTier(
@@ -1751,11 +1774,12 @@ export class ChessStage implements SceneAdapter {
 
     this.resetPerformanceMonitor();
     this.resize();
+    this.markDirty();
   }
 
   private applyQualityRuntimeSettings(): void {
     this.renderer.shadowMap.enabled = this.qualityProfile.shadowMapEnabled;
-    this.renderer.shadowMap.type = PCFSoftShadowMap;
+    this.renderer.shadowMap.type = PCFShadowMap;
 
     const profile = this.qualityProfile;
     const shadowSize = profile.shadowMapSize;
@@ -1932,6 +1956,7 @@ export class ChessStage implements SceneAdapter {
     } else {
       this.disposeCoordinateLabels();
     }
+    this.markDirty();
   }
 
   private buildCoordinateLabels(orientation: Orientation): void {
@@ -2035,6 +2060,7 @@ export class ChessStage implements SceneAdapter {
     this.resetPointerTracking();
     cancelAnimationFrame(this.animationFrame);
     this.resizeObserver.disconnect();
+    this.controls.removeEventListener("change", this.handleControlsChange);
     this.controls.dispose();
     const { domElement } = this.renderer;
     domElement.removeEventListener("pointerdown", this.handlePointerDown);
@@ -2112,6 +2138,7 @@ export class ChessStage implements SceneAdapter {
     this.renderer.setSize(width, height, false);
     this.pipeline?.setSize(width, height, pixelRatio);
     this.updateCameraFov();
+    this.markDirty();
   }
 
   private updateCameraFov(): void {
@@ -2416,21 +2443,51 @@ export class ChessStage implements SceneAdapter {
         return;
       }
       const now = performance.now();
+
+      // Capture animation state BEFORE updates to detect final frame
+      const hadCameraTransition = this.activeCameraTransition !== null;
+      const hadReturnAnimation = this.returnAnimation !== null;
+      const hadStageTransition = this.activeStageTransition !== null;
+      const hadCaptureParticles = this.activeCaptureParticles.length > 0;
+
       this.updateCameraTransition(now);
       this.updateReturnAnimation(now);
       this.updateStageTransition(now);
       this.updateCaptureParticles(now);
-      this.syncSpriteVisuals();
-      this.updateAnimatedHighlights(now);
+
+      const animatedHighlights = this.updateAnimatedHighlights(now);
+
+      const hasActiveAnimations =
+        this.activeCameraTransition !== null ||
+        this.returnAnimation !== null ||
+        this.activeStageTransition !== null ||
+        this.transitionQueue.length > 0 ||
+        this.activeCaptureParticles.length > 0 ||
+        animatedHighlights.hasActive;
+
+      // If an animation just ended, force render for the final frame
+      const animationJustEnded =
+        (hadCameraTransition && !this.activeCameraTransition) ||
+        (hadReturnAnimation && !this.returnAnimation) ||
+        (hadStageTransition && !this.activeStageTransition) ||
+        (hadCaptureParticles && this.activeCaptureParticles.length === 0);
+
       if (!this.activeCameraTransition) {
         this.controls.update();
       }
-      if (this.pipeline) {
-        this.pipeline.render();
-      } else {
-        this.renderer.render(this.scene, this.camera);
+
+      if (this.needsRender || hasActiveAnimations || animationJustEnded || animatedHighlights.didChange) {
+        this.onBeforeRender?.();
+        this.syncSpriteVisuals();
+        if (this.pipeline) {
+          this.pipeline.render();
+        } else {
+          this.renderer.render(this.scene, this.camera);
+        }
+        this.updatePerformanceMonitor(now);
+        this.needsRender = false;
       }
-      this.updatePerformanceMonitor(now);
+
       this.animationFrame = requestAnimationFrame(tick);
     };
 
@@ -3124,9 +3181,13 @@ export class ChessStage implements SceneAdapter {
     });
   }
 
-  private updateAnimatedHighlights(now: number): void {
+  private updateAnimatedHighlights(now: number): { hasActive: boolean; didChange: boolean } {
+    let hasActive = false;
+    let didChange = false;
+
     for (const highlight of this.animatedHighlights) {
       let opacity = highlight.baseOpacity;
+      let isActive = false;
 
       if (highlight.mode === "pulse") {
         const elapsed = now - highlight.startedAt;
@@ -3134,17 +3195,26 @@ export class ChessStage implements SceneAdapter {
         const fade = clampUnit(1 - elapsed / duration);
         const pulse = 0.65 + 0.35 * (0.5 + 0.5 * Math.sin(elapsed * 0.012 + (highlight.phaseOffset ?? 0)));
         opacity = highlight.baseOpacity * pulse * fade;
+        isActive = elapsed < duration;
       }
 
       if (highlight.mode === "timed") {
         const elapsed = now - highlight.startedAt;
         const duration = highlight.durationMs ?? LAST_MOVE_HIGHLIGHT_MS;
         opacity = highlight.baseOpacity * clampUnit(1 - elapsed / duration);
+        isActive = elapsed < duration;
       }
 
+      const visible = opacity > 0.01;
+      if (highlight.material.opacity !== opacity || highlight.mesh.visible !== visible) {
+        didChange = true;
+      }
       highlight.material.opacity = opacity;
-      highlight.mesh.visible = opacity > 0.01;
+      highlight.mesh.visible = visible;
+      hasActive ||= isActive;
     }
+
+    return { hasActive, didChange };
   }
 
   private applySelectedPieceHighlight(square: Square, color: string): void {
@@ -3278,6 +3348,7 @@ export class ChessStage implements SceneAdapter {
     }
 
     this.dragState.piece.position.set(intersection.localPoint.x, DRAG_LIFT_Y, intersection.localPoint.z);
+    this.markDirty();
   }
 
   private beginPieceDrag(event: PointerEvent, sourceSquare: Square): void {
@@ -3375,6 +3446,7 @@ export class ChessStage implements SceneAdapter {
   }
 
   private handlePointerDown = (event: PointerEvent) => {
+    this.markDirty();
     this.dismissHintHighlights();
 
     if (this.isTouchPointer(event)) {

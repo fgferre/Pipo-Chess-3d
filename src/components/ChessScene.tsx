@@ -1,8 +1,14 @@
 import { useEffect, useEffectEvent, useRef, type CSSProperties } from "react";
+import { flushSync } from "react-dom";
 import type { Square } from "chess.js";
 import { createSceneAdapter, type SceneAdapter } from "../scene/SceneAdapter";
 import { useGameStore } from "../state/gameStore";
 import type { GameSession, ThemeDefinition } from "../types/game";
+
+interface AnchorProjection {
+  square: Square | null;
+  yOffset: number;
+}
 
 interface ChessSceneProps {
   session: GameSession;
@@ -45,6 +51,46 @@ export function ChessScene({
   const handleCastlingAnchorChange = useEffectEvent(onCastlingAnchorChange);
   const cameraPreset = useGameStore((state) => state.cameraPreset);
 
+  // Anchor projection refs — updated on prop change and before every stage render.
+  const promotionAnchorRef = useRef<AnchorProjection>({ square: null, yOffset: 1.15 });
+  const invalidMoveAnchorRef = useRef<AnchorProjection>({ square: null, yOffset: 0.6 });
+  const castlingAnchorRef = useRef<AnchorProjection>({ square: null, yOffset: 0.7 });
+
+  // Project anchors when props change — single shot, no RAF loop
+  useEffect(() => {
+    promotionAnchorRef.current = { square: promotionAnchorSquare, yOffset: 1.15 };
+    if (!promotionAnchorSquare) {
+      handlePromotionAnchorChange(null);
+    } else {
+      handlePromotionAnchorChange(
+        stageRef.current?.projectSquareToViewport(promotionAnchorSquare, 1.15) ?? null,
+      );
+    }
+  }, [promotionAnchorSquare]);
+
+  useEffect(() => {
+    invalidMoveAnchorRef.current = { square: invalidMoveSquare, yOffset: 0.6 };
+    if (!invalidMoveSquare) {
+      handleInvalidMoveAnchorChange(null);
+    } else {
+      handleInvalidMoveAnchorChange(
+        stageRef.current?.projectSquareToViewport(invalidMoveSquare, 0.6) ?? null,
+      );
+    }
+  }, [invalidMoveSquare]);
+
+  useEffect(() => {
+    const square = castlingTargets.length > 0 ? castlingTargets[0] : null;
+    castlingAnchorRef.current = { square, yOffset: 0.7 };
+    if (!square) {
+      handleCastlingAnchorChange(null);
+    } else {
+      handleCastlingAnchorChange(
+        stageRef.current?.projectSquareToViewport(square, 0.7) ?? null,
+      );
+    }
+  }, [castlingTargets]);
+
   useEffect(() => {
     if (!containerRef.current) {
       return;
@@ -59,6 +105,36 @@ export function ChessScene({
     stage.setShowCoordinates(session.settings.showCoordinates);
     void stage.init();
 
+    // Re-project anchors immediately before each 3D render so overlays stay in step.
+    stage.setOnBeforeRender(() => {
+      const promo = promotionAnchorRef.current;
+      const invalid = invalidMoveAnchorRef.current;
+      const castling = castlingAnchorRef.current;
+      if (!promo.square && !invalid.square && !castling.square) {
+        return;
+      }
+
+      flushSync(() => {
+        if (promo.square) {
+          handlePromotionAnchorChange(
+            stageRef.current?.projectSquareToViewport(promo.square, promo.yOffset) ?? null,
+          );
+        }
+
+        if (invalid.square) {
+          handleInvalidMoveAnchorChange(
+            stageRef.current?.projectSquareToViewport(invalid.square, invalid.yOffset) ?? null,
+          );
+        }
+
+        if (castling.square) {
+          handleCastlingAnchorChange(
+            stageRef.current?.projectSquareToViewport(castling.square, castling.yOffset) ?? null,
+          );
+        }
+      });
+    });
+
     const visibilityHandler = () => {
       stage.setPaused(document.hidden);
     };
@@ -67,6 +143,7 @@ export function ChessScene({
 
     return () => {
       document.removeEventListener("visibilitychange", visibilityHandler);
+      stage.setOnBeforeRender(null);
       stage.dispose();
       stageRef.current = null;
     };
@@ -131,66 +208,6 @@ export function ChessScene({
   useEffect(() => {
     stageRef.current?.setShowCoordinates(session.settings.showCoordinates);
   }, [session.settings.showCoordinates]);
-
-  useEffect(() => {
-    if (!promotionAnchorSquare) {
-      handlePromotionAnchorChange(null);
-      return;
-    }
-
-    let frame = 0;
-    const updateAnchor = () => {
-      handlePromotionAnchorChange(stageRef.current?.projectSquareToViewport(promotionAnchorSquare, 1.15) ?? null);
-      frame = window.requestAnimationFrame(updateAnchor);
-    };
-
-    updateAnchor();
-
-    return () => {
-      window.cancelAnimationFrame(frame);
-      handlePromotionAnchorChange(null);
-    };
-  }, [promotionAnchorSquare]);
-
-  useEffect(() => {
-    if (!invalidMoveSquare) {
-      handleInvalidMoveAnchorChange(null);
-      return;
-    }
-
-    let frame = 0;
-    const updateAnchor = () => {
-      handleInvalidMoveAnchorChange(stageRef.current?.projectSquareToViewport(invalidMoveSquare, 0.6) ?? null);
-      frame = window.requestAnimationFrame(updateAnchor);
-    };
-
-    updateAnchor();
-
-    return () => {
-      window.cancelAnimationFrame(frame);
-      handleInvalidMoveAnchorChange(null);
-    };
-  }, [invalidMoveSquare]);
-
-  useEffect(() => {
-    if (castlingTargets.length === 0) {
-      handleCastlingAnchorChange(null);
-      return;
-    }
-
-    let frame = 0;
-    const updateAnchor = () => {
-      handleCastlingAnchorChange(stageRef.current?.projectSquareToViewport(castlingTargets[0], 0.7) ?? null);
-      frame = window.requestAnimationFrame(updateAnchor);
-    };
-
-    updateAnchor();
-
-    return () => {
-      window.cancelAnimationFrame(frame);
-      handleCastlingAnchorChange(null);
-    };
-  }, [castlingTargets]);
 
   const stageStyle = {
     "--board-backdrop": theme.backdrop,
