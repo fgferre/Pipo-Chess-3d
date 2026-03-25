@@ -69,10 +69,13 @@ vi.mock("three", () => {
 
 vi.mock("three/examples/jsm/postprocessing/EffectComposer.js", () => ({
   EffectComposer: class {
-    addPass = vi.fn();
+    addPass = vi.fn((pass) => {
+      this.passes.push(pass);
+    });
     setSize = vi.fn();
     render = vi.fn();
     dispose = vi.fn();
+    passes: any[] = [];
 
     constructor(...args: unknown[]) {
       void args;
@@ -83,6 +86,7 @@ vi.mock("three/examples/jsm/postprocessing/EffectComposer.js", () => ({
 
 vi.mock("three/examples/jsm/postprocessing/RenderPass.js", () => ({
   RenderPass: class {
+    dispose = vi.fn();
     constructor(...args: unknown[]) {
       void args;
     }
@@ -105,6 +109,9 @@ vi.mock("three/examples/jsm/postprocessing/UnrealBloomPass.js", async () => {
         }),
       };
       setSize = vi.fn();
+      dispose = vi.fn();
+      renderTargetsHorizontal = [{ dispose: vi.fn() }];
+      renderTargetsVertical = [{ dispose: vi.fn() }];
 
       constructor(...args: unknown[]) {
         void args;
@@ -228,5 +235,31 @@ describe("PostProcessingPipeline", () => {
 
     expect(latestRenderTargetOptions?.samples).toBe(0);
     expect(latestFxaaPass?.setSize).toHaveBeenLastCalledWith(960, 540);
+  });
+
+  it("disposes of existing passes and the composer when rebuilding", () => {
+    const renderer = {
+      capabilities: { isWebGL2: true, maxSamples: 4 },
+      getSize: vi.fn(() => new Vector2(800, 600)),
+      getPixelRatio: vi.fn(() => 1),
+      render: vi.fn(),
+    };
+    const pipeline = new PostProcessingPipeline(renderer as never, {} as never, {} as never);
+
+    const firstComposer = latestComposer;
+    const firstPasses = [...(firstComposer?.passes || [])];
+
+    // Trigger rebuild
+    pipeline.setAntiAliasing(2, false);
+
+    expect(firstComposer?.dispose).toHaveBeenCalled();
+    firstPasses.forEach((pass) => {
+      if (pass.dispose) {
+        expect(pass.dispose).toHaveBeenCalled();
+      }
+      if (pass.renderTargetsHorizontal) {
+        pass.renderTargetsHorizontal.forEach((rt: any) => expect(rt.dispose).toHaveBeenCalled());
+      }
+    });
   });
 });

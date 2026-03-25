@@ -91,7 +91,9 @@ export class PostProcessingPipeline {
 
   setBloomStrength(strength: number): void {
     this.bloomStrength = Math.max(0, strength);
-    this.bloomPass.strength = this.bloomStrength;
+    if (this.bloomPass) {
+      this.bloomPass.strength = this.bloomStrength;
+    }
   }
 
   getBloomStrength(): number {
@@ -120,13 +122,45 @@ export class PostProcessingPipeline {
   }
 
   dispose(): void {
-    this.composer.dispose();
+    if (this.composer) {
+      this.composer.passes.forEach((pass) => this.disposePassResources(pass));
+      this.composer.dispose();
+    }
+  }
+
+  private disposePassResources(pass: any): void {
+    if (!pass) return;
+
+    if (pass.material) {
+      if (Array.isArray(pass.material)) {
+        pass.material.forEach((m: any) => m.dispose());
+      } else {
+        pass.material.dispose();
+      }
+    }
+
+    if (pass.fsQuad && pass.fsQuad.material) {
+      pass.fsQuad.material.dispose();
+    }
+
+    if (pass instanceof UnrealBloomPass) {
+      pass.renderTargetsHorizontal.forEach((rt: any) => rt.dispose());
+      pass.renderTargetsVertical.forEach((rt: any) => rt.dispose());
+    }
+
+    if (typeof pass.dispose === "function") {
+      pass.dispose();
+    }
   }
 
   private rebuildComposer(): void {
     const width = Math.max(1, Math.round(this.size.x * this.pixelRatio));
     const height = Math.max(1, Math.round(this.size.y * this.pixelRatio));
-    this.composer?.dispose();
+
+    if (this.composer) {
+      this.composer.passes.forEach((pass) => this.disposePassResources(pass));
+      this.composer.dispose();
+    }
 
     // Preserve HDR values for bloom while enabling MSAA on supported tiers.
     const renderTarget = new WebGLRenderTarget(width, height, {
