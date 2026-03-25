@@ -18,6 +18,7 @@ tmp-sample-game.pgn
 .playwright-cli/
 output/
 progress.md
+pnpm-lock.yaml
 
 # Editor directories and files
 .vscode/*

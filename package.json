@@ -20,10 +20,9 @@
     "dexie": "^4.3.0",
     "framer-motion": "^12.37.0",
     "react": "^19.2.4",
-    "react-dom": "^19.2.4",
-    "stockfish": "^18.0.5",
-    "three": "^0.183.2",
-    "zustand": "^5.0.11"
+    "react-dom": "^19.0.0",
+    "three": "^0.174.0",
+    "zustand": "^5.0.2"
   },
   "devDependencies": {
     "@eslint/js": "^9.39.4",
@@ -44,6 +43,7 @@
     "fake-indexeddb": "^6.2.5",
     "globals": "^17.4.0",
     "jsdom": "^28.1.0",
+    "stockfish": "^18.0.0",
     "typescript": "~5.9.3",
     "typescript-eslint": "^8.56.1",
     "vite": "^7.3.1",

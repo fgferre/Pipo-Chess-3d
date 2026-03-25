@@ -1,7 +1,7 @@
 import { copyFile, mkdir } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 
-const sourceDir = resolve("node_modules/stockfish/bin");
+const sourceDir = resolve("node_modules/stockfish/src");
 const outputDir = resolve("public/assets/stockfish");
 
 await mkdir(outputDir, { recursive: true });
