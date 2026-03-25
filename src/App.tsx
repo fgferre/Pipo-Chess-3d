@@ -84,6 +84,36 @@ function PresenceAwareOverlayScrim({ onClick }: { onClick: () => void }) {
   );
 }
 
+function BaseOverlay({
+  children,
+  onClose,
+  showScrim = true,
+}: {
+  children: ReactNode;
+  onClose: () => void;
+  showScrim?: boolean;
+}) {
+  const isPresent = useIsPresent();
+
+  return (
+    <>
+      {showScrim && <PresenceAwareOverlayScrim onClick={onClose} />}
+      <div 
+        style={{ 
+          position: "fixed", 
+          inset: 0, 
+          zIndex: 10, 
+          pointerEvents: isPresent ? "auto" : "none",
+          display: "contents"
+        }}
+        {...(!isPresent ? { inert: "" } as any : {})}
+      >
+        {children}
+      </div>
+    </>
+  );
+}
+
 function PresenceAwareNewGameSheet({
   ariaLabel,
   children,
@@ -863,645 +893,643 @@ function App() {
 
       <AnimatePresence>
         {historyOpen && (
-          <HistoryPanel
-            engineLabel={analysisMode ? t(locale, "history.analysis") : activeDifficulty.label}
-            historyBadgeLabel={analysisMode ? t(locale, "history.analysis") : t(locale, "history.pgn")}
-            historyProgress={historyProgress}
-            historySessionSubtitle={historySessionSubtitle}
-            historySummary={historySummary}
-            locale={locale}
-            moveCount={session.moveEntries.length}
-            moves={deferredMoves}
-            selectedPly={analysisMode ? currentPly : null}
-            sessionStatusLabel={analysisMode ? t(locale, "history.analysis") : t(locale, getStatusKey(enginePhase))}
-            sessionStatusTone={analysisMode ? "analyzing" : enginePhase}
-            tagsByPly={session.analysisSummary?.tagsByPly}
-            onClose={() => setHistoryOpen(false)}
-            onSelectPly={(ply) => {
-              setAnalysisAutoplay(false);
-              setAnalysisCursor(ply);
-            }}
-            pointerEvents={menuOpen ? "none" : "auto"}
-          />
+          <BaseOverlay onClose={() => setHistoryOpen(false)} showScrim={false}>
+            <HistoryPanel
+              engineLabel={analysisMode ? t(locale, "history.analysis") : activeDifficulty.label}
+              historyBadgeLabel={analysisMode ? t(locale, "history.analysis") : t(locale, "history.pgn")}
+              historyProgress={historyProgress}
+              historySessionSubtitle={historySessionSubtitle}
+              historySummary={historySummary}
+              locale={locale}
+              moveCount={session.moveEntries.length}
+              moves={deferredMoves}
+              selectedPly={analysisMode ? currentPly : null}
+              sessionStatusLabel={analysisMode ? t(locale, "history.analysis") : t(locale, getStatusKey(enginePhase))}
+              sessionStatusTone={analysisMode ? "analyzing" : enginePhase}
+              tagsByPly={session.analysisSummary?.tagsByPly}
+              onClose={() => setHistoryOpen(false)}
+              onSelectPly={(ply) => {
+                setAnalysisAutoplay(false);
+                setAnalysisCursor(ply);
+              }}
+              pointerEvents={menuOpen ? "none" : "auto"}
+            />
+          </BaseOverlay>
         )}
       </AnimatePresence>
-
-      {cameraPickerOpen ? (
-        <div
-          className="overlay-scrim"
-          aria-hidden="true"
-          onClick={() => setCameraPickerOpen(false)}
-        />
-      ) : null}
 
       <AnimatePresence>
         {cameraPickerOpen && (
-          <CameraPickerPanel
-            cameraPreset={cameraPreset}
-            presets={CAMERA_PRESETS.map((preset) => ({
-              id: preset.id,
-              icon: preset.icon,
-              label: t(locale, preset.labelKey),
-            }))}
-            title={t(locale, "hud.camera")}
-            kicker={t(locale, "camera.kicker")}
-            onSelectPreset={(preset) => {
-              setCameraPreset(preset);
-              setCameraPickerOpen(false);
-            }}
-          />
+          <BaseOverlay onClose={() => setCameraPickerOpen(false)}>
+            <CameraPickerPanel
+              cameraPreset={cameraPreset}
+              presets={CAMERA_PRESETS.map((preset) => ({
+                id: preset.id,
+                icon: preset.icon,
+                label: t(locale, preset.labelKey),
+              }))}
+              title={t(locale, "hud.camera")}
+              kicker={t(locale, "camera.kicker")}
+              onSelectPreset={(preset) => {
+                setCameraPreset(preset);
+                setCameraPickerOpen(false);
+              }}
+            />
+          </BaseOverlay>
         )}
       </AnimatePresence>
 
-      {menuOpen ? (
-        <div
-          className="overlay-scrim"
-          aria-hidden="true"
-          onClick={() => setMenuOpen(false)}
-        />
-      ) : null}
-
       <AnimatePresence>
         {menuOpen && (
-          <motion.aside
-            className="menu-drawer"
-            initial={{ x: "110%", opacity: 0 }}
-            animate={{ x: 0, opacity: 1 }}
-            exit={{ x: "110%", opacity: 0 }}
-            transition={{ type: "spring", stiffness: 300, damping: 36 }}
-            style={{ pointerEvents: "auto" }}
-          >
-            <div className="menu-drawer__shell">
-              <div className="panel-header menu-drawer__header">
-                <div className="panel-header__cluster">
-                  <span className="panel-header__glyph" aria-hidden="true">
-                    ☰
-                  </span>
-                  <div>
-                    <p className="panel-kicker">{t(locale, "menu.kicker")}</p>
-                    <h2>{t(locale, "hud.menu")}</h2>
-                    <p className="menu-drawer__subtitle">{historySessionSubtitle}</p>
+          <BaseOverlay onClose={() => setMenuOpen(false)}>
+            <motion.aside
+              className="menu-drawer"
+              initial={{ x: "110%", opacity: 0 }}
+              animate={{ x: 0, opacity: 1 }}
+              exit={{ x: "110%", opacity: 0 }}
+              transition={{ type: "spring", stiffness: 300, damping: 36 }}
+              style={{ pointerEvents: "auto" }}
+            >
+              <div className="menu-drawer__shell">
+                <div className="panel-header menu-drawer__header">
+                  <div className="panel-header__cluster">
+                    <span className="panel-header__glyph" aria-hidden="true">
+                      ☰
+                    </span>
+                    <div>
+                      <p className="panel-kicker">{t(locale, "menu.kicker")}</p>
+                      <h2>{t(locale, "hud.menu")}</h2>
+                      <p className="menu-drawer__subtitle">{historySessionSubtitle}</p>
+                    </div>
+                  </div>
+                  <div className="panel-header__meta">
+                    <span className={`status-pill status-pill--${enginePhase}`}>{t(locale, getStatusKey(enginePhase))}</span>
+                    <button
+                      className="ghost-icon-button"
+                      type="button"
+                      aria-label={t(locale, "panel.close")}
+                      onClick={() => setMenuOpen(false)}
+                    >
+                      ×
+                    </button>
                   </div>
                 </div>
-                <div className="panel-header__meta">
-                  <span className={`status-pill status-pill--${enginePhase}`}>{t(locale, getStatusKey(enginePhase))}</span>
-                  <button
-                    className="ghost-icon-button"
-                    type="button"
-                    aria-label={t(locale, "panel.close")}
-                    onClick={() => setMenuOpen(false)}
+                <div className="menu-drawer__scroll">
+
+                  <MenuSection
+                    badge={analysisSummaryCount > 0 ? String(analysisSummaryCount) : undefined}
+                    subtitle={analysisSectionSubtitle}
+                    title={t(locale, "section.analysis.title")}
+                    tone="analysis"
                   >
-                    ×
-                  </button>
-                </div>
-              </div>
-              <div className="menu-drawer__scroll">
+                    {session.moveEntries.length > 0 ? (
+                      <div className="inline-actions">
+                        <button
+                          className="primary-button"
+                          type="button"
+                          disabled={session.moveEntries.length === 0}
+                          onClick={() => void enterAnalysis()}
+                        >
+                          {analysisProgress ? t(locale, "analysis.running") : t(locale, "analysis.open")}
+                        </button>
+                        <button
+                          className="ghost-button"
+                          type="button"
+                          disabled={session.moveEntries.length === 0 || !!analysisProgress}
+                          onClick={() => void runAnalysis()}
+                        >
+                          {t(locale, "panel.analysis.run")}
+                        </button>
+                      </div>
+                    ) : null}
+                    <AnalysisSummaryView summary={session.analysisSummary} locale={locale} />
+                  </MenuSection>
 
-                <MenuSection
-                  badge={analysisSummaryCount > 0 ? String(analysisSummaryCount) : undefined}
-                  subtitle={analysisSectionSubtitle}
-                  title={t(locale, "section.analysis.title")}
-                  tone="analysis"
-                >
-                  {session.moveEntries.length > 0 ? (
-                    <div className="inline-actions">
-                      <button
-                        className="primary-button"
-                        type="button"
-                        disabled={session.moveEntries.length === 0}
-                        onClick={() => void enterAnalysis()}
-                      >
-                        {analysisProgress ? t(locale, "analysis.running") : t(locale, "analysis.open")}
-                      </button>
-                      <button
-                        className="ghost-button"
-                        type="button"
-                        disabled={session.moveEntries.length === 0 || !!analysisProgress}
-                        onClick={() => void runAnalysis()}
-                      >
-                        {t(locale, "panel.analysis.run")}
-                      </button>
-                    </div>
-                  ) : null}
-                  <AnalysisSummaryView summary={session.analysisSummary} locale={locale} />
-                </MenuSection>
+                  <MenuSection
+                    subtitle={settingsSectionSubtitle}
+                    title={t(locale, "menu.settings")}
+                    tone="settings"
+                  >
+                    <div className="settings-stack">
+                      <div className="settings-group">
+                        <h3>{t(locale, "menu.quality")}</h3>
+                        <div className="chip-row">
+                          {QUALITY_PRESETS.map((option) => {
+                            if (option.id === "auto") {
+                              return (
+                                <ChipButton
+                                  key={option.id}
+                                  active={qualityMode === "auto"}
+                                  onClick={() => {
+                                    void setQualityMode("auto");
+                                  }}
+                                >
+                                  {t(locale, option.labelKey)}
+                                </ChipButton>
+                              );
+                            }
 
-                <MenuSection
-                  subtitle={settingsSectionSubtitle}
-                  title={t(locale, "menu.settings")}
-                  tone="settings"
-                >
-                  <div className="settings-stack">
-                    <div className="settings-group">
-                      <h3>{t(locale, "menu.quality")}</h3>
-                      <div className="chip-row">
-                        {QUALITY_PRESETS.map((option) => {
-                          if (option.id === "auto") {
                             return (
                               <ChipButton
                                 key={option.id}
-                                active={qualityMode === "auto"}
+                                active={qualityMode === "manual" && manualQualityTier === option.tier}
                                 onClick={() => {
-                                  void setQualityMode("auto");
+                                  void setQualityTier(option.tier);
                                 }}
                               >
                                 {t(locale, option.labelKey)}
                               </ChipButton>
                             );
-                          }
+                          })}
+                        </div>
+                      </div>
 
-                          return (
+                      <div className="settings-group">
+                        <h3>{t(locale, "menu.coordinates")}</h3>
+                        <div className="chip-row">
+                          <ChipButton
+                            active={session.settings.showCoordinates}
+                            onClick={() => void setShowCoordinates(true)}
+                          >
+                            {t(locale, "menu.coordinates.show")}
+                          </ChipButton>
+                          <ChipButton
+                            active={!session.settings.showCoordinates}
+                            onClick={() => void setShowCoordinates(false)}
+                          >
+                            {t(locale, "menu.coordinates.hide")}
+                          </ChipButton>
+                        </div>
+                      </div>
+
+                      <div className="settings-group">
+                        <h3>{t(locale, "menu.animation")}</h3>
+                        <div className="chip-row">
+                          {(["normal", "reduced", "off"] as const).map((mode) => (
                             <ChipButton
-                              key={option.id}
-                              active={qualityMode === "manual" && manualQualityTier === option.tier}
-                              onClick={() => {
-                                void setQualityTier(option.tier);
-                              }}
+                              key={mode}
+                              active={session.settings.animationMode === mode}
+                              onClick={() => void setAnimationMode(mode)}
                             >
-                              {t(locale, option.labelKey)}
+                              {t(locale, `animation.${mode}`)}
                             </ChipButton>
-                          );
-                        })}
+                          ))}
+                        </div>
                       </div>
-                    </div>
 
-                    <div className="settings-group">
-                      <h3>{t(locale, "menu.coordinates")}</h3>
-                      <div className="chip-row">
-                        <ChipButton
-                          active={session.settings.showCoordinates}
-                          onClick={() => void setShowCoordinates(true)}
-                        >
-                          {t(locale, "menu.coordinates.show")}
-                        </ChipButton>
-                        <ChipButton
-                          active={!session.settings.showCoordinates}
-                          onClick={() => void setShowCoordinates(false)}
-                        >
-                          {t(locale, "menu.coordinates.hide")}
-                        </ChipButton>
+                      <div className="settings-group">
+                        <h3>{t(locale, "menu.defaultView")}</h3>
+                        <div className="chip-row">
+                          {(["3d", "2d"] as const).map((mode) => (
+                            <ChipButton
+                              key={mode}
+                              active={session.settings.defaultViewMode === mode}
+                              onClick={() => void setDefaultViewMode(mode)}
+                            >
+                              {t(locale, mode === "3d" ? "view.3d" : "view.2d")}
+                            </ChipButton>
+                          ))}
+                        </div>
                       </div>
-                    </div>
 
-                    <div className="settings-group">
-                      <h3>{t(locale, "menu.animation")}</h3>
-                      <div className="chip-row">
-                        {(["normal", "reduced", "off"] as const).map((mode) => (
-                          <ChipButton
-                            key={mode}
-                            active={session.settings.animationMode === mode}
-                            onClick={() => void setAnimationMode(mode)}
-                          >
-                            {t(locale, `animation.${mode}`)}
-                          </ChipButton>
-                        ))}
+                      <div className="settings-group">
+                        <h3>{t(locale, "menu.cameraSensitivity")}</h3>
+                        <div className="slider-block">
+                          <label>
+                            <span>{t(locale, "menu.cameraSensitivity.rotate")}</span>
+                            <strong>{formatSensitivityValue(session.settings.cameraSensitivity.rotate)}</strong>
+                            <input
+                              aria-label={t(locale, "menu.cameraSensitivity.rotate")}
+                              max={1.75}
+                              min={0.5}
+                              step={0.25}
+                              type="range"
+                              value={session.settings.cameraSensitivity.rotate}
+                              onChange={(event) => {
+                                void setCameraSensitivity({
+                                  ...session.settings.cameraSensitivity,
+                                  rotate: Number(event.target.value),
+                                });
+                              }}
+                            />
+                          </label>
+                          <label>
+                            <span>{t(locale, "menu.cameraSensitivity.zoom")}</span>
+                            <strong>{formatSensitivityValue(session.settings.cameraSensitivity.zoom)}</strong>
+                            <input
+                              aria-label={t(locale, "menu.cameraSensitivity.zoom")}
+                              max={1.75}
+                              min={0.5}
+                              step={0.25}
+                              type="range"
+                              value={session.settings.cameraSensitivity.zoom}
+                              onChange={(event) => {
+                                void setCameraSensitivity({
+                                  ...session.settings.cameraSensitivity,
+                                  zoom: Number(event.target.value),
+                                });
+                              }}
+                            />
+                          </label>
+                        </div>
                       </div>
-                    </div>
 
-                    <div className="settings-group">
-                      <h3>{t(locale, "menu.defaultView")}</h3>
-                      <div className="chip-row">
-                        {(["3d", "2d"] as const).map((mode) => (
-                          <ChipButton
-                            key={mode}
-                            active={session.settings.defaultViewMode === mode}
-                            onClick={() => void setDefaultViewMode(mode)}
-                          >
-                            {t(locale, mode === "3d" ? "view.3d" : "view.2d")}
-                          </ChipButton>
-                        ))}
+                      <div className="settings-group">
+                        <h3>{t(locale, "panel.themes.title")}</h3>
+                        <div className="theme-grid">
+                          {themes.map((option) => (
+                            <button
+                              className={`theme-card ${session.settings.themeId === option.id ? "is-selected" : ""}`}
+                              key={option.id}
+                              type="button"
+                              onClick={() => void setTheme(option.id)}
+                            >
+                              <strong>{option.label}</strong>
+                              <span className="theme-swatch-row">
+                                <i style={{ background: option.boardLight }} />
+                                <i style={{ background: option.boardDark }} />
+                                <i style={{ background: option.highlightPrimary }} />
+                              </span>
+                            </button>
+                          ))}
+                        </div>
                       </div>
-                    </div>
 
-                    <div className="settings-group">
-                      <h3>{t(locale, "menu.cameraSensitivity")}</h3>
-                      <div className="slider-block">
-                        <label>
-                          <span>{t(locale, "menu.cameraSensitivity.rotate")}</span>
-                          <strong>{formatSensitivityValue(session.settings.cameraSensitivity.rotate)}</strong>
-                          <input
-                            aria-label={t(locale, "menu.cameraSensitivity.rotate")}
-                            max={1.75}
-                            min={0.5}
-                            step={0.25}
-                            type="range"
-                            value={session.settings.cameraSensitivity.rotate}
-                            onChange={(event) => {
-                              void setCameraSensitivity({
-                                ...session.settings.cameraSensitivity,
-                                rotate: Number(event.target.value),
-                              });
-                            }}
-                          />
-                        </label>
-                        <label>
-                          <span>{t(locale, "menu.cameraSensitivity.zoom")}</span>
-                          <strong>{formatSensitivityValue(session.settings.cameraSensitivity.zoom)}</strong>
-                          <input
-                            aria-label={t(locale, "menu.cameraSensitivity.zoom")}
-                            max={1.75}
-                            min={0.5}
-                            step={0.25}
-                            type="range"
-                            value={session.settings.cameraSensitivity.zoom}
-                            onChange={(event) => {
-                              void setCameraSensitivity({
-                                ...session.settings.cameraSensitivity,
-                                zoom: Number(event.target.value),
-                              });
-                            }}
-                          />
-                        </label>
+                      <div className="settings-group">
+                        <h3>{t(locale, "panel.language.title")}</h3>
+                        <div className="chip-row">
+                          {locales.map((option) => (
+                            <ChipButton
+                              key={option}
+                              active={session.settings.locale === option}
+                              onClick={() => void setLocale(option)}
+                            >
+                              {getLocaleLabel(option)}
+                            </ChipButton>
+                          ))}
+                        </div>
                       </div>
-                    </div>
 
-                    <div className="settings-group">
-                      <h3>{t(locale, "panel.themes.title")}</h3>
-                      <div className="theme-grid">
-                        {themes.map((option) => (
-                          <button
-                            className={`theme-card ${session.settings.themeId === option.id ? "is-selected" : ""}`}
-                            key={option.id}
-                            type="button"
-                            onClick={() => void setTheme(option.id)}
-                          >
-                            <strong>{option.label}</strong>
-                            <span className="theme-swatch-row">
-                              <i style={{ background: option.boardLight }} />
-                              <i style={{ background: option.boardDark }} />
-                              <i style={{ background: option.highlightPrimary }} />
-                            </span>
-                          </button>
-                        ))}
-                      </div>
-                    </div>
-
-                    <div className="settings-group">
-                      <h3>{t(locale, "panel.language.title")}</h3>
-                      <div className="chip-row">
-                        {locales.map((option) => (
-                          <ChipButton
-                            key={option}
-                            active={session.settings.locale === option}
-                            onClick={() => void setLocale(option)}
-                          >
-                            {getLocaleLabel(option)}
-                          </ChipButton>
-                        ))}
-                      </div>
-                    </div>
-
-                    <div className="inline-actions">
-                      <button className="ghost-button" type="button" onClick={() => void toggleOrientation()}>
-                        {t(locale, "hud.flip")}
-                      </button>
-                    </div>
-                  </div>
-                </MenuSection>
-
-                <MenuSection
-                  badge={saveSlots.length > 0 ? String(saveSlots.length) : undefined}
-                  subtitle={librarySectionSubtitle}
-                  title={t(locale, "section.library.title")}
-                  tone="library"
-                >
-                  {autosave ? (
-                    <article className="save-row save-row--autosave">
-                      <span className="save-row__icon" aria-hidden="true">
-                        ↺
-                      </span>
-                      <div className="save-row__copy">
-                        <span className="save-row__eyebrow">{t(locale, "section.library.title")}</span>
-                        <strong>{t(locale, "panel.saveLoad.autosave")}</strong>
-                        <span>{autosaveTimestamp}</span>
-                        <small>{buildSaveSummary(autosave.session, autosave.updatedAt, locale)}</small>
-                      </div>
-                      <div className="save-row__actions">
-                        {canResumeSession(autosave.session) ? (
-                          <button className="ghost-button save-action-button" data-icon="▶" type="button" onClick={() => void resumeSavedSession(restoreAutosave)}>
-                            {t(locale, "save.restore")}
-                          </button>
-                        ) : null}
-                        {canAnalyzeSession(autosave.session) ? (
-                          <button
-                            className="ghost-button save-action-button"
-                            data-icon="∿"
-                            type="button"
-                            onClick={() => void openSavedAnalysis(autosave.session, restoreAutosave)}
-                          >
-                            {t(locale, "analysis.open")}
-                          </button>
-                        ) : null}
-                        <button className="ghost-button save-action-button" data-icon="↗" type="button" onClick={() => void handleExportSession(autosave.session, "autosave")}>
-                          {t(locale, "hud.export")}
+                      <div className="inline-actions">
+                        <button className="ghost-button" type="button" onClick={() => void toggleOrientation()}>
+                          {t(locale, "hud.flip")}
                         </button>
                       </div>
-                    </article>
-                  ) : null}
+                    </div>
+                  </MenuSection>
 
-                  <div className="inline-actions inline-actions--library">
-                    <button className="primary-button library-action-button" data-icon="+" type="button" onClick={() => void createManualSave()}>
-                      {t(locale, "panel.saveLoad.create")}
-                    </button>
-                    <button className="ghost-button library-action-button" data-icon="↧" type="button" onClick={() => fileInputRef.current?.click()}>
-                      {t(locale, "hud.import")}
-                    </button>
-                    <button className="ghost-button library-action-button" data-icon="↗" type="button" onClick={() => void handleExportSession(session)}>
-                      {t(locale, "hud.export")}
-                    </button>
-                  </div>
-
-                  <div className="save-list">
-                    {saveSlots.map((save) => (
-                      <article className="save-row" key={save.id}>
+                  <MenuSection
+                    badge={saveSlots.length > 0 ? String(saveSlots.length) : undefined}
+                    subtitle={librarySectionSubtitle}
+                    title={t(locale, "section.library.title")}
+                    tone="library"
+                  >
+                    {autosave ? (
+                      <article className="save-row save-row--autosave">
                         <span className="save-row__icon" aria-hidden="true">
-                          ◫
+                          ↺
                         </span>
                         <div className="save-row__copy">
-                          <strong>{save.label}</strong>
-                          <span>{formatRelativeTimestamp(save.updatedAt, locale)}</span>
-                          <small>{buildSaveSummary(save.session, save.updatedAt, locale)}</small>
+                          <span className="save-row__eyebrow">{t(locale, "section.library.title")}</span>
+                          <strong>{t(locale, "panel.saveLoad.autosave")}</strong>
+                          <span>{autosaveTimestamp}</span>
+                          <small>{buildSaveSummary(autosave.session, autosave.updatedAt, locale)}</small>
                         </div>
                         <div className="save-row__actions">
-                          {canResumeSession(save.session) ? (
-                            <button
-                              className="ghost-button save-action-button"
-                              data-icon="▶"
-                              type="button"
-                              onClick={() => void resumeSavedSession(() => loadManualSave(save.id!))}
-                            >
-                              {t(locale, "save.continue")}
+                          {canResumeSession(autosave.session) ? (
+                            <button className="ghost-button save-action-button" data-icon="▶" type="button" onClick={() => void resumeSavedSession(restoreAutosave)}>
+                              {t(locale, "save.restore")}
                             </button>
                           ) : null}
-                          {canAnalyzeSession(save.session) ? (
+                          {canAnalyzeSession(autosave.session) ? (
                             <button
                               className="ghost-button save-action-button"
                               data-icon="∿"
                               type="button"
-                              onClick={() => void openSavedAnalysis(save.session, () => loadManualSave(save.id!))}
+                              onClick={() => void openSavedAnalysis(autosave.session, restoreAutosave)}
                             >
                               {t(locale, "analysis.open")}
                             </button>
                           ) : null}
-                          <button
-                            className="ghost-button save-action-button"
-                            data-icon="↗"
-                            type="button"
-                            onClick={() => void handleExportSession(save.session, save.label)}
-                          >
+                          <button className="ghost-button save-action-button" data-icon="↗" type="button" onClick={() => void handleExportSession(autosave.session, "autosave")}>
                             {t(locale, "hud.export")}
-                          </button>
-                          <button className="ghost-button save-action-button" data-icon="×" type="button" onClick={() => void deleteManualSave(save.id!)}>
-                            {t(locale, "panel.saveLoad.delete")}
                           </button>
                         </div>
                       </article>
-                    ))}
-                    {saveSlots.length === 0 ? <p className="muted-copy">{t(locale, "panel.saveLoad.empty")}</p> : null}
-                  </div>
-                </MenuSection>
-              </div>
-            </div>
-          </motion.aside>
-        )}
-      </AnimatePresence>
+                    ) : null}
 
-      <AnimatePresence>
-        {newGameOpen && (
-          <PresenceAwareOverlayScrim key="new-game-scrim" onClick={() => setNewGameOpen(false)} />
-        )}
-      </AnimatePresence>
+                    <div className="inline-actions inline-actions--library">
+                      <button className="primary-button library-action-button" data-icon="+" type="button" onClick={() => void createManualSave()}>
+                        {t(locale, "panel.saveLoad.create")}
+                      </button>
+                      <button className="ghost-button library-action-button" data-icon="↧" type="button" onClick={() => fileInputRef.current?.click()}>
+                        {t(locale, "hud.import")}
+                      </button>
+                      <button className="ghost-button library-action-button" data-icon="↗" type="button" onClick={() => void handleExportSession(session)}>
+                        {t(locale, "hud.export")}
+                      </button>
+                    </div>
 
-      <AnimatePresence>
-        {newGameOpen && (
-          <PresenceAwareNewGameSheet key="new-game-sheet" ariaLabel={t(locale, "panel.newGame.title")}>
-            <div className="panel-header panel-header--sheet">
-              <div className="panel-header__cluster">
-                <span className="panel-header__glyph" aria-hidden="true">
-                  ✦
-                </span>
-                <div>
-                  <p className="panel-kicker">{t(locale, "newGame.kicker")}</p>
-                  <h2>{t(locale, "panel.newGame.title")}</h2>
+                    <div className="save-list">
+                      {saveSlots.map((save) => (
+                        <article className="save-row" key={save.id}>
+                          <span className="save-row__icon" aria-hidden="true">
+                            ◫
+                          </span>
+                          <div className="save-row__copy">
+                            <strong>{save.label}</strong>
+                            <span>{formatRelativeTimestamp(save.updatedAt, locale)}</span>
+                            <small>{buildSaveSummary(save.session, save.updatedAt, locale)}</small>
+                          </div>
+                          <div className="save-row__actions">
+                            {canResumeSession(save.session) ? (
+                              <button
+                                className="ghost-button save-action-button"
+                                data-icon="▶"
+                                type="button"
+                                onClick={() => void resumeSavedSession(() => loadManualSave(save.id!))}
+                              >
+                                {t(locale, "save.continue")}
+                              </button>
+                            ) : null}
+                            {canAnalyzeSession(save.session) ? (
+                              <button
+                                className="ghost-button save-action-button"
+                                data-icon="∿"
+                                type="button"
+                                onClick={() => void openSavedAnalysis(save.session, () => loadManualSave(save.id!))}
+                              >
+                                {t(locale, "analysis.open")}
+                              </button>
+                            ) : null}
+                            <button
+                              className="ghost-button save-action-button"
+                              data-icon="↗"
+                              type="button"
+                              onClick={() => void handleExportSession(save.session, save.label)}
+                            >
+                              {t(locale, "hud.export")}
+                            </button>
+                            <button className="ghost-button save-action-button" data-icon="×" type="button" onClick={() => void deleteManualSave(save.id!)}>
+                              {t(locale, "panel.saveLoad.delete")}
+                            </button>
+                          </div>
+                        </article>
+                      ))}
+                      {saveSlots.length === 0 ? <p className="muted-copy">{t(locale, "panel.saveLoad.empty")}</p> : null}
+                    </div>
+                  </MenuSection>
                 </div>
               </div>
-              <div className="panel-header__meta">
-                <button
-                  className="ghost-icon-button"
-                  type="button"
-                  aria-label={t(locale, "panel.close")}
-                  onClick={() => setNewGameOpen(false)}
-                >
-                  ×
-                </button>
-              </div>
-            </div>
+            </motion.aside>
+          </BaseOverlay>
+        )}
+      </AnimatePresence>
 
-            <div className="settings-group">
-              <h3>{t(locale, "newGame.color")}</h3>
-              <div className="chip-row chip-row--three">
-                {(["white", "random", "black"] as const).map((colorChoice) => (
-                  <ChipButton
-                    key={colorChoice}
-                    active={newGameColor === colorChoice}
-                    onClick={() => setNewGameColor(colorChoice)}
+      <AnimatePresence>
+        {newGameOpen && (
+          <BaseOverlay onClose={() => setNewGameOpen(false)}>
+            <PresenceAwareNewGameSheet key="new-game-sheet" ariaLabel={t(locale, "panel.newGame.title")}>
+              <div className="panel-header panel-header--sheet">
+                <div className="panel-header__cluster">
+                  <span className="panel-header__glyph" aria-hidden="true">
+                    ✦
+                  </span>
+                  <div>
+                    <p className="panel-kicker">{t(locale, "newGame.kicker")}</p>
+                    <h2>{t(locale, "panel.newGame.title")}</h2>
+                  </div>
+                </div>
+                <div className="panel-header__meta">
+                  <button
+                    className="ghost-icon-button"
+                    type="button"
+                    aria-label={t(locale, "panel.close")}
+                    onClick={() => setNewGameOpen(false)}
                   >
-                    {t(locale, `newGame.color.${colorChoice}`)}
-                  </ChipButton>
-                ))}
+                    ×
+                  </button>
+                </div>
               </div>
-            </div>
 
-            <div className="settings-group">
-              <h3>{t(locale, "newGame.level")}</h3>
-              <div className="slider-block">
-                <strong>{getDifficultyPreset(newGameDifficultyId).label}</strong>
-                <input
-                  aria-label={t(locale, "newGame.level")}
-                  max={difficultyPresets.length - 1}
-                  min={0}
-                  type="range"
-                  value={selectedDifficultyIndex}
-                  onChange={(event) => {
-                    const index = Number(event.target.value);
-                    setNewGameDifficultyId(difficultyPresets[index]?.id ?? difficultyPresets[0].id);
-                  }}
-                />
-                <div className="slider-labels">
-                  {difficultyPresets.map((preset) => (
-                    <span key={preset.id}>{preset.label}</span>
+              <div className="settings-group">
+                <h3>{t(locale, "newGame.color")}</h3>
+                <div className="chip-row chip-row--three">
+                  {(["white", "random", "black"] as const).map((colorChoice) => (
+                    <ChipButton
+                      key={colorChoice}
+                      active={newGameColor === colorChoice}
+                      onClick={() => setNewGameColor(colorChoice)}
+                    >
+                      {t(locale, `newGame.color.${colorChoice}`)}
+                    </ChipButton>
                   ))}
                 </div>
               </div>
-            </div>
 
-            <div className="settings-group">
-              <h3>{t(locale, "panel.clock.title")}</h3>
-              <div className="chip-row chip-row--wrap">
-                {NEW_GAME_CLOCK_PRESETS.map((preset) => (
-                  <ChipButton
-                    key={getClockKey(preset)}
-                    active={selectedClockKey === getClockKey(preset)}
-                    onClick={() => setSelectedClockKey(getClockKey(preset))}
-                  >
-                    {formatClockPresetLabel(preset, locale)}
-                  </ChipButton>
-                ))}
-                <ChipButton active={selectedClockKey === "custom"} onClick={() => setSelectedClockKey("custom")}>
-                  {t(locale, "panel.clock.custom")}
-                </ChipButton>
-              </div>
-              {selectedClockKey === "custom" ? (
-                <div className="custom-clock">
-                  <label>
-                    {t(locale, "panel.clock.minutes")}
-                    <input value={customMinutes} onChange={(event) => setCustomMinutes(event.target.value)} />
-                  </label>
-                  <label>
-                    {t(locale, "panel.clock.increment")}
-                    <input value={customIncrement} onChange={(event) => setCustomIncrement(event.target.value)} />
-                  </label>
+              <div className="settings-group">
+                <h3>{t(locale, "newGame.level")}</h3>
+                <div className="slider-block">
+                  <strong>{getDifficultyPreset(newGameDifficultyId).label}</strong>
+                  <input
+                    aria-label={t(locale, "newGame.level")}
+                    max={difficultyPresets.length - 1}
+                    min={0}
+                    type="range"
+                    value={selectedDifficultyIndex}
+                    onChange={(event) => {
+                      const index = Number(event.target.value);
+                      setNewGameDifficultyId(difficultyPresets[index]?.id ?? difficultyPresets[0].id);
+                    }}
+                  />
+                  <div className="slider-labels">
+                    {difficultyPresets.map((preset) => (
+                      <span key={preset.id}>{preset.label}</span>
+                    ))}
+                  </div>
                 </div>
-              ) : null}
-            </div>
+              </div>
 
-            <button className="primary-button primary-button--full" type="button" onClick={() => void applyNewGame()}>
-              {t(locale, "panel.newGame.confirm")}
-            </button>
-          </PresenceAwareNewGameSheet>
+              <div className="settings-group">
+                <h3>{t(locale, "panel.clock.title")}</h3>
+                <div className="chip-row chip-row--wrap">
+                  {NEW_GAME_CLOCK_PRESETS.map((preset) => (
+                    <ChipButton
+                      key={getClockKey(preset)}
+                      active={selectedClockKey === getClockKey(preset)}
+                      onClick={() => setSelectedClockKey(getClockKey(preset))}
+                    >
+                      {formatClockPresetLabel(preset, locale)}
+                    </ChipButton>
+                  ))}
+                  <ChipButton active={selectedClockKey === "custom"} onClick={() => setSelectedClockKey("custom")}>
+                    {t(locale, "panel.clock.custom")}
+                  </ChipButton>
+                </div>
+                {selectedClockKey === "custom" ? (
+                  <div className="custom-clock">
+                    <label>
+                      {t(locale, "panel.clock.minutes")}
+                      <input value={customMinutes} onChange={(event) => setCustomMinutes(event.target.value)} />
+                    </label>
+                    <label>
+                      {t(locale, "panel.clock.increment")}
+                      <input value={customIncrement} onChange={(event) => setCustomIncrement(event.target.value)} />
+                    </label>
+                  </div>
+                ) : null}
+              </div>
+
+              <button className="primary-button primary-button--full" type="button" onClick={() => void applyNewGame()}>
+                {t(locale, "panel.newGame.confirm")}
+              </button>
+            </PresenceAwareNewGameSheet>
+          </BaseOverlay>
         )}
       </AnimatePresence>
 
-      {pendingPromotion ? (
-        <section
-          className="promotion-popup"
-          role="dialog"
-          aria-label={t(locale, "promotion.title")}
-          style={getPromotionPopupStyle(promotionAnchor)}
-        >
-          <p className="panel-kicker promotion-popup__kicker">{t(locale, "promotion.title")}</p>
-          <div className="promotion-options">
-            {PROMOTION_CHOICES.map((piece) => (
-              <button
-                className="promotion-option"
-                key={piece}
-                type="button"
-                onClick={() => void confirmPromotion(piece)}
-              >
-                <span className="promotion-option__well" aria-hidden="true">
-                  <span className="promotion-option__glyph">{getPromotionGlyph(piece, session.playerColor)}</span>
-                </span>
-                <small className="promotion-option__label">{t(locale, getPromotionKey(piece))}</small>
-              </button>
-            ))}
-          </div>
-        </section>
-      ) : null}
+      <AnimatePresence>
+        {pendingPromotion && (
+          <BaseOverlay onClose={() => {}} showScrim={false}>
+            <section
+              className="promotion-popup"
+              role="dialog"
+              aria-label={t(locale, "promotion.title")}
+              style={getPromotionPopupStyle(promotionAnchor)}
+            >
+              <p className="panel-kicker promotion-popup__kicker">{t(locale, "promotion.title")}</p>
+              <div className="promotion-options">
+                {PROMOTION_CHOICES.map((piece) => (
+                  <button
+                    className="promotion-option"
+                    key={piece}
+                    type="button"
+                    onClick={() => void confirmPromotion(piece)}
+                  >
+                    <span className="promotion-option__well" aria-hidden="true">
+                      <span className="promotion-option__glyph">{getPromotionGlyph(piece, session.playerColor)}</span>
+                    </span>
+                    <small className="promotion-option__label">{t(locale, getPromotionKey(piece))}</small>
+                  </button>
+                ))}
+              </div>
+            </section>
+          </BaseOverlay>
+        )}
+      </AnimatePresence>
 
       <AnimatePresence>
         {invalidMoveSquare && invalidMoveAnchor ? (
-          <motion.div
-            className={`board-cue board-cue--invalid${invalidMoveExpanded ? " board-cue--expanded" : ""}`}
-            key="invalid-move-cue"
-            style={{
-              ...getBoardCueStyle(invalidMoveAnchor),
-              ...(invalidMoveDetail ? { cursor: "pointer", pointerEvents: "auto" as const } : {}),
-            }}
-            initial={{ scale: 0.85, opacity: 0 }}
-            animate={{ scale: 1, opacity: 1 }}
-            exit={{ scale: 0.92, opacity: 0 }}
-            transition={{ type: "spring", stiffness: 400, damping: 30 }}
-            onClick={invalidMoveDetail ? () => setInvalidMoveExpanded((v) => !v) : undefined}
-          >
-            <span className="board-cue__summary">
-              <span className="board-cue__glyph" aria-hidden="true">!</span>
-              <span className="board-cue__summary-text">
-                {invalidMoveSummary ?? t(locale, "feedback.invalidMove")}
+          <BaseOverlay onClose={() => setInvalidMoveSquare(null)} showScrim={false}>
+            <motion.div
+              className={`board-cue board-cue--invalid${invalidMoveExpanded ? " board-cue--expanded" : ""}`}
+              key="invalid-move-cue"
+              style={{
+                ...getBoardCueStyle(invalidMoveAnchor),
+                ...(invalidMoveDetail ? { cursor: "pointer", pointerEvents: "auto" as const } : {}),
+              }}
+              initial={{ scale: 0.85, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.92, opacity: 0 }}
+              transition={{ type: "spring", stiffness: 400, damping: 30 }}
+              onClick={invalidMoveDetail ? () => setInvalidMoveExpanded((v) => !v) : undefined}
+            >
+              <span className="board-cue__summary">
+                <span className="board-cue__glyph" aria-hidden="true">!</span>
+                <span className="board-cue__summary-text">
+                  {invalidMoveSummary ?? t(locale, "feedback.invalidMove")}
+                </span>
+                {invalidMoveDetail ? (
+                  <span className="board-cue__expand-indicator">{invalidMoveExpanded ? "−" : "+"}</span>
+                ) : null}
               </span>
-              {invalidMoveDetail ? (
-                <span className="board-cue__expand-indicator">{invalidMoveExpanded ? "−" : "+"}</span>
-              ) : null}
-            </span>
-            <AnimatePresence>
-              {invalidMoveExpanded && invalidMoveDetail ? (
-                <motion.span
-                  className="board-cue__detail"
-                  key="detail"
-                  initial={{ height: 0, opacity: 0 }}
-                  animate={{ height: "auto", opacity: 1 }}
-                  exit={{ height: 0, opacity: 0 }}
-                  transition={{ duration: 0.2 }}
-                >
-                  {invalidMoveDetail}
-                </motion.span>
-              ) : null}
-            </AnimatePresence>
-          </motion.div>
+              <AnimatePresence>
+                {invalidMoveExpanded && invalidMoveDetail ? (
+                  <motion.span
+                    className="board-cue__detail"
+                    key="detail"
+                    initial={{ height: 0, opacity: 0 }}
+                    animate={{ height: "auto", opacity: 1 }}
+                    exit={{ height: 0, opacity: 0 }}
+                    transition={{ duration: 0.2 }}
+                  >
+                    {invalidMoveDetail}
+                  </motion.span>
+                ) : null}
+              </AnimatePresence>
+            </motion.div>
+          </BaseOverlay>
         ) : null}
       </AnimatePresence>
 
       <AnimatePresence>
         {castlingTargets.length > 0 && castlingAnchor ? (
-          <motion.div
-            className="board-cue board-cue--castling"
-            key="castling-cue"
-            style={getBoardCueStyle(castlingAnchor)}
-            initial={{ scale: 0.85, opacity: 0 }}
-            animate={{ scale: 1, opacity: 1 }}
-            exit={{ scale: 0.92, opacity: 0 }}
-            transition={{ type: "spring", stiffness: 400, damping: 30 }}
-          >
-            <span className="board-cue__summary">
-              <span className="board-cue__glyph" aria-hidden="true">♜</span>
-              <span className="board-cue__summary-text">{t(locale, "feedback.castling")}</span>
-            </span>
-          </motion.div>
+          <BaseOverlay onClose={() => {}} showScrim={false}>
+            <motion.div
+              className="board-cue board-cue--castling"
+              key="castling-cue"
+              style={getBoardCueStyle(castlingAnchor)}
+              initial={{ scale: 0.85, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.92, opacity: 0 }}
+              transition={{ type: "spring", stiffness: 400, damping: 30 }}
+            >
+              <span className="board-cue__summary">
+                <span className="board-cue__glyph" aria-hidden="true">♜</span>
+                <span className="board-cue__summary-text">{t(locale, "feedback.castling")}</span>
+              </span>
+            </motion.div>
+          </BaseOverlay>
         ) : null}
       </AnimatePresence>
 
       <AnimatePresence>
         {replacePromptOpen ? (
-        <ReplaceGameDialog
-            open={replacePromptOpen}
-            badge={t(locale, "panel.newGame.title")}
-            title={t(locale, "confirm.newGame.title")}
-            body={t(locale, "confirm.newGame.body")}
-            keepLabel={t(locale, "confirm.newGame.keep")}
-            cancelLabel={t(locale, "confirm.newGame.cancel")}
-            replaceLabel={t(locale, "confirm.newGame.replace")}
-            onKeep={() => setReplacePromptOpen(false)}
-            onCancel={() => {
-              setReplacePromptOpen(false);
-              setNewGameOpen(false);
-            }}
-            onReplace={() => void applyNewGame(true)}
-          />
+          <BaseOverlay onClose={() => setReplacePromptOpen(false)}>
+            <ReplaceGameDialog
+              open={replacePromptOpen}
+              badge={t(locale, "panel.newGame.title")}
+              title={t(locale, "confirm.newGame.title")}
+              body={t(locale, "confirm.newGame.body")}
+              keepLabel={t(locale, "confirm.newGame.keep")}
+              cancelLabel={t(locale, "confirm.newGame.cancel")}
+              replaceLabel={t(locale, "confirm.newGame.replace")}
+              onKeep={() => setReplacePromptOpen(false)}
+              onCancel={() => {
+                setReplacePromptOpen(false);
+                setNewGameOpen(false);
+              }}
+              onReplace={() => void applyNewGame(true)}
+            />
+          </BaseOverlay>
         ) : null}
       </AnimatePresence>
 
       <AnimatePresence>
         {resultModalOpen ? (
-        <ResultModalOverlay
-            open={resultModalOpen}
-            kicker={t(locale, "result.kicker")}
-            glyph={getResultGlyph(session)}
-            title={t(locale, getFriendlyResultKey(session))}
-            subtitle={t(locale, getResultStatusKey(session.snapshot.status))}
-            metrics={[
-              { label: t(locale, "hud.moves"), value: session.moveEntries.length },
-              { label: t(locale, "newGame.level"), value: getDifficultyPreset(session.settings.difficultyId).label },
-              { label: t(locale, "panel.clock.title"), value: session.settings.clockConfig.label },
-            ]}
-            analysisLabel={t(locale, "analysis.open")}
-            newGameLabel={t(locale, "hud.newGame")}
-            menuLabel={t(locale, "hud.menu")}
-            onOpenAnalysis={() => void enterAnalysis()}
-            onOpenNewGame={openNewGameSheet}
-            onOpenMenu={() => {
-              setResultModalOpen(false);
-              setMenuOpen(true);
-            }}
-          />
+          <BaseOverlay onClose={() => setResultModalOpen(false)}>
+            <ResultModalOverlay
+              open={resultModalOpen}
+              kicker={t(locale, "result.kicker")}
+              glyph={getResultGlyph(session)}
+              title={t(locale, getFriendlyResultKey(session))}
+              subtitle={t(locale, getResultStatusKey(session.snapshot.status))}
+              metrics={[
+                { label: t(locale, "hud.moves"), value: session.moveEntries.length },
+                { label: t(locale, "newGame.level"), value: getDifficultyPreset(session.settings.difficultyId).label },
+                { label: t(locale, "panel.clock.title"), value: session.settings.clockConfig.label },
+              ]}
+              analysisLabel={t(locale, "analysis.open")}
+              newGameLabel={t(locale, "hud.newGame")}
+              menuLabel={t(locale, "hud.menu")}
+              onOpenAnalysis={() => void enterAnalysis()}
+              onOpenNewGame={openNewGameSheet}
+              onOpenMenu={() => {
+                setResultModalOpen(false);
+                setMenuOpen(true);
+              }}
+            />
+          </BaseOverlay>
         ) : null}
       </AnimatePresence>
 
