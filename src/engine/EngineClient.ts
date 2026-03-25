@@ -16,8 +16,10 @@ export class EngineClient {
   private listeners = new Set<EventListener>();
   private initialized = false;
   private engineName = "Stockfish";
+  private currentAbortController: AbortController | null = null;
   private activeSearch:
     | {
+        id: string;
         resolve: (evaluation: EngineEvaluation) => void;
         reject: (reason?: unknown) => void;
         info: EngineInfoSnapshot;
@@ -73,22 +75,34 @@ export class EngineClient {
   }
 
   async search(fen: string, difficulty: DifficultyPreset) {
+    this.currentAbortController?.abort();
+    this.currentAbortController = new AbortController();
+    const id = `search-${Date.now()}`;
+
     this.configureDifficulty(difficulty);
     this.emitStatus("thinking", "search", "Thinking");
-    const result = await this.evaluatePosition(fen, difficulty.moveTimeMs);
+    const result = await this.evaluatePosition(fen, difficulty.moveTimeMs, id, this.currentAbortController.signal);
     this.emitStatus("ready", "search", "Ready");
     return result;
   }
 
   async hint(fen: string, difficulty: DifficultyPreset) {
+    this.currentAbortController?.abort();
+    this.currentAbortController = new AbortController();
+    const id = `hint-${Date.now()}`;
+
     this.configureDifficulty(difficulty);
     this.emitStatus("thinking", "hint", "Thinking");
-    const result = await this.evaluatePosition(fen, difficulty.hintTimeMs);
+    const result = await this.evaluatePosition(fen, difficulty.hintTimeMs, id, this.currentAbortController.signal);
     this.emitStatus("ready", "hint", "Ready");
     return result;
   }
 
   async analyzeGame(payload: EngineAnalysisPayload, moveTimeMs = 180): Promise<AnalysisSummary> {
+    this.currentAbortController?.abort();
+    this.currentAbortController = new AbortController();
+    const signal = this.currentAbortController.signal;
+
     const token = ++this.analysisToken;
     this.send("setoption name UCI_LimitStrength value false");
     this.send("setoption name Skill Level value 20");
@@ -101,12 +115,15 @@ export class EngineClient {
     }> = [];
 
     for (const [index, item] of payload.workItems.entries()) {
-      if (token !== this.analysisToken) {
+      if (token !== this.analysisToken || signal.aborted) {
         throw new Error("Analysis interrupted");
       }
 
-      const before = await this.evaluatePosition(item.fenBefore, moveTimeMs);
-      const after = await this.evaluatePosition(item.fenAfter, moveTimeMs);
+      const beforeId = `analysis-${item.ply}-before`;
+      const afterId = `analysis-${item.ply}-after`;
+
+      const before = await this.evaluatePosition(item.fenBefore, moveTimeMs, beforeId, signal);
+      const after = await this.evaluatePosition(item.fenAfter, moveTimeMs, afterId, signal);
       evaluations.push({ item, before, after });
       this.listeners.forEach((listener) =>
         listener({
@@ -126,10 +143,12 @@ export class EngineClient {
 
   async stop(): Promise<void> {
     this.analysisToken += 1;
+    this.currentAbortController?.abort();
     const activeSearch = this.activeSearch;
     this.send("stop");
 
     if (!activeSearch) {
+      this.emitStatus("ready", "stop", "Ready");
       return;
     }
 
@@ -138,20 +157,45 @@ export class EngineClient {
   }
 
   terminate(): void {
+    this.currentAbortController?.abort();
     this.worker?.terminate();
   }
 
-  private async evaluatePosition(fen: string, moveTimeMs: number): Promise<EngineEvaluation> {
+  private async evaluatePosition(
+    fen: string,
+    moveTimeMs: number,
+    id: string,
+    signal: AbortSignal,
+  ): Promise<EngineEvaluation> {
     this.send(`position fen ${fen}`);
 
     return new Promise<EngineEvaluation>((resolve, reject) => {
+      if (signal.aborted) {
+        reject(new Error("Search aborted"));
+        return;
+      }
+
+      const onAbort = () => {
+        this.send("stop");
+        reject(new Error("Search aborted"));
+      };
+      signal.addEventListener("abort", onAbort, { once: true });
+
       let settleSearch: () => void = () => undefined;
       const settled = new Promise<void>((settle) => {
         settleSearch = settle;
       });
+
       this.activeSearch = {
-        resolve,
-        reject,
+        id,
+        resolve: (val) => {
+          signal.removeEventListener("abort", onAbort);
+          resolve(val);
+        },
+        reject: (err) => {
+          signal.removeEventListener("abort", onAbort);
+          reject(err);
+        },
         info: {
           bestMove: null,
           pv: [],
