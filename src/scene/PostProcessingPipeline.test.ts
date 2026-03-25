@@ -6,10 +6,14 @@ let latestComposer: {
   render: ReturnType<typeof vi.fn>;
   dispose: ReturnType<typeof vi.fn>;
 } | null = null;
+let latestRenderTargetOptions: Record<string, unknown> | null = null;
 let latestBloomPass: {
   enabled: boolean;
   strength: number;
   resolution: { x: number; y: number; set: ReturnType<typeof vi.fn> };
+  setSize: ReturnType<typeof vi.fn>;
+} | null = null;
+let latestFxaaPass: {
   setSize: ReturnType<typeof vi.fn>;
 } | null = null;
 
@@ -37,8 +41,11 @@ vi.mock("three", () => {
   }
 
   class WebGLRenderTarget {
-    constructor(...args: unknown[]) {
-      void args;
+    samples = 0;
+
+    constructor(_width: unknown, _height: unknown, options: Record<string, unknown> = {}) {
+      latestRenderTargetOptions = options;
+      this.samples = typeof options.samples === "number" ? options.samples : 0;
     }
   }
 
@@ -112,6 +119,16 @@ vi.mock("three/examples/jsm/postprocessing/UnrealBloomPass.js", async () => {
   };
 });
 
+vi.mock("three/examples/jsm/postprocessing/FXAAPass.js", () => ({
+  FXAAPass: class {
+    setSize = vi.fn();
+
+    constructor() {
+      latestFxaaPass = this;
+    }
+  },
+}));
+
 vi.mock("three/examples/jsm/postprocessing/OutputPass.js", () => ({
   OutputPass: class {},
 }));
@@ -130,11 +147,17 @@ import { PostProcessingPipeline } from "./PostProcessingPipeline";
 describe("PostProcessingPipeline", () => {
   beforeEach(() => {
     latestComposer = null;
+    latestRenderTargetOptions = null;
     latestBloomPass = null;
+    latestFxaaPass = null;
   });
 
   it("bypasses the composer and renders directly when disabled", () => {
     const renderer = {
+      capabilities: {
+        isWebGL2: true,
+        maxSamples: 4,
+      },
       getSize: vi.fn(() => new Vector2(800, 600)),
       getPixelRatio: vi.fn(() => 2),
       render: vi.fn(),
@@ -152,6 +175,10 @@ describe("PostProcessingPipeline", () => {
 
   it("resizes the bloom pass using the configured resolution scale", () => {
     const renderer = {
+      capabilities: {
+        isWebGL2: true,
+        maxSamples: 4,
+      },
       getSize: vi.fn(() => new Vector2(640, 360)),
       getPixelRatio: vi.fn(() => 2),
       render: vi.fn(),
@@ -164,5 +191,42 @@ describe("PostProcessingPipeline", () => {
     expect(latestComposer?.setSize).toHaveBeenCalledWith(1280, 720);
     expect(latestBloomPass?.setSize).toHaveBeenLastCalledWith(640, 360);
     expect(latestBloomPass?.resolution.set).toHaveBeenLastCalledWith(640, 360);
+  });
+
+  it("uses multisampled post-processing targets on supported renderers", () => {
+    const renderer = {
+      capabilities: {
+        isWebGL2: true,
+        maxSamples: 8,
+      },
+      getSize: vi.fn(() => new Vector2(640, 360)),
+      getPixelRatio: vi.fn(() => 1),
+      render: vi.fn(),
+    };
+    const pipeline = new PostProcessingPipeline(renderer as never, {} as never, {} as never);
+
+    pipeline.setAntiAliasing(4, true);
+
+    expect(latestRenderTargetOptions?.samples).toBe(4);
+    expect(latestFxaaPass).toBeNull();
+  });
+
+  it("falls back to FXAA when multisampled post-processing is unavailable", () => {
+    const renderer = {
+      capabilities: {
+        isWebGL2: false,
+        maxSamples: 0,
+      },
+      getSize: vi.fn(() => new Vector2(640, 360)),
+      getPixelRatio: vi.fn(() => 1.5),
+      render: vi.fn(),
+    };
+    const pipeline = new PostProcessingPipeline(renderer as never, {} as never, {} as never);
+
+    pipeline.setAntiAliasing(4, true);
+    pipeline.setSize(640, 360, 1.5);
+
+    expect(latestRenderTargetOptions?.samples).toBe(0);
+    expect(latestFxaaPass?.setSize).toHaveBeenLastCalledWith(960, 540);
   });
 });

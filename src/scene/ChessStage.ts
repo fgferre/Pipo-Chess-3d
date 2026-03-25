@@ -1809,6 +1809,7 @@ export class ChessStage implements SceneAdapter {
       this.hemisphereLight.intensity = profile.hemisphereIntensity;
     }
 
+    this.pipeline?.setAntiAliasing(profile.postProcessSamples, profile.postProcessFxaa);
     this.pipeline?.setEnabled(profile.bloomEnabled);
     this.pipeline?.setBloomResolutionScale(profile.bloomResolutionScale);
   }
@@ -2654,66 +2655,71 @@ export class ChessStage implements SceneAdapter {
     let restoredPiece: Group | null = null;
     let rookPiece: Group | null = null;
 
-    if (descriptor.captureSquare) {
-      if (descriptor.direction === "forward") {
-        capturedPiece = this.pieceBySquare.get(descriptor.captureSquare) ?? null;
-        if (!capturedPiece) {
-          return null;
-        }
+    if (descriptor.captureSquare && descriptor.direction === "forward") {
+      capturedPiece = this.pieceBySquare.get(descriptor.captureSquare) ?? null;
+      if (!capturedPiece) {
+        return null;
+      }
 
-        this.pieceBySquare.delete(descriptor.captureSquare);
+      this.pieceBySquare.delete(descriptor.captureSquare);
 
-        if (animationConfig.captureFx) {
-          scales.push({
-            piece: capturedPiece,
-            from: PIECE_SCALE,
-            to: PIECE_SCALE * 0.2,
-            startProgress: 0,
-            endProgress: 1,
-          });
-          opacities.push({
-            piece: capturedPiece,
-            from: 1,
-            to: 0,
-            startProgress: 0,
-            endProgress: 1,
-          });
-          // Spawn particle burst at capture position
-          const capturePos = this.createSquareVector(descriptor.captureSquare!, 0.3);
-          const accentHex = this.currentState?.theme.highlightPrimary ?? "#f6c344";
-          this.spawnCaptureBurst(capturePos, accentHex);
-        } else {
-          capturedPiece.visible = false;
-        }
-      } else if (descriptor.capturedPiece) {
-        restoredPiece = this.createPieceInstance(descriptor.capturedPiece);
-        this.positionPieceAtSquare(restoredPiece, descriptor.captureSquare);
-        this.pieceBySquare.set(descriptor.captureSquare, restoredPiece);
-        this.pieceGroup.add(restoredPiece);
-
-        if (animationConfig.captureFx) {
-          restoredPiece.scale.setScalar(PIECE_SCALE * 0.3);
-          this.setPieceOpacity(restoredPiece, 0.15);
-          scales.push({
-            piece: restoredPiece,
-            from: PIECE_SCALE * 0.3,
-            to: PIECE_SCALE,
-            startProgress: 0,
-            endProgress: 1,
-          });
-          opacities.push({
-            piece: restoredPiece,
-            from: 0.15,
-            to: 1,
-            startProgress: 0,
-            endProgress: 1,
-          });
-        }
+      if (animationConfig.captureFx) {
+        scales.push({
+          piece: capturedPiece,
+          from: PIECE_SCALE,
+          to: PIECE_SCALE * 0.2,
+          startProgress: 0,
+          endProgress: 1,
+        });
+        opacities.push({
+          piece: capturedPiece,
+          from: 1,
+          to: 0,
+          startProgress: 0,
+          endProgress: 1,
+        });
+        // Spawn particle burst at capture position
+        const capturePos = this.createSquareVector(descriptor.captureSquare!, 0.3);
+        const accentHex = this.currentState?.theme.highlightPrimary ?? "#f6c344";
+        this.spawnCaptureBurst(capturePos, accentHex);
+      } else {
+        capturedPiece.visible = false;
       }
     }
 
     if (descriptor.moverFrom !== descriptor.moverTo) {
       this.pieceBySquare.delete(descriptor.moverFrom);
+    }
+
+    if (
+      descriptor.captureSquare &&
+      descriptor.direction === "backward" &&
+      descriptor.capturedPiece
+    ) {
+      // On undo, release the mover's current square before restoring the captured piece there.
+      restoredPiece = this.createPieceInstance(descriptor.capturedPiece);
+      this.positionPieceAtSquare(restoredPiece, descriptor.captureSquare);
+      this.pieceBySquare.set(descriptor.captureSquare, restoredPiece);
+      this.pieceGroup.add(restoredPiece);
+
+      if (animationConfig.captureFx) {
+        restoredPiece.scale.setScalar(PIECE_SCALE * 0.3);
+        this.setPieceOpacity(restoredPiece, 0.15);
+        scales.push({
+          piece: restoredPiece,
+          from: PIECE_SCALE * 0.3,
+          to: PIECE_SCALE,
+          startProgress: 0,
+          endProgress: 1,
+        });
+        opacities.push({
+          piece: restoredPiece,
+          from: 0.15,
+          to: 1,
+          startProgress: 0,
+          endProgress: 1,
+        });
+      }
     }
     this.pieceBySquare.set(descriptor.moverTo, mover);
     mover.userData.square = descriptor.moverTo;

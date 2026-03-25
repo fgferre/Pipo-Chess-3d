@@ -45,6 +45,8 @@ export interface QualityTierProfile {
   hemisphereIntensity: number;
   bloomEnabled: boolean;
   bloomResolutionScale: number;
+  postProcessSamples: number;
+  postProcessFxaa: boolean;
   usePhysicalMaterials: boolean;
   boardLight: QualityMaterialTuning;
   boardDark: QualityMaterialTuning;
@@ -65,6 +67,8 @@ const QUALITY_TIER_PROFILES: Record<QualityTier, QualityTierProfile> = {
     hemisphereIntensity: 0.38,
     bloomEnabled: false,
     bloomResolutionScale: 0,
+    postProcessSamples: 0,
+    postProcessFxaa: false,
     usePhysicalMaterials: false,
     boardLight: {
       bumpScale: 0.022,
@@ -125,6 +129,8 @@ const QUALITY_TIER_PROFILES: Record<QualityTier, QualityTierProfile> = {
     hemisphereIntensity: 0.45,
     bloomEnabled: true,
     bloomResolutionScale: 0.5,
+    postProcessSamples: 0,
+    postProcessFxaa: true,
     usePhysicalMaterials: false,
     boardLight: {
       bumpScale: 0.03,
@@ -185,6 +191,8 @@ const QUALITY_TIER_PROFILES: Record<QualityTier, QualityTierProfile> = {
     hemisphereIntensity: 0.5,
     bloomEnabled: true,
     bloomResolutionScale: 1,
+    postProcessSamples: 4,
+    postProcessFxaa: true,
     usePhysicalMaterials: true,
     boardLight: {
       bumpScale: 0.036,

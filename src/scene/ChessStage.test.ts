@@ -28,7 +28,11 @@ vi.mock("three", async () => {
 
   class MockWebGLRenderer {
     readonly domElement = document.createElement("canvas");
-    readonly capabilities = { getMaxAnisotropy: () => latestRendererMaxAnisotropy };
+    readonly capabilities = {
+      getMaxAnisotropy: () => latestRendererMaxAnisotropy,
+      isWebGL2: true,
+      maxSamples: 4,
+    };
     readonly shadowMap = { enabled: false, type: actual.PCFShadowMap };
     outputColorSpace = actual.SRGBColorSpace;
     toneMapping = actual.ACESFilmicToneMapping;
@@ -93,6 +97,7 @@ vi.mock("three", async () => {
 
 vi.mock("./PostProcessingPipeline.js", () => ({
   PostProcessingPipeline: class {
+    setAntiAliasing = vi.fn();
     setBloomStrength = vi.fn();
     getBloomStrength = vi.fn(() => 0.35);
     setEnabled = vi.fn();
@@ -267,11 +272,12 @@ function getLastAnimationFrameCallback(): FrameRequestCallback {
 
 beforeAll(() => {
   vi.stubGlobal("ResizeObserver", ResizeObserverMock);
-  vi.stubGlobal("requestAnimationFrame", vi.fn(() => 1));
-  vi.stubGlobal("cancelAnimationFrame", vi.fn());
 });
 
 beforeEach(() => {
+  vi.stubGlobal("requestAnimationFrame", vi.fn(() => 1));
+  vi.stubGlobal("cancelAnimationFrame", vi.fn());
+
   const getContextMock = ((contextId: string) => {
     if (contextId === "2d") {
       return createCanvasContextMock();
@@ -293,6 +299,10 @@ afterEach(() => {
     vendor: "Mock Vendor",
   };
   latestRendererMaxAnisotropy = 16;
+  const raf = globalThis.requestAnimationFrame as unknown as ReturnType<typeof vi.fn> | undefined;
+  const caf = globalThis.cancelAnimationFrame as unknown as ReturnType<typeof vi.fn> | undefined;
+  raf?.mockReset();
+  caf?.mockReset();
   vi.restoreAllMocks();
 });
 
@@ -433,6 +443,60 @@ describe("ChessStage", () => {
     expect(undoPromotionDescriptor.moverEndType).toBe("p");
   });
 
+  it("restores captured pieces to the board after undoing a capture", async () => {
+    const { stage } = createStage();
+    const stageInternals = stage as unknown as {
+      pieceBySquare: Map<string, { userData: { color: string; type: string; square: string } }>;
+      activeStageTransition: unknown;
+    };
+
+    await stage.init();
+    stage.setAnimationMode("normal");
+
+    let session = createNewSession();
+    session = applyPlayerMove(session, "e2", "e4")!;
+    session = applyEngineMove(session, "d7d5");
+    session = applyPlayerMove(session, "e4", "d5")!;
+
+    stage.update(
+      buildRenderState({
+        fen: session.snapshot.fen,
+        moveEntries: session.moveEntries,
+        redoStack: session.redoStack,
+      }),
+    );
+
+    expect(stageInternals.pieceBySquare.get("d5")?.userData).toMatchObject({
+      color: "w",
+      type: "p",
+      square: "d5",
+    });
+
+    const undone = undoTurn(session);
+    stage.update(
+      buildRenderState({
+        fen: undone.snapshot.fen,
+        moveEntries: undone.moveEntries,
+        redoStack: undone.redoStack,
+      }),
+    );
+
+    expect(stageInternals.activeStageTransition).not.toBeNull();
+
+    getLastAnimationFrameCallback()(1_000);
+
+    expect(stageInternals.pieceBySquare.get("e4")?.userData).toMatchObject({
+      color: "w",
+      type: "p",
+      square: "e4",
+    });
+    expect(stageInternals.pieceBySquare.get("d5")?.userData).toMatchObject({
+      color: "b",
+      type: "p",
+      square: "d5",
+    });
+  });
+
   it("animates piece deltas in normal mode and syncs instantly when animations are off", async () => {
     const { stage } = createStage();
     const stageInternals = stage as unknown as {
@@ -556,7 +620,7 @@ describe("ChessStage", () => {
     expect(stageInternals.controls.enableRotate).toBe(true);
   });
 
-  it("adapts FOV to container aspect ratio so the board fills portrait screens", async () => {
+  it("adapts FOV to container aspect ratio so the board fills portrait screens", () => {
     // Create a portrait container (400 wide x 800 tall)
     const container = document.createElement("div");
     Object.defineProperty(container, "clientWidth", { configurable: true, value: 400 });
@@ -569,8 +633,6 @@ describe("ChessStage", () => {
       camera: { fov: number; aspect: number };
       updateCameraFov: () => void;
     };
-
-    await stage.init();
 
     // Portrait (aspect 0.5): FOV should widen from base 40 -> 40 / 0.5 = 80, capped at 58
     expect(stageInternals.camera.fov).toBeCloseTo(58, 0);
@@ -681,9 +743,10 @@ describe("ChessStage", () => {
   it("starts a touch drag from a player piece and emits the drop target only when the store marks it legal", async () => {
     const { onSquareSelect, stage } = createStage();
     const stageInternals = stage as unknown as {
+      currentState: Parameters<ChessStage["update"]>[0] | null;
       dragState: unknown;
       returnAnimation: unknown;
-      pieceBySquare: Map<string, { position: Vector3 }>;
+      pieceBySquare: Map<string, { position: Vector3; userData: { color: string; square: string } }>;
       handlePointerDown: (event: PointerEvent) => void;
       handlePointerMove: (event: PointerEvent) => void;
       handlePointerUp: (event: PointerEvent) => void;
@@ -692,25 +755,23 @@ describe("ChessStage", () => {
     vi.spyOn(Raycaster.prototype, "intersectObject").mockImplementation(
       () => [{ point }] as never,
     );
-
-    await stage.init();
-    stage.update(
-      buildRenderState({
-        fen: "8/8/8/8/8/8/4P3/8 w - - 0 1",
-      }),
+    stageInternals.currentState = buildRenderState({
+      fen: "8/8/8/8/8/8/4P3/8 w - - 0 1",
+    });
+    stageInternals.pieceBySquare.set(
+      "e2",
+      { position: new Vector3(0.5, 0, 2.5), userData: { color: "w", square: "e2" } } as any,
     );
 
     stageInternals.handlePointerDown(pointerEvent(21, 100, 100, "touch"));
     point = new Vector3(0.5, 0.03, 0.5);
     stageInternals.handlePointerMove(pointerEvent(21, 120, 120, "touch"));
 
-    stage.update(
-      buildRenderState({
-        fen: "8/8/8/8/8/8/4P3/8 w - - 0 1",
-        selectedSquare: "e2",
-        legalTargets: ["e4"],
-      }),
-    );
+    stageInternals.currentState = buildRenderState({
+      fen: "8/8/8/8/8/8/4P3/8 w - - 0 1",
+      selectedSquare: "e2",
+      legalTargets: ["e4"],
+    });
 
     stageInternals.handlePointerUp(pointerEvent(21, 120, 120, "touch"));
 
@@ -724,7 +785,9 @@ describe("ChessStage", () => {
   it("returns a dragged piece to origin when the drop target is not legal", async () => {
     const { onSquareSelect, stage } = createStage();
     const stageInternals = stage as unknown as {
+      currentState: Parameters<ChessStage["update"]>[0] | null;
       dragState: unknown;
+      pieceBySquare: Map<string, { position: Vector3; userData: { color: string; square: string } }>;
       returnAnimation: { to: Vector3 } | null;
       handlePointerDown: (event: PointerEvent) => void;
       handlePointerMove: (event: PointerEvent) => void;
@@ -734,25 +797,23 @@ describe("ChessStage", () => {
     vi.spyOn(Raycaster.prototype, "intersectObject").mockImplementation(
       () => [{ point }] as never,
     );
-
-    await stage.init();
-    stage.update(
-      buildRenderState({
-        fen: "8/8/8/8/8/8/4P3/8 w - - 0 1",
-      }),
+    stageInternals.currentState = buildRenderState({
+      fen: "8/8/8/8/8/8/4P3/8 w - - 0 1",
+    });
+    stageInternals.pieceBySquare.set(
+      "e2",
+      { position: new Vector3(0.5, 0, 2.5), userData: { color: "w", square: "e2" } } as any,
     );
 
     stageInternals.handlePointerDown(pointerEvent(31, 100, 100, "touch"));
     point = new Vector3(0.5, 0.03, 0.5);
     stageInternals.handlePointerMove(pointerEvent(31, 120, 120, "touch"));
 
-    stage.update(
-      buildRenderState({
-        fen: "8/8/8/8/8/8/4P3/8 w - - 0 1",
-        selectedSquare: "e2",
-        legalTargets: ["e3"],
-      }),
-    );
+    stageInternals.currentState = buildRenderState({
+      fen: "8/8/8/8/8/8/4P3/8 w - - 0 1",
+      selectedSquare: "e2",
+      legalTargets: ["e3"],
+    });
 
     stageInternals.handlePointerUp(pointerEvent(31, 120, 120, "touch"));
 
@@ -765,9 +826,10 @@ describe("ChessStage", () => {
   it("starts a mouse drag from a player piece and emits the drop target", async () => {
     const { onSquareSelect, stage } = createStage();
     const stageInternals = stage as unknown as {
+      currentState: Parameters<ChessStage["update"]>[0] | null;
       dragState: unknown;
       returnAnimation: unknown;
-      pieceBySquare: Map<string, { position: Vector3 }>;
+      pieceBySquare: Map<string, { position: Vector3; userData: { color: string; square: string } }>;
       handlePointerDown: (event: PointerEvent) => void;
       handlePointerMove: (event: PointerEvent) => void;
       handlePointerUp: (event: PointerEvent) => void;
@@ -776,14 +838,12 @@ describe("ChessStage", () => {
     vi.spyOn(Raycaster.prototype, "intersectObject").mockImplementation(
       () => [{ point }] as never,
     );
-    stageInternals.pieceBySquare.set("e2", { position: new Vector3(0.5, 0, 2.5) } as any);
-
-    await stage.init();
-
-    stage.update(
-      buildRenderState({
-        fen: "8/8/8/8/8/8/4P3/8 w - - 0 1",
-      }),
+    stageInternals.currentState = buildRenderState({
+      fen: "8/8/8/8/8/8/4P3/8 w - - 0 1",
+    });
+    stageInternals.pieceBySquare.set(
+      "e2",
+      { position: new Vector3(0.5, 0, 2.5), userData: { color: "w", square: "e2" } } as any,
     );
 
     // Down on e2
@@ -794,13 +854,11 @@ describe("ChessStage", () => {
 
     expect(stageInternals.dragState).not.toBeNull();
 
-    stage.update(
-      buildRenderState({
-        fen: "8/8/8/8/8/8/4P3/8 w - - 0 1",
-        selectedSquare: "e2",
-        legalTargets: ["e4"],
-      }),
-    );
+    stageInternals.currentState = buildRenderState({
+      fen: "8/8/8/8/8/8/4P3/8 w - - 0 1",
+      selectedSquare: "e2",
+      legalTargets: ["e4"],
+    });
 
     // Up on e4
     stageInternals.handlePointerUp(pointerEvent(41, 120, 120, "mouse", 0));
@@ -976,9 +1034,12 @@ describe("ChessStage", () => {
         shadowMapSize: number;
         bloomEnabled: boolean;
         bloomResolutionScale: number;
+        postProcessSamples: number;
+        postProcessFxaa: boolean;
       };
       renderer: { shadowMap: { enabled: boolean }; setPixelRatio: ReturnType<typeof vi.fn> };
       pipeline: {
+        setAntiAliasing: ReturnType<typeof vi.fn>;
         setEnabled: ReturnType<typeof vi.fn>;
         setBloomResolutionScale: ReturnType<typeof vi.fn>;
       } | null;
@@ -993,8 +1054,11 @@ describe("ChessStage", () => {
     expect(stageInternals.qualityProfile.textureAnisotropy).toBe(16);
     expect(stageInternals.qualityProfile.shadowMapSize).toBe(4096);
     expect(stageInternals.qualityProfile.bloomEnabled).toBe(true);
+    expect(stageInternals.qualityProfile.postProcessSamples).toBe(4);
+    expect(stageInternals.qualityProfile.postProcessFxaa).toBe(true);
     expect(stageInternals.renderer.shadowMap.enabled).toBe(true);
     expect(stageInternals.renderer.setPixelRatio).toHaveBeenCalledWith(1);
+    expect(stageInternals.pipeline?.setAntiAliasing).toHaveBeenCalledWith(4, true);
     expect(stageInternals.pipeline?.setEnabled).toHaveBeenCalledWith(true);
     expect(stageInternals.pipeline?.setBloomResolutionScale).toHaveBeenCalledWith(1);
     expect(stageInternals.lightPieceMat).toBeInstanceOf(MeshPhysicalMaterial);
@@ -1015,6 +1079,8 @@ describe("ChessStage", () => {
         textureAnisotropy: number;
         shadowMapSize: number;
         bloomResolutionScale: number;
+        postProcessSamples: number;
+        postProcessFxaa: boolean;
       };
       qualityPreference: { qualityMode: string; manualQualityTier: number };
       lightPieceMat: MeshPhysicalMaterial | MeshStandardMaterial;
@@ -1023,6 +1089,7 @@ describe("ChessStage", () => {
       lightSquareMats: Array<MeshPhysicalMaterial | MeshStandardMaterial>;
       renderer: { shadowMap: { enabled: boolean } };
       pipeline: {
+        setAntiAliasing: ReturnType<typeof vi.fn>;
         setEnabled: ReturnType<typeof vi.fn>;
         setBloomResolutionScale: ReturnType<typeof vi.fn>;
       } | null;
@@ -1035,9 +1102,12 @@ describe("ChessStage", () => {
     expect(stageInternals.qualityProfile.pixelRatioCap).toBe(1.5);
     expect(stageInternals.qualityProfile.textureAnisotropy).toBe(4);
     expect(stageInternals.qualityProfile.shadowMapSize).toBe(2048);
+    expect(stageInternals.qualityProfile.postProcessSamples).toBe(0);
+    expect(stageInternals.qualityProfile.postProcessFxaa).toBe(true);
     expect(stageInternals.lightPieceMat).toBeInstanceOf(MeshStandardMaterial);
     expect(stageInternals.darkPieceMat).toBeInstanceOf(MeshStandardMaterial);
     expect(stageInternals.accentMat).toBeInstanceOf(MeshStandardMaterial);
+    expect(stageInternals.pipeline?.setAntiAliasing).toHaveBeenLastCalledWith(0, true);
     expect(stageInternals.pipeline?.setEnabled).toHaveBeenLastCalledWith(true);
     expect(stageInternals.pipeline?.setBloomResolutionScale).toHaveBeenLastCalledWith(0.5);
     expect(stageInternals.lightSquareMats[0]?.map?.anisotropy).toBe(4);
@@ -1051,6 +1121,7 @@ describe("ChessStage", () => {
     expect(stageInternals.darkPieceMat).toBeInstanceOf(MeshStandardMaterial);
     expect(stageInternals.accentMat).toBeInstanceOf(MeshStandardMaterial);
     expect(stageInternals.renderer.shadowMap.enabled).toBe(false);
+    expect(stageInternals.pipeline?.setAntiAliasing).toHaveBeenLastCalledWith(0, false);
     expect(stageInternals.pipeline?.setEnabled).toHaveBeenLastCalledWith(false);
     expect(stageInternals.pipeline?.setBloomResolutionScale).toHaveBeenLastCalledWith(0);
     expect(stageInternals.qualityProfile.pixelRatioCap).toBe(1);
@@ -1135,25 +1206,22 @@ describe("ChessStage", () => {
     expect(stageInternals.qualityTier).toBe(3);
   }, 15000);
 
-  it("does not render when idle but renders after update() marks dirty", async () => {
+  it("does not render when idle but renders after update() marks dirty", () => {
     const { stage } = createStage();
     const stageInternals = stage as unknown as {
       needsRender: boolean;
     };
 
-    await stage.init();
-
-    // After init, needsRender should be true (first render)
+    // Constructor should start dirty for the first frame.
     expect(stageInternals.needsRender).toBe(true);
 
-    // Manually trigger the tick logic by calling update (which calls markDirty)
-    stage.update(buildRenderState({ fen: createNewSession().snapshot.fen }));
+    // update() should keep the stage dirty even without a full init lifecycle.
+    stage.update(buildRenderState());
 
-    // After update, needsRender should be true again
     expect(stageInternals.needsRender).toBe(true);
   });
 
-  it("marks dirty when OrbitControls 'change' event fires", async () => {
+  it("marks dirty when OrbitControls 'change' event fires", () => {
     const { stage } = createStage();
     const stageInternals = stage as unknown as {
       controls: {
@@ -1162,22 +1230,18 @@ describe("ChessStage", () => {
       needsRender: boolean;
     };
 
-    await stage.init();
-
     // Simulate camera rotation via OrbitControls change event
     stageInternals.controls.dispatchEvent({ type: "change" });
 
     expect(stageInternals.needsRender).toBe(true);
   });
 
-  it("marks dirty on pointer down for input lag mitigation", async () => {
+  it("marks dirty on pointer down for input lag mitigation", () => {
     const { stage } = createStage();
     const stageInternals = stage as unknown as {
       needsRender: boolean;
       markDirty: () => void;
     };
-
-    await stage.init();
 
     // Reset dirty flag
     stageInternals.needsRender = false;
@@ -1188,7 +1252,7 @@ describe("ChessStage", () => {
     expect(stageInternals.needsRender).toBe(true);
   });
 
-  it("subscribes and unsubscribes OrbitControls 'change' listener", async () => {
+  it("subscribes and unsubscribes OrbitControls 'change' listener", () => {
     const { stage } = createStage();
     const stageInternals = stage as unknown as {
       controls: {
@@ -1196,8 +1260,6 @@ describe("ChessStage", () => {
         removeEventListener: ReturnType<typeof vi.fn>;
       };
     };
-
-    await stage.init();
 
     expect(stageInternals.controls.addEventListener).toHaveBeenCalledWith(
       "change",
