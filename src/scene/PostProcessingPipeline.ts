@@ -12,9 +12,9 @@ import {
 import { EffectComposer } from "three/examples/jsm/postprocessing/EffectComposer.js";
 import { RenderPass } from "three/examples/jsm/postprocessing/RenderPass.js";
 import { UnrealBloomPass } from "three/examples/jsm/postprocessing/UnrealBloomPass.js";
-import { FXAAPass } from "three/examples/jsm/postprocessing/FXAAPass.js";
 import { OutputPass } from "three/examples/jsm/postprocessing/OutputPass.js";
 import { ShaderPass } from "three/examples/jsm/postprocessing/ShaderPass.js";
+import { FXAAShader } from "three/examples/jsm/shaders/FXAAShader.js";
 
 const VignetteShader = {
   name: "VignetteShader",
@@ -53,7 +53,7 @@ export class PostProcessingPipeline {
   private composer!: EffectComposer;
   private bloomPass!: UnrealBloomPass;
   private vignettePass!: ShaderPass;
-  private fxaaPass: FXAAPass | null = null;
+  private fxaaPass: ShaderPass | null = null;
   private enabled = true;
   private bloomStrength = 0.08;
   private bloomResolutionScale = 1;
@@ -187,7 +187,7 @@ export class PostProcessingPipeline {
     this.vignettePass = new ShaderPass(new ShaderMaterial(VignetteShader));
     this.composer.addPass(this.vignettePass);
 
-    this.fxaaPass = this.fxaaEnabled ? new FXAAPass() : null;
+    this.fxaaPass = this.fxaaEnabled ? new ShaderPass(FXAAShader) : null;
     if (this.fxaaPass) {
       this.composer.addPass(this.fxaaPass);
     }
@@ -216,6 +216,9 @@ export class PostProcessingPipeline {
     this.bloomPass.enabled = this.enabled && this.bloomResolutionScale > 0;
     this.bloomPass.setSize(targetWidth, targetHeight);
     this.bloomPass.resolution.set(targetWidth, targetHeight);
-    this.fxaaPass?.setSize(Math.max(1, Math.round(width)), Math.max(1, Math.round(height)));
+    
+    if (this.fxaaPass) {
+      this.fxaaPass.uniforms["resolution"].value.set(1 / width, 1 / height);
+    }
   }
 }

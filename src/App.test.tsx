@@ -270,6 +270,19 @@ describe("App integration", () => {
     });
   });
 
+  it("keeps the history overlay wrapper non-blocking when no scrim is shown", async () => {
+    const { default: App } = await import("./App");
+    const { container } = render(<App />);
+
+    await screen.findByText("Pipo Chess 3D");
+
+    fireEvent.click(screen.getByRole("button", { name: "Abrir histórico" }));
+
+    const historyOverlay = container.querySelector(".history-panel")?.closest(".base-overlay");
+    expect(historyOverlay).not.toBeNull();
+    expect((historyOverlay as HTMLElement).style.pointerEvents).toBe("none");
+  });
+
   it("makes the exiting history panel non-interactive when opening the menu", async () => {
     const { default: App } = await import("./App");
     const { container } = render(<App />);
@@ -353,6 +366,19 @@ describe("App integration", () => {
     await waitFor(() => {
       expect(container.querySelector(".new-game-sheet")).toBeNull();
     });
+  });
+
+  it("keeps modal overlays blocking while their scrim is active", async () => {
+    const { default: App } = await import("./App");
+    const { container } = render(<App />);
+
+    await screen.findByText("Pipo Chess 3D");
+
+    fireEvent.click(screen.getByRole("button", { name: "Nova partida" }));
+
+    const newGameOverlay = container.querySelector(".new-game-sheet")?.closest(".base-overlay");
+    expect(newGameOverlay).not.toBeNull();
+    expect((newGameOverlay as HTMLElement).style.pointerEvents).toBe("auto");
   });
 
   it("starts background analysis after importing a PGN file", async () => {

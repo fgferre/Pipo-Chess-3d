@@ -21,10 +21,15 @@ vi.stubGlobal("Worker", MockWorker);
 
 describe("EngineClient", () => {
   beforeEach(async () => {
-    // Reset internal state for each test if possible, or just re-init
-    // Since it's a singleton, we need to be careful.
-    // Let's force a fresh init.
+    const previousWorker = (engineClient as any).worker as MockWorker | null;
+    if (previousWorker) {
+      previousWorker.onmessage = () => {};
+    }
+
     (engineClient as any).initialized = false;
+    (engineClient as any).activeSearch = null;
+    (engineClient as any).currentAbortController = null;
+    (engineClient as any).transitionQueue = Promise.resolve();
     await engineClient.init();
   });
 
@@ -48,5 +53,41 @@ describe("EngineClient", () => {
 
     await expect(promise1).rejects.toThrow("Analysis interrupted");
     expect(worker.postMessage).toHaveBeenCalledWith("stop");
+  });
+
+  it("ignores the stale bestmove emitted for a stopped search", async () => {
+    const difficulty = { moveTimeMs: 100, skillLevelFallback: 20 } as any;
+    const worker = (engineClient as any).worker as MockWorker;
+    let goCount = 0;
+
+    worker.postMessage.mockImplementation((command: string) => {
+      if (command === "uci") {
+        setTimeout(() => worker.onmessage({ data: "id name Stockfish\nuciok" }), 0);
+        return;
+      }
+
+      if (command === "isready") {
+        setTimeout(() => worker.onmessage({ data: "readyok" }), 0);
+        return;
+      }
+
+      if (command === "stop") {
+        setTimeout(() => worker.onmessage({ data: "bestmove a2a3" }), 5);
+        return;
+      }
+
+      if (command.startsWith("go")) {
+        goCount += 1;
+        if (goCount === 2) {
+          setTimeout(() => worker.onmessage({ data: "bestmove h2h4" }), 5);
+        }
+      }
+    });
+
+    const promise1 = engineClient.search("startpos", difficulty);
+    const promise2 = engineClient.search("startpos", difficulty);
+
+    await expect(promise1).rejects.toThrow("Analysis interrupted");
+    await expect(promise2).resolves.toMatchObject({ bestMove: "h2h4" });
   });
 });

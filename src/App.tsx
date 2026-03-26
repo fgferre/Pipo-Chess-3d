@@ -88,28 +88,29 @@ function BaseOverlay({
   children,
   onClose,
   showScrim = true,
+  blockInteraction = showScrim,
 }: {
   children: ReactNode;
   onClose: () => void;
   showScrim?: boolean;
+  blockInteraction?: boolean;
 }) {
   const isPresent = useIsPresent();
 
   return (
-    <>
+    <div
+      className="base-overlay"
+      style={{
+        position: "fixed",
+        inset: 0,
+        zIndex: 10,
+        pointerEvents: blockInteraction ? "auto" : "none",
+      }}
+      {...(!isPresent ? { inert: "" } as any : {})}
+    >
       {showScrim && <PresenceAwareOverlayScrim onClick={onClose} />}
-      <div 
-        style={{ 
-          position: "fixed", 
-          inset: 0, 
-          zIndex: 10, 
-          pointerEvents: isPresent ? "auto" : "none",
-        }}
-        {...(!isPresent ? { inert: "" } as any : {})}
-      >
-        {children}
-      </div>
-    </>
+      {children}
+    </div>
   );
 }
 
@@ -892,7 +893,7 @@ function App() {
 
       <AnimatePresence>
         {historyOpen && (
-          <BaseOverlay onClose={() => setHistoryOpen(false)} showScrim={false}>
+          <BaseOverlay onClose={() => setHistoryOpen(false)} showScrim={false} blockInteraction={false}>
             <HistoryPanel
               engineLabel={analysisMode ? t(locale, "history.analysis") : activeDifficulty.label}
               historyBadgeLabel={analysisMode ? t(locale, "history.analysis") : t(locale, "history.pgn")}
@@ -1389,7 +1390,7 @@ function App() {
 
       <AnimatePresence>
         {pendingPromotion && (
-          <BaseOverlay onClose={() => {}} showScrim={false}>
+          <BaseOverlay onClose={() => {}} showScrim={false} blockInteraction>
             <section
               className="promotion-popup"
               role="dialog"
@@ -1419,7 +1420,11 @@ function App() {
 
       <AnimatePresence>
         {invalidMoveSquare && invalidMoveAnchor ? (
-          <BaseOverlay onClose={() => setInvalidMoveSquare(null)} showScrim={false}>
+          <BaseOverlay
+            onClose={() => setInvalidMoveSquare(null)}
+            showScrim={false}
+            blockInteraction={false}
+          >
             <motion.div
               className={`board-cue board-cue--invalid${invalidMoveExpanded ? " board-cue--expanded" : ""}`}
               key="invalid-move-cue"
@@ -1463,7 +1468,7 @@ function App() {
 
       <AnimatePresence>
         {castlingTargets.length > 0 && castlingAnchor ? (
-          <BaseOverlay onClose={() => {}} showScrim={false}>
+          <BaseOverlay onClose={() => {}} showScrim={false} blockInteraction={false}>
             <motion.div
               className="board-cue board-cue--castling"
               key="castling-cue"
