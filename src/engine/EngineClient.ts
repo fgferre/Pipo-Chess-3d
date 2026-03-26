@@ -1,4 +1,5 @@
 import { buildAnalysisSummary } from "../game/analysis";
+import { clampSupportedUciElo } from "../data/difficulties";
 import type {
   EngineAnalysisPayload,
   AnalysisSummary,
@@ -320,9 +321,9 @@ export class EngineClient {
   }
 
   private configureDifficulty(difficulty: DifficultyPreset): void {
-    if (difficulty.uciElo) {
+    if (difficulty.uciElo !== null) {
       this.send("setoption name UCI_LimitStrength value true");
-      this.send(`setoption name UCI_Elo value ${difficulty.uciElo}`);
+      this.send(`setoption name UCI_Elo value ${clampSupportedUciElo(difficulty.uciElo)}`);
     } else {
       this.send("setoption name UCI_LimitStrength value false");
     }

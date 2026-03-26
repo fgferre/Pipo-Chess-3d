@@ -90,4 +90,19 @@ describe("EngineClient", () => {
     await expect(promise1).rejects.toThrow("Analysis interrupted");
     await expect(promise2).resolves.toMatchObject({ bestMove: "h2h4" });
   });
+
+  it("clamps unsupported UCI_Elo values before sending them to the worker", async () => {
+    const difficulty = {
+      moveTimeMs: 100,
+      skillLevelFallback: 4,
+      uciElo: 800,
+    } as any;
+    const worker = (engineClient as any).worker as MockWorker;
+
+    await engineClient.search("startpos", difficulty);
+
+    expect(worker.postMessage).toHaveBeenCalledWith("setoption name UCI_LimitStrength value true");
+    expect(worker.postMessage).toHaveBeenCalledWith("setoption name UCI_Elo value 1320");
+    expect(worker.postMessage).toHaveBeenCalledWith("setoption name Skill Level value 4");
+  });
 });
