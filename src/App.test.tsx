@@ -1,7 +1,9 @@
+import { useEffect } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 
 const subscribers = new Set<(event: unknown) => void>();
+let autoReportSceneReady = true;
 
 const engineClientMock = {
   init: vi.fn().mockResolvedValue(undefined),
@@ -60,20 +62,65 @@ vi.mock("./components/ChessScene", () => ({
     onSquareSelect,
     onPromotionAnchorChange,
     onInvalidMoveAnchorChange,
+    onLoadStateChange,
   }: {
     onSquareSelect: (square: "e2" | "e4" | "e5") => void;
     onPromotionAnchorChange?: (anchor: { x: number; y: number } | null) => void;
     onInvalidMoveAnchorChange?: (anchor: { x: number; y: number } | null) => void;
+    onLoadStateChange?: (state: { phase: string; progress: number; messageKey: string }) => void;
   }) => (
     <div>
+      <SceneBootReporter onLoadStateChange={onLoadStateChange} />
       <button onClick={() => onSquareSelect("e2")}>Square e2</button>
       <button onClick={() => onSquareSelect("e4")}>Square e4</button>
       <button onClick={() => onSquareSelect("e5")}>Square e5</button>
       <button onClick={() => onPromotionAnchorChange?.({ x: 160, y: 160 })}>Promotion anchor</button>
       <button onClick={() => onInvalidMoveAnchorChange?.({ x: 160, y: 160 })}>Invalid anchor</button>
+      <button
+        onClick={() =>
+          onLoadStateChange?.({
+            phase: "loading",
+            progress: 68,
+            messageKey: "scene.loading.materials",
+          })
+        }
+      >
+        Scene loading
+      </button>
+      <button
+        onClick={() =>
+          onLoadStateChange?.({
+            phase: "ready",
+            progress: 100,
+            messageKey: "scene.loading.ready",
+          })
+        }
+      >
+        Scene ready
+      </button>
     </div>
   ),
 }));
+
+function SceneBootReporter({
+  onLoadStateChange,
+}: {
+  onLoadStateChange?: (state: { phase: string; progress: number; messageKey: string }) => void;
+}) {
+  useEffect(() => {
+    if (!autoReportSceneReady) {
+      return;
+    }
+
+    onLoadStateChange?.({
+      phase: "ready",
+      progress: 100,
+      messageKey: "scene.loading.ready",
+    });
+  }, [onLoadStateChange]);
+
+  return null;
+}
 
 describe("App integration", () => {
   beforeEach(async () => {
@@ -81,6 +128,7 @@ describe("App integration", () => {
     vi.clearAllMocks();
     subscribers.clear();
     vi.resetModules();
+    autoReportSceneReady = true;
 
     const { db } = await import("./persistence/db");
     db.close();
@@ -267,6 +315,27 @@ describe("App integration", () => {
     fireEvent.click(within(historyPanel as HTMLElement).getByRole("button", { name: "Fechar" }));
     await waitFor(() => {
       expect(container.querySelector(".history-panel")).toBeNull();
+    });
+  });
+
+  it("keeps the boot scrim visible until the 3D scene reports ready and surfaces scene steps", async () => {
+    autoReportSceneReady = false;
+
+    const { default: App } = await import("./App");
+    const { container } = render(<App />);
+
+    await screen.findAllByText("Pipo Chess 3D");
+    await screen.findByText("Stockfish local pronto");
+
+    expect(container.querySelector(".boot-scrim")).not.toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: "Scene loading" }));
+    expect(await screen.findByText("Gerando materiais do tabuleiro")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Scene ready" }));
+
+    await waitFor(() => {
+      expect(container.querySelector(".boot-scrim")).toBeNull();
     });
   });
 

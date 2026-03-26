@@ -62,7 +62,7 @@ import {
   type QualityTier,
   type QualityTierProfile,
 } from "./qualityPolicy.js";
-import type { SceneAdapter } from "./SceneAdapter";
+import type { SceneAdapter, SceneLoadState } from "./SceneAdapter";
 import type { Color as PieceColor, PieceSymbol, Square } from "chess.js";
 import type { AppSettings, Orientation, SerializableMove, ThemeDefinition } from "../types/game";
 import { fenToPieces, files, squareToCoords, type BoardPiece } from "../utils/board";
@@ -74,7 +74,8 @@ const PIECE_SCALE = 0.5;
 const RETURN_DURATION_MS = 160;
 const LAST_MOVE_HIGHLIGHT_MS = 1800;
 const HINT_HIGHLIGHT_MS = 4200;
-const BOARD_TEXTURE_VARIATIONS = 4;
+const STANDARD_BOARD_TEXTURE_VARIATIONS = 2;
+const ULTRA_BOARD_TEXTURE_VARIATIONS = 3;
 const BASE_FOV = 40;
 const MAX_PORTRAIT_FOV = 58;
 
@@ -374,6 +375,8 @@ interface ActiveCameraTransition {
   toSpriteOpacity: number;
 }
 
+type SceneInitListener = (state: SceneLoadState) => void;
+
 export function resolveSquareFromBoardPoint(localX: number, localZ: number): Square | null {
   const fileIndex = Math.floor(localX + 4);
   const rank = 8 - Math.floor(localZ + 4);
@@ -387,6 +390,12 @@ export function resolveSquareFromBoardPoint(localX: number, localZ: number): Squ
 
 function clampUnit(value: number): number {
   return Math.min(1, Math.max(0, value));
+}
+
+function yieldToMainThread(): Promise<void> {
+  return new Promise((resolve) => {
+    window.setTimeout(resolve, 0);
+  });
 }
 
 function mixHex(startHex: string, endHex: string, amount: number): string {
@@ -1384,28 +1393,95 @@ export class ChessStage implements SceneAdapter {
     this.resize();
   }
 
-  async init(): Promise<void> {
+  async init(onLoadStateChange?: SceneInitListener): Promise<void> {
     const probe = this.getHardwareProbe();
     this.qualityDetectedTier = getInitialQualityTier(probe);
     this.qualityTier = resolveQualityTier(this.qualityPreference, this.qualityDetectedTier);
     this.qualityProfile = getQualityTierProfile(this.qualityTier);
     this.applyQualityRuntimeSettings();
 
-    const pmremGenerator = new PMREMGenerator(this.renderer);
-    this.environmentTarget = pmremGenerator.fromScene(new RoomEnvironment(), 0.008);
-    this.scene.environment = this.environmentTarget.texture;
-    pmremGenerator.dispose();
+    if (this.initialized) {
+      onLoadStateChange?.({
+        phase: "ready",
+        progress: 100,
+        messageKey: "scene.loading.ready",
+      });
+      return;
+    }
 
-    this.setupLighting();
-    this.buildBoard();
-    this.buildPiecePrototypes();
+    try {
+      await this.reportInitProgress(onLoadStateChange, 12, "scene.loading.renderer");
+      if (this.disposed) {
+        return;
+      }
 
-    this.pipeline = new PostProcessingPipeline(this.renderer, this.scene, this.camera);
-    this.applyQualityRuntimeSettings();
-    this.initialized = true;
-    this.resetPerformanceMonitor();
+      await this.reportInitProgress(onLoadStateChange, 24, "scene.loading.environment");
+      if (this.disposed) {
+        return;
+      }
 
-    this.startLoop();
+      const pmremGenerator = new PMREMGenerator(this.renderer);
+      this.environmentTarget = pmremGenerator.fromScene(new RoomEnvironment(), 0.008);
+      this.scene.environment = this.environmentTarget.texture;
+      pmremGenerator.dispose();
+
+      this.setupLighting();
+      await this.reportInitProgress(onLoadStateChange, 40, "scene.loading.materials");
+      if (this.disposed) {
+        return;
+      }
+
+      await this.buildBoardProgressively(onLoadStateChange);
+      if (this.disposed) {
+        return;
+      }
+
+      await this.reportInitProgress(onLoadStateChange, 82, "scene.loading.pieces");
+      if (this.disposed) {
+        return;
+      }
+
+      this.buildPiecePrototypes();
+
+      await this.reportInitProgress(onLoadStateChange, 94, "scene.loading.post");
+      if (this.disposed) {
+        return;
+      }
+
+      this.pipeline = new PostProcessingPipeline(this.renderer, this.scene, this.camera);
+      this.applyQualityRuntimeSettings();
+      this.initialized = true;
+      this.resetPerformanceMonitor();
+
+      if (this.currentState) {
+        const pendingState = this.currentState;
+        this.currentFen = "";
+        this.currentThemeId = "";
+        this.currentHighlightKey = "";
+        this.activeHintKey = "";
+        this.suppressedHintKey = "";
+        this.hintAnimationStartedAt = 0;
+        this.activeLastMoveKey = "";
+        this.lastMoveAnimationStartedAt = 0;
+        this.transitionStateCursor = null;
+        this.update(pendingState);
+      }
+
+      onLoadStateChange?.({
+        phase: "ready",
+        progress: 100,
+        messageKey: "scene.loading.ready",
+      });
+
+      this.startLoop();
+    } catch (error) {
+      onLoadStateChange?.({
+        phase: "error",
+        progress: 100,
+        messageKey: "scene.loading.error",
+      });
+      throw error;
+    }
   }
 
   private markDirty(): void {
@@ -1574,9 +1650,19 @@ export class ChessStage implements SceneAdapter {
   }
 
   update(state: RenderState): void {
-    const previousTransitionState = this.transitionStateCursor;
+    const nextTransitionState = toTransitionComparableState(state);
     this.currentState = state;
-    this.transitionStateCursor = toTransitionComparableState(state);
+
+    if (!this.initialized) {
+      this.transitionStateCursor = nextTransitionState;
+      this.currentOrientation = state.orientation;
+      this.root.rotation.y = state.orientation === "black" ? Math.PI : 0;
+      this.markDirty();
+      return;
+    }
+
+    const previousTransitionState = this.transitionStateCursor;
+    this.transitionStateCursor = nextTransitionState;
 
     if (state.orientation !== this.currentOrientation) {
       this.currentOrientation = state.orientation;
@@ -2198,50 +2284,130 @@ export class ChessStage implements SceneAdapter {
   }
 
   private buildBoard(): void {
+    const { lightMats, darkMats } = this.createBoardMaterialPools();
+    const variationCount = this.getBoardTextureVariationCount();
+
+    for (let i = 0; i < variationCount; i++) {
+      this.createBoardMaterialVariant(lightMats, darkMats);
+    }
+
+    this.populateBoardGeometry(lightMats, darkMats);
+  }
+
+  private buildPiecePrototypes(): void {
+    this.prototypes.clear();
+    this.lightPieceMat = createTieredMaterial(
+      this.qualityProfile.usePhysicalMaterials,
+      0x5a544d,
+      this.qualityProfile.pieceWhite,
+    );
+    this.darkPieceMat = createTieredMaterial(
+      this.qualityProfile.usePhysicalMaterials,
+      0x010101,
+      this.qualityProfile.pieceBlack,
+    );
+
+    this.prototypes.set("p", createPawnPrototype(this.lightPieceMat));
+    this.prototypes.set("r", createRookPrototype(this.lightPieceMat));
+    this.prototypes.set("n", createKnightPrototype(this.lightPieceMat, this.feltMat, this.eyeMat));
+    this.prototypes.set("b", createBishopPrototype(this.lightPieceMat));
+    this.prototypes.set("q", createQueenPrototype(this.lightPieceMat));
+    this.prototypes.set("k", createKingPrototype(this.lightPieceMat));
+  }
+
+  private async reportInitProgress(
+    onLoadStateChange: SceneInitListener | undefined,
+    progress: number,
+    messageKey: SceneLoadState["messageKey"],
+  ): Promise<void> {
+    onLoadStateChange?.({
+      phase: "loading",
+      progress,
+      messageKey,
+    });
+    await yieldToMainThread();
+  }
+
+  private async buildBoardProgressively(onLoadStateChange?: SceneInitListener): Promise<void> {
+    const { lightMats, darkMats } = this.createBoardMaterialPools();
+    const variationCount = this.getBoardTextureVariationCount();
+
+    for (let i = 0; i < variationCount; i++) {
+      this.createBoardMaterialVariant(lightMats, darkMats);
+      await this.reportInitProgress(
+        onLoadStateChange,
+        44 + Math.round(((i + 1) / variationCount) * 24),
+        "scene.loading.materials",
+      );
+      if (this.disposed) {
+        return;
+      }
+    }
+
+    await this.reportInitProgress(onLoadStateChange, 72, "scene.loading.board");
+    if (this.disposed) {
+      return;
+    }
+
+    this.populateBoardGeometry(lightMats, darkMats);
+  }
+
+  private createBoardMaterialPools(): { lightMats: QualityMaterial[]; darkMats: QualityMaterial[] } {
     this.lightSquareMats.length = 0;
     this.darkSquareMats.length = 0;
     this.frameMats.length = 0;
 
-    const lightMats: QualityMaterial[] = [];
-    const darkMats: QualityMaterial[] = [];
-
     this.feltMat = new MeshStandardMaterial({ color: 0x081c0c, roughness: 1.0 });
 
-    for (let i = 0; i < BOARD_TEXTURE_VARIATIONS; i++) {
-      const lightMat = createTieredMaterial(
-        this.qualityProfile.usePhysicalMaterials,
-        0xffffff,
-        this.qualityProfile.boardLight,
-      );
-      const darkMat = createTieredMaterial(
-        this.qualityProfile.usePhysicalMaterials,
-        0xffffff,
-        this.qualityProfile.boardDark,
-      );
+    return {
+      lightMats: [],
+      darkMats: [],
+    };
+  }
 
-      applyWoodMaterialTheme(
-        this.renderer,
-        lightMat,
-        "lightSquares",
-        DEFAULT_BOARD_PALETTE.lightSquares,
-        this.qualityProfile.boardLight,
-        this.qualityProfile.textureAnisotropy,
-      );
-      applyWoodMaterialTheme(
-        this.renderer,
-        darkMat,
-        "darkSquares",
-        DEFAULT_BOARD_PALETTE.darkSquares,
-        this.qualityProfile.boardDark,
-        this.qualityProfile.textureAnisotropy,
-      );
+  private getBoardTextureVariationCount(): number {
+    return this.qualityTier >= 3 ? ULTRA_BOARD_TEXTURE_VARIATIONS : STANDARD_BOARD_TEXTURE_VARIATIONS;
+  }
 
-      lightMats.push(lightMat);
-      darkMats.push(darkMat);
-      this.lightSquareMats.push(lightMat);
-      this.darkSquareMats.push(darkMat);
-    }
+  private createBoardMaterialVariant(
+    lightMats: QualityMaterial[],
+    darkMats: QualityMaterial[],
+  ): void {
+    const lightMat = createTieredMaterial(
+      this.qualityProfile.usePhysicalMaterials,
+      0xffffff,
+      this.qualityProfile.boardLight,
+    );
+    const darkMat = createTieredMaterial(
+      this.qualityProfile.usePhysicalMaterials,
+      0xffffff,
+      this.qualityProfile.boardDark,
+    );
 
+    applyWoodMaterialTheme(
+      this.renderer,
+      lightMat,
+      "lightSquares",
+      DEFAULT_BOARD_PALETTE.lightSquares,
+      this.qualityProfile.boardLight,
+      this.qualityProfile.textureAnisotropy,
+    );
+    applyWoodMaterialTheme(
+      this.renderer,
+      darkMat,
+      "darkSquares",
+      DEFAULT_BOARD_PALETTE.darkSquares,
+      this.qualityProfile.boardDark,
+      this.qualityProfile.textureAnisotropy,
+    );
+
+    lightMats.push(lightMat);
+    darkMats.push(darkMat);
+    this.lightSquareMats.push(lightMat);
+    this.darkSquareMats.push(darkMat);
+  }
+
+  private populateBoardGeometry(lightMats: QualityMaterial[], darkMats: QualityMaterial[]): void {
     const squareGeo = new RoundedBoxGeometry(0.98, 0.5, 0.98, 6, 0.06);
 
     for (let col = 0; col < 8; col++) {
@@ -2263,7 +2429,6 @@ export class ChessStage implements SceneAdapter {
       }
     }
 
-    // Grout
     const grout = new Mesh(
       new BoxGeometry(7.9, 0.45, 7.9),
       (this.groutMat = new MeshStandardMaterial({
@@ -2323,32 +2488,10 @@ export class ChessStage implements SceneAdapter {
     accent.receiveShadow = true;
     this.boardGroup.add(accent);
 
-    // Re-attach coordinate group (boardGroup.clear() removes it)
     this.boardGroup.add(this.coordinateGroup);
     if (this.coordinatesVisible) {
       this.buildCoordinateLabels(this.currentOrientation);
     }
-  }
-
-  private buildPiecePrototypes(): void {
-    this.prototypes.clear();
-    this.lightPieceMat = createTieredMaterial(
-      this.qualityProfile.usePhysicalMaterials,
-      0x5a544d,
-      this.qualityProfile.pieceWhite,
-    );
-    this.darkPieceMat = createTieredMaterial(
-      this.qualityProfile.usePhysicalMaterials,
-      0x010101,
-      this.qualityProfile.pieceBlack,
-    );
-
-    this.prototypes.set("p", createPawnPrototype(this.lightPieceMat));
-    this.prototypes.set("r", createRookPrototype(this.lightPieceMat));
-    this.prototypes.set("n", createKnightPrototype(this.lightPieceMat, this.feltMat, this.eyeMat));
-    this.prototypes.set("b", createBishopPrototype(this.lightPieceMat));
-    this.prototypes.set("q", createQueenPrototype(this.lightPieceMat));
-    this.prototypes.set("k", createKingPrototype(this.lightPieceMat));
   }
 
   private spawnCaptureBurst(position: Vector3, accentHex: string): void {

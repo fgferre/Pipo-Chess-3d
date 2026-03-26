@@ -497,6 +497,25 @@ describe("ChessStage", () => {
     });
   });
 
+  it("reports staged loading progress before marking the scene as ready", async () => {
+    const { stage } = createStage();
+    const onLoadStateChange = vi.fn();
+
+    await stage.init(onLoadStateChange);
+
+    expect(onLoadStateChange).toHaveBeenCalledWith(
+      expect.objectContaining({
+        phase: "loading",
+        messageKey: "scene.loading.materials",
+      }),
+    );
+    expect(onLoadStateChange).toHaveBeenLastCalledWith({
+      phase: "ready",
+      progress: 100,
+      messageKey: "scene.loading.ready",
+    });
+  });
+
   it("animates piece deltas in normal mode and syncs instantly when animations are off", async () => {
     const { stage } = createStage();
     const stageInternals = stage as unknown as {

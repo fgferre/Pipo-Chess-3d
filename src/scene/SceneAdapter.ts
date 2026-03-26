@@ -1,5 +1,6 @@
 import type { Square } from "chess.js";
 import { ChessStage } from "./ChessStage";
+import type { TranslationKey } from "../i18n/dictionaries";
 import type { AppSettings, CameraPreset, GameSession, ThemeDefinition } from "../types/game";
 
 export interface SceneRenderState {
@@ -17,8 +18,14 @@ export interface SceneRenderState {
   hintMove: { from: Square; to: Square } | null;
 }
 
+export interface SceneLoadState {
+  phase: "idle" | "loading" | "ready" | "error";
+  progress: number;
+  messageKey: TranslationKey;
+}
+
 export interface SceneAdapter {
-  init(): Promise<void>;
+  init(onLoadStateChange?: (state: SceneLoadState) => void): Promise<void>;
   update(state: SceneRenderState): void;
   setPaused(paused: boolean): void;
   setCameraPreset(preset: CameraPreset): void;

@@ -32,6 +32,7 @@ import { getTheme, getThemeCssVariables, themes } from "./data/themes";
 import { deriveSessionAtPly, diagnoseIllegalMove, formatIllegalMoveDiagnosis } from "./game/gameService";
 import { getLocaleLabel, t } from "./i18n";
 import { locales } from "./i18n/dictionaries";
+import type { SceneLoadState } from "./scene/SceneAdapter";
 import { useGameStore } from "./state/gameStore";
 import type {
   CameraPreset,
@@ -66,6 +67,11 @@ const QUALITY_PRESETS: Array<
   { id: "ultra", labelKey: "quality.ultra", tier: 3 },
 ];
 const PROMOTION_CHOICES = ["q", "r", "b", "n"] as const;
+const INITIAL_SCENE_LOAD_STATE: SceneLoadState = {
+  phase: "idle",
+  progress: 0,
+  messageKey: "scene.loading.renderer",
+};
 
 function PresenceAwareOverlayScrim({ onClick }: { onClick: () => void }) {
   const isPresent = useIsPresent();
@@ -211,6 +217,7 @@ function App() {
   const [invalidMoveExpanded, setInvalidMoveExpanded] = useState(false);
   const [invalidMoveAnchor, setInvalidMoveAnchor] = useState<{ x: number; y: number } | null>(null);
   const [castlingAnchor, setCastlingAnchor] = useState<{ x: number; y: number } | null>(null);
+  const [sceneLoadState, setSceneLoadState] = useState<SceneLoadState>(INITIAL_SCENE_LOAD_STATE);
   const appShellRef = useRef<HTMLDivElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const lastFinishedGameRef = useRef<string | null>(null);
@@ -228,7 +235,15 @@ function App() {
   const currentPly = analysisCursor ?? session.moveEntries.length;
   const currentEvaluation = getEvaluationForPly(session.analysisSummary?.evaluationsByPly, currentPly);
   const autosaveTimestamp = autosave ? formatRelativeTimestamp(autosave.updatedAt, locale) : null;
-  const bootProgress = getBootProgress(enginePhase);
+  const showSceneBootStatus =
+    sceneLoadState.phase === "loading" ||
+    sceneLoadState.phase === "error" ||
+    (booted && sceneLoadState.phase !== "ready");
+  const bootProgress = showSceneBootStatus ? sceneLoadState.progress : getBootProgress(enginePhase);
+  const bootMeta = showSceneBootStatus
+    ? t(locale, sceneLoadState.messageKey)
+    : engineMessage || t(locale, getStatusKey(enginePhase));
+  const showBootScrim = !booted || sceneLoadState.phase !== "ready";
   const analysisSummaryCount = session.analysisSummary?.criticalMoments.length ?? 0;
   const gameLastMove = session.moveEntries.at(-1);
   const analysisLastMove = analysisMode ? boardSession.moveEntries.at(-1) ?? null : null;
@@ -593,6 +608,7 @@ function App() {
             hintMove={analysisMode ? null : hintMove}
             invalidMoveSquare={invalidMoveSquare}
             castlingTargets={analysisMode ? [] : castlingTargets}
+            onLoadStateChange={setSceneLoadState}
             onSquareSelect={(square) => {
               if (analysisMode) {
                 return;
@@ -1554,7 +1570,7 @@ function App() {
       </AnimatePresence>
 
       <AnimatePresence>
-        {!booted && (
+        {showBootScrim && (
           <motion.div
             className="boot-scrim"
             key="boot-scrim"
@@ -1572,7 +1588,7 @@ function App() {
               <div className="boot-scrim__track" aria-hidden="true">
                 <span className="boot-scrim__fill" style={{ width: `${bootProgress}%` }} />
               </div>
-              <small className="boot-scrim__meta">{engineMessage || t(locale, getStatusKey(enginePhase))}</small>
+              <small className="boot-scrim__meta">{bootMeta}</small>
             </div>
           </motion.div>
         )}

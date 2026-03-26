@@ -1,7 +1,7 @@
 import { useEffect, useEffectEvent, useRef, type CSSProperties } from "react";
 import { flushSync } from "react-dom";
 import type { Square } from "chess.js";
-import { createSceneAdapter, type SceneAdapter } from "../scene/SceneAdapter";
+import { createSceneAdapter, type SceneAdapter, type SceneLoadState } from "../scene/SceneAdapter";
 import { useGameStore } from "../state/gameStore";
 import type { GameSession, ThemeDefinition } from "../types/game";
 
@@ -25,6 +25,7 @@ interface ChessSceneProps {
   onPromotionAnchorChange: (anchor: { x: number; y: number } | null) => void;
   onInvalidMoveAnchorChange: (anchor: { x: number; y: number } | null) => void;
   onCastlingAnchorChange: (anchor: { x: number; y: number } | null) => void;
+  onLoadStateChange?: (state: SceneLoadState) => void;
 }
 
 export function ChessScene({
@@ -42,6 +43,7 @@ export function ChessScene({
   onPromotionAnchorChange,
   onInvalidMoveAnchorChange,
   onCastlingAnchorChange,
+  onLoadStateChange,
 }: ChessSceneProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const stageRef = useRef<SceneAdapter | null>(null);
@@ -49,6 +51,9 @@ export function ChessScene({
   const handlePromotionAnchorChange = useEffectEvent(onPromotionAnchorChange);
   const handleInvalidMoveAnchorChange = useEffectEvent(onInvalidMoveAnchorChange);
   const handleCastlingAnchorChange = useEffectEvent(onCastlingAnchorChange);
+  const handleLoadStateChange = useEffectEvent(
+    onLoadStateChange ?? (() => undefined),
+  );
   const cameraPreset = useGameStore((state) => state.cameraPreset);
 
   // Anchor projection refs — updated on prop change and before every stage render.
@@ -96,6 +101,7 @@ export function ChessScene({
       return;
     }
 
+    let disposed = false;
     const stage = createSceneAdapter(containerRef.current, handleSquareSelect);
     stageRef.current = stage;
     stage.setQualityPreference({
@@ -103,7 +109,19 @@ export function ChessScene({
       manualQualityTier: session.settings.manualQualityTier,
     });
     stage.setShowCoordinates(session.settings.showCoordinates);
-    void stage.init();
+    void stage.init((state) => {
+      if (!disposed) {
+        handleLoadStateChange(state);
+      }
+    }).catch(() => {
+      if (!disposed) {
+        handleLoadStateChange({
+          phase: "error",
+          progress: 100,
+          messageKey: "scene.loading.error",
+        });
+      }
+    });
 
     // Re-project anchors immediately before each 3D render so overlays stay in step.
     stage.setOnBeforeRender(() => {
@@ -142,6 +160,7 @@ export function ChessScene({
     document.addEventListener("visibilitychange", visibilityHandler);
 
     return () => {
+      disposed = true;
       document.removeEventListener("visibilitychange", visibilityHandler);
       stage.setOnBeforeRender(null);
       stage.dispose();
