@@ -34,7 +34,7 @@ describe("EngineClient", () => {
     const promise1 = engineClient.search("startpos", difficulty);
     const promise2 = engineClient.search("startpos", difficulty);
 
-    await expect(promise1).rejects.toThrow("Search aborted");
+    await expect(promise1).rejects.toThrow("Analysis interrupted");
     const result2 = await promise2;
     expect(result2.bestMove).toBe("e2e4");
   });
@@ -46,7 +46,7 @@ describe("EngineClient", () => {
     const promise1 = engineClient.search("startpos", difficulty);
     engineClient.search("startpos", difficulty); // triggers abort
 
-    await expect(promise1).rejects.toThrow("Search aborted");
+    await expect(promise1).rejects.toThrow("Analysis interrupted");
     expect(worker.postMessage).toHaveBeenCalledWith("stop");
   });
 });

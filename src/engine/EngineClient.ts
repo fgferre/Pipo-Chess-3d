@@ -17,6 +17,7 @@ export class EngineClient {
   private initialized = false;
   private engineName = "Stockfish";
   private currentAbortController: AbortController | null = null;
+  private isExpectingBestMove = false;
   private activeSearch:
     | {
         id: string;
@@ -144,6 +145,7 @@ export class EngineClient {
   async stop(): Promise<void> {
     this.analysisToken += 1;
     this.currentAbortController?.abort();
+    this.isExpectingBestMove = false;
     const activeSearch = this.activeSearch;
     this.send("stop");
 
@@ -157,6 +159,7 @@ export class EngineClient {
   }
 
   terminate(): void {
+    this.isExpectingBestMove = false;
     this.currentAbortController?.abort();
     this.worker?.terminate();
   }
@@ -171,13 +174,14 @@ export class EngineClient {
 
     return new Promise<EngineEvaluation>((resolve, reject) => {
       if (signal.aborted) {
-        reject(new Error("Search aborted"));
+        reject(new Error("Analysis interrupted"));
         return;
       }
 
       const onAbort = () => {
+        this.isExpectingBestMove = false;
         this.send("stop");
-        reject(new Error("Search aborted"));
+        reject(new Error("Analysis interrupted"));
       };
       signal.addEventListener("abort", onAbort, { once: true });
 
@@ -186,6 +190,7 @@ export class EngineClient {
         settleSearch = settle;
       });
 
+      this.isExpectingBestMove = true;
       this.activeSearch = {
         id,
         resolve: (val) => {
@@ -253,6 +258,12 @@ export class EngineClient {
     }
 
     if (line.startsWith("bestmove")) {
+      if (!this.isExpectingBestMove) {
+        this.activeSearch.settle();
+        return;
+      }
+
+      this.isExpectingBestMove = false;
       const bestMove = line.split(" ")[1];
       const activeSearch = this.activeSearch;
       activeSearch.resolve({

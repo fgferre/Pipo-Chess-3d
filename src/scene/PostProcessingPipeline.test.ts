@@ -1,21 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-let latestComposer: {
-  addPass: ReturnType<typeof vi.fn>;
-  setSize: ReturnType<typeof vi.fn>;
-  render: ReturnType<typeof vi.fn>;
-  dispose: ReturnType<typeof vi.fn>;
-} | null = null;
+let latestComposer: any = null;
 let latestRenderTargetOptions: Record<string, unknown> | null = null;
-let latestBloomPass: {
-  enabled: boolean;
-  strength: number;
-  resolution: { x: number; y: number; set: ReturnType<typeof vi.fn> };
-  setSize: ReturnType<typeof vi.fn>;
-} | null = null;
-let latestFxaaPass: {
-  setSize: ReturnType<typeof vi.fn>;
-} | null = null;
+let latestBloomPass: any = null;
+let latestFxaaPass: any = null;
 
 vi.mock("three", () => {
   class Vector2 {
@@ -70,7 +58,7 @@ vi.mock("three", () => {
 vi.mock("three/examples/jsm/postprocessing/EffectComposer.js", () => ({
   EffectComposer: class {
     addPass = vi.fn((pass) => {
-      this.passes.push(pass);
+      (this as any).passes.push(pass);
     });
     setSize = vi.fn();
     render = vi.fn();
@@ -79,7 +67,7 @@ vi.mock("three/examples/jsm/postprocessing/EffectComposer.js", () => ({
 
     constructor(...args: unknown[]) {
       void args;
-      latestComposer = this;
+      latestComposer = this as any;
     }
   },
 }));
@@ -94,8 +82,6 @@ vi.mock("three/examples/jsm/postprocessing/RenderPass.js", () => ({
 }));
 
 vi.mock("three/examples/jsm/postprocessing/UnrealBloomPass.js", async () => {
-  const { Vector2 } = await import("three");
-
   return {
     UnrealBloomPass: class {
       enabled = true;
@@ -104,8 +90,8 @@ vi.mock("three/examples/jsm/postprocessing/UnrealBloomPass.js", async () => {
         x: 0,
         y: 0,
         set: vi.fn((x: number, y: number) => {
-          this.resolution.x = x;
-          this.resolution.y = y;
+          (this as any).resolution.x = x;
+          (this as any).resolution.y = y;
         }),
       };
       setSize = vi.fn();
@@ -115,24 +101,17 @@ vi.mock("three/examples/jsm/postprocessing/UnrealBloomPass.js", async () => {
 
       constructor(...args: unknown[]) {
         void args;
-        latestBloomPass = this;
-        this.resolution = {
-          ...this.resolution,
-          x: new Vector2().x,
-          y: new Vector2().y,
-        };
+        latestBloomPass = this as any;
       }
     },
   };
 });
 
-vi.mock("three/examples/jsm/postprocessing/FXAAPass.js", () => ({
-  FXAAPass: class {
-    setSize = vi.fn();
-
-    constructor() {
-      latestFxaaPass = this;
-    }
+vi.mock("three/examples/jsm/shaders/FXAAShader.js", () => ({
+  FXAAShader: {
+    uniforms: {
+      resolution: { value: { set: vi.fn() } },
+    },
   },
 }));
 
@@ -142,8 +121,14 @@ vi.mock("three/examples/jsm/postprocessing/OutputPass.js", () => ({
 
 vi.mock("three/examples/jsm/postprocessing/ShaderPass.js", () => ({
   ShaderPass: class {
-    constructor(...args: unknown[]) {
-      void args;
+    uniforms: any;
+    dispose = vi.fn();
+    constructor(shader: any) {
+      this.uniforms = JSON.parse(JSON.stringify(shader.uniforms || {}));
+      if (this.uniforms.resolution) {
+        this.uniforms.resolution.value = { set: vi.fn() };
+        latestFxaaPass = this as any;
+      }
     }
   },
 }));
@@ -234,7 +219,7 @@ describe("PostProcessingPipeline", () => {
     pipeline.setSize(640, 360, 1.5);
 
     expect(latestRenderTargetOptions?.samples).toBe(0);
-    expect(latestFxaaPass?.setSize).toHaveBeenLastCalledWith(960, 540);
+    expect(latestFxaaPass?.uniforms.resolution.value.set).toHaveBeenLastCalledWith(1 / 960, 1 / 540);
   });
 
   it("disposes of existing passes and the composer when rebuilding", () => {

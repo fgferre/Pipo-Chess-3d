@@ -104,7 +104,6 @@ function BaseOverlay({
           inset: 0, 
           zIndex: 10, 
           pointerEvents: isPresent ? "auto" : "none",
-          display: "contents"
         }}
         {...(!isPresent ? { inert: "" } as any : {})}
       >
@@ -1485,51 +1484,47 @@ function App() {
 
       <AnimatePresence>
         {replacePromptOpen ? (
-          <BaseOverlay onClose={() => setReplacePromptOpen(false)}>
-            <ReplaceGameDialog
-              open={replacePromptOpen}
-              badge={t(locale, "panel.newGame.title")}
-              title={t(locale, "confirm.newGame.title")}
-              body={t(locale, "confirm.newGame.body")}
-              keepLabel={t(locale, "confirm.newGame.keep")}
-              cancelLabel={t(locale, "confirm.newGame.cancel")}
-              replaceLabel={t(locale, "confirm.newGame.replace")}
-              onKeep={() => setReplacePromptOpen(false)}
-              onCancel={() => {
-                setReplacePromptOpen(false);
-                setNewGameOpen(false);
-              }}
-              onReplace={() => void applyNewGame(true)}
-            />
-          </BaseOverlay>
+          <ReplaceGameDialog
+            open={replacePromptOpen}
+            badge={t(locale, "panel.newGame.title")}
+            title={t(locale, "confirm.newGame.title")}
+            body={t(locale, "confirm.newGame.body")}
+            keepLabel={t(locale, "confirm.newGame.keep")}
+            cancelLabel={t(locale, "confirm.newGame.cancel")}
+            replaceLabel={t(locale, "confirm.newGame.replace")}
+            onKeep={() => setReplacePromptOpen(false)}
+            onCancel={() => {
+              setReplacePromptOpen(false);
+              setNewGameOpen(false);
+            }}
+            onReplace={() => void applyNewGame(true)}
+          />
         ) : null}
       </AnimatePresence>
 
       <AnimatePresence>
         {resultModalOpen ? (
-          <BaseOverlay onClose={() => setResultModalOpen(false)}>
-            <ResultModalOverlay
-              open={resultModalOpen}
-              kicker={t(locale, "result.kicker")}
-              glyph={getResultGlyph(session)}
-              title={t(locale, getFriendlyResultKey(session))}
-              subtitle={t(locale, getResultStatusKey(session.snapshot.status))}
-              metrics={[
-                { label: t(locale, "hud.moves"), value: session.moveEntries.length },
-                { label: t(locale, "newGame.level"), value: getDifficultyPreset(session.settings.difficultyId).label },
-                { label: t(locale, "panel.clock.title"), value: session.settings.clockConfig.label },
-              ]}
-              analysisLabel={t(locale, "analysis.open")}
-              newGameLabel={t(locale, "hud.newGame")}
-              menuLabel={t(locale, "hud.menu")}
-              onOpenAnalysis={() => void enterAnalysis()}
-              onOpenNewGame={openNewGameSheet}
-              onOpenMenu={() => {
-                setResultModalOpen(false);
-                setMenuOpen(true);
-              }}
-            />
-          </BaseOverlay>
+          <ResultModalOverlay
+            open={resultModalOpen}
+            kicker={t(locale, "result.kicker")}
+            glyph={getResultGlyph(session)}
+            title={t(locale, getFriendlyResultKey(session))}
+            subtitle={t(locale, getResultStatusKey(session.snapshot.status))}
+            metrics={[
+              { label: t(locale, "hud.moves"), value: session.moveEntries.length },
+              { label: t(locale, "newGame.level"), value: getDifficultyPreset(session.settings.difficultyId).label },
+              { label: t(locale, "panel.clock.title"), value: session.settings.clockConfig.label },
+            ]}
+            analysisLabel={t(locale, "analysis.open")}
+            newGameLabel={t(locale, "hud.newGame")}
+            menuLabel={t(locale, "hud.menu")}
+            onOpenAnalysis={() => void enterAnalysis()}
+            onOpenNewGame={openNewGameSheet}
+            onOpenMenu={() => {
+              setResultModalOpen(false);
+              setMenuOpen(true);
+            }}
+          />
         ) : null}
       </AnimatePresence>
 
