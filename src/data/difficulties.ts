@@ -8,14 +8,10 @@ export function clampSupportedUciElo(uciElo: number): number {
   return Math.min(STOCKFISH_UCI_ELO_MAX, Math.max(STOCKFISH_UCI_ELO_MIN, uciElo));
 }
 
-function formatDifficultyLabel(uciElo: number | null): string {
-  return uciElo === null ? "MAX" : `${uciElo} Elo`;
-}
-
 export const difficultyPresets: DifficultyPreset[] = [
   {
     id: "beginner",
-    label: formatDifficultyLabel(1320),
+    label: "Beginner",
     uciElo: 1320,
     skillLevelFallback: 0,
     moveTimeMs: 150,
@@ -23,7 +19,7 @@ export const difficultyPresets: DifficultyPreset[] = [
   },
   {
     id: "easy",
-    label: formatDifficultyLabel(1690),
+    label: "Easy",
     uciElo: 1690,
     skillLevelFallback: 4,
     moveTimeMs: 250,
@@ -31,7 +27,7 @@ export const difficultyPresets: DifficultyPreset[] = [
   },
   {
     id: "intermediate",
-    label: formatDifficultyLabel(2060),
+    label: "Intermediate",
     uciElo: 2060,
     skillLevelFallback: 8,
     moveTimeMs: 400,
@@ -39,7 +35,7 @@ export const difficultyPresets: DifficultyPreset[] = [
   },
   {
     id: "club",
-    label: formatDifficultyLabel(2440),
+    label: "Club",
     uciElo: 2440,
     skillLevelFallback: 12,
     moveTimeMs: 600,
@@ -47,7 +43,7 @@ export const difficultyPresets: DifficultyPreset[] = [
   },
   {
     id: "advanced",
-    label: formatDifficultyLabel(2810),
+    label: "Advanced",
     uciElo: 2810,
     skillLevelFallback: 16,
     moveTimeMs: 900,
@@ -55,7 +51,7 @@ export const difficultyPresets: DifficultyPreset[] = [
   },
   {
     id: "master",
-    label: formatDifficultyLabel(3190),
+    label: "Master",
     uciElo: 3190,
     skillLevelFallback: 19,
     moveTimeMs: 1400,
@@ -63,7 +59,7 @@ export const difficultyPresets: DifficultyPreset[] = [
   },
   {
     id: "gm",
-    label: formatDifficultyLabel(null),
+    label: "GM",
     uciElo: null,
     skillLevelFallback: 20,
     moveTimeMs: 2500,

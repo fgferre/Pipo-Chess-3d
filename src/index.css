@@ -1801,6 +1801,37 @@ input[type="range"]::-moz-range-track {
   width: 100%;
 }
 
+.difficulty-scale__ticks {
+  position: relative;
+  height: 0.46rem;
+  margin-top: 0.08rem;
+  pointer-events: none;
+}
+
+.difficulty-scale__ticks span {
+  position: absolute;
+  left: var(--difficulty-stop);
+  top: 0;
+  width: 2px;
+  height: 0.34rem;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--text-muted) 62%, rgba(255, 255, 255, 0.16));
+  opacity: 0.72;
+  transform: translateX(-50%);
+  transition:
+    height 160ms ease,
+    opacity 160ms ease,
+    background 160ms ease,
+    box-shadow 160ms ease;
+}
+
+.difficulty-scale__ticks span.is-active {
+  height: 0.46rem;
+  background: var(--focus-primary);
+  opacity: 1;
+  box-shadow: 0 0 10px color-mix(in srgb, var(--focus-primary) 34%, transparent);
+}
+
 .difficulty-scale__legend {
   display: inline-flex;
   align-items: center;
@@ -1879,7 +1910,7 @@ input[type="range"]::-moz-range-track {
 .slider-labels--difficulty {
   position: relative;
   min-height: 0.95rem;
-  margin-top: 0.08rem;
+  margin-top: 0.18rem;
   pointer-events: none;
 }
 

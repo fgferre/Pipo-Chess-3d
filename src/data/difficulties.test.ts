@@ -19,10 +19,17 @@ describe("difficulty presets", () => {
     const elos = capped.map((preset) => preset.uciElo);
 
     expect(elos).toEqual([1320, 1690, 2060, 2440, 2810, 3190]);
-    expect(capped.every((preset) => preset.label === `${preset.uciElo} Elo`)).toBe(true);
+    expect(capped.map((preset) => preset.label)).toEqual([
+      "Beginner",
+      "Easy",
+      "Intermediate",
+      "Club",
+      "Advanced",
+      "Master",
+    ]);
     expect(capped.every((preset) => preset.uciElo! >= STOCKFISH_UCI_ELO_MIN)).toBe(true);
     expect(capped.every((preset) => preset.uciElo! <= STOCKFISH_UCI_ELO_MAX)).toBe(true);
-    expect(getDifficultyPreset("gm").label).toBe("MAX");
+    expect(getDifficultyPreset("gm").label).toBe("GM");
   });
 
   it("clamps unsupported Elo values to the Stockfish interval", () => {

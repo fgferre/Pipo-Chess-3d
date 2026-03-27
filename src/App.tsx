@@ -1359,16 +1359,21 @@ function App() {
                     }}
                   />
                   <div className="difficulty-scale__footer">
+                    <div className="difficulty-scale__ticks" aria-hidden="true">
+                      {difficultyPresets.map((preset, index) => (
+                        <span
+                          key={preset.id}
+                          className={preset.id === newGameDifficultyId ? "is-active" : undefined}
+                          style={getDifficultyStopStyle(index, difficultyPresets.length)}
+                        />
+                      ))}
+                    </div>
                     <div className="slider-labels slider-labels--difficulty" aria-hidden="true">
                       {difficultyPresets.map((preset, index) => (
                         <span
                           key={preset.id}
                           className={preset.id === newGameDifficultyId ? "is-active" : undefined}
-                          style={
-                            {
-                              "--difficulty-stop": `${(index / Math.max(1, difficultyPresets.length - 1)) * 100}%`,
-                            } as CSSProperties
-                          }
+                          style={getDifficultyStopStyle(index, difficultyPresets.length)}
                         >
                           {formatDifficultyTickLabel(preset)}
                         </span>
@@ -1720,6 +1725,12 @@ function formatDifficultyAriaValue(difficulty: ReturnType<typeof getDifficultyPr
   return difficulty.uciElo === null
     ? `${difficulty.label} max`
     : `${difficulty.label} ${difficulty.uciElo}`;
+}
+
+function getDifficultyStopStyle(index: number, total: number): CSSProperties {
+  return {
+    "--difficulty-stop": `${(index / Math.max(1, total - 1)) * 100}%`,
+  } as CSSProperties;
 }
 
 function canResumeSession(session: GameSession): boolean {
