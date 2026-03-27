@@ -3545,6 +3545,11 @@ export class ChessStage implements SceneAdapter {
       return true;
     }
 
+    // Reuse the shell's existing invalid-move feedback path for rejected drops.
+    if (targetSquare && targetSquare !== sourceSquare) {
+      this.onSquareSelect(targetSquare);
+    }
+
     this.startReturnAnimation(piece, sourceSquare);
     return true;
   }

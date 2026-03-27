@@ -1,34 +1,58 @@
 import { expect, test } from "@playwright/test";
-import { switchToEnglish, waitForBoot } from "./helpers";
+import {
+  closeCamera,
+  closeMenu,
+  openCamera,
+  openMenuSection,
+  openNewGame,
+  shellText,
+  switchToEnglish,
+  waitForBoot,
+} from "./helpers";
 
 test.use({ viewport: { width: 390, height: 844 } });
 
-test("supports stable shell settings flows", async ({ page }) => {
+test("supports stable shell settings flows across sectioned and monolithic menu layouts", async ({ page }) => {
   await page.goto("/");
   await waitForBoot(page);
-  await expect(page.getByRole("button", { name: "Menu" })).toBeVisible();
+  await expect(page.getByRole("button", { name: shellText.menu })).toBeVisible();
 
-  await page.getByRole("button", { name: "Câmera" }).click();
-  await page.getByRole("button", { name: "Modo 2D" }).click();
-  await page.getByRole("button", { name: "Câmera" }).click();
-  await expect(page.getByRole("button", { name: "Modo 2D" })).toHaveClass(/is-selected/);
-  await page.getByRole("button", { name: /Clássica/i }).click();
+  const camera = await openCamera(page);
+  const cameraPresentation = await camera.getAttribute("data-presentation");
+  if (cameraPresentation) {
+    expect(cameraPresentation).toMatch(/desktop-popover|mobile-sheet/);
+    await expect(page.locator(".overlay-scrim")).toHaveCount(0);
+  }
+
+  await camera.getByRole("button", { name: shellText.camera2d }).click();
+  await closeCamera(page);
+
+  const reopenedCamera = await openCamera(page);
+  await expect(reopenedCamera.getByRole("button", { name: shellText.camera2d })).toHaveClass(/is-selected/);
+  await reopenedCamera.getByRole("button", { name: shellText.cameraClassic }).click();
 
   await switchToEnglish(page);
-  await expect(page.getByText("Play some moves to get started")).toBeVisible();
 
-  await page.getByRole("button", { name: "Off" }).click();
-  await expect(page.getByRole("button", { name: "Off" })).toHaveClass(/is-active/);
+  const analysisMenu = await openMenuSection(page, "analysis");
+  await expect(analysisMenu.getByText("Play some moves to get started")).toBeVisible();
 
-  await page.getByRole("button", { name: "Emerald" }).click();
-  await expect(page.getByRole("button", { name: "Emerald" })).toHaveClass(/is-selected/);
+  const visualMenu = await openMenuSection(page, "visual");
+  const animationOff = visualMenu.getByRole("button", { name: shellText.animationOff });
+  await animationOff.click();
+  await expect(animationOff).toHaveAttribute("aria-pressed", "true");
 
-  await page.getByRole("button", { name: "Close" }).click();
-  await expect(page.getByRole("button", { name: "Camera" })).toBeVisible();
-  await page.getByRole("button", { name: "New game" }).click();
+  const emeraldTheme = visualMenu.getByRole("button", { name: shellText.themeEmerald });
+  await emeraldTheme.click();
+  await expect(emeraldTheme).toHaveClass(/is-selected/);
 
-  const dialog = page.getByRole("dialog", { name: "Start a new game" });
-  await expect(dialog).toBeVisible();
+  const libraryMenu = await openMenuSection(page, "library");
+  await expect(libraryMenu.getByRole("button", { name: shellText.importPgn })).toBeVisible();
+  await expect(libraryMenu.getByRole("button", { name: shellText.exportPgn })).toBeVisible();
+
+  await closeMenu(page);
+  await expect(page.getByRole("button", { name: shellText.camera })).toBeVisible();
+
+  const dialog = await openNewGame(page);
   await expect(dialog.getByText("Club")).toBeVisible();
   await expect(dialog.getByText("Elo", { exact: true })).toBeVisible();
 
@@ -46,6 +70,6 @@ test("supports stable shell settings flows", async ({ page }) => {
     await expect(dialog.getByRole("button", { name: label, exact: true })).toBeVisible();
   }
 
-  await dialog.getByRole("button", { name: "Close" }).click();
-  await expect(page.getByRole("button", { name: "Open history" })).toBeVisible();
+  await dialog.getByRole("button", { name: shellText.close }).click();
+  await expect(page.getByRole("button", { name: shellText.history })).toBeVisible();
 });

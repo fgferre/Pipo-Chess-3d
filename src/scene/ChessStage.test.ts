@@ -801,7 +801,7 @@ describe("ChessStage", () => {
     expect(stageInternals.pieceBySquare.get("e2")?.position.toArray()).toEqual([0.5, 0, 0.5]);
   });
 
-  it("returns a dragged piece to origin when the drop target is not legal", async () => {
+  it("returns a dragged piece to origin while still emitting the rejected drop target", async () => {
     const { onSquareSelect, stage } = createStage();
     const stageInternals = stage as unknown as {
       currentState: Parameters<ChessStage["update"]>[0] | null;
@@ -836,8 +836,9 @@ describe("ChessStage", () => {
 
     stageInternals.handlePointerUp(pointerEvent(31, 120, 120, "touch"));
 
-    expect(onSquareSelect).toHaveBeenCalledTimes(1);
-    expect(onSquareSelect).toHaveBeenCalledWith("e2");
+    expect(onSquareSelect).toHaveBeenCalledTimes(2);
+    expect(onSquareSelect).toHaveBeenNthCalledWith(1, "e2");
+    expect(onSquareSelect).toHaveBeenNthCalledWith(2, "e4");
     expect(stageInternals.dragState).toBeNull();
     expect(stageInternals.returnAnimation?.to.toArray()).toEqual([0.5, 0, 2.5]);
   });

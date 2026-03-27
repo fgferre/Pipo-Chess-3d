@@ -2,9 +2,12 @@ import { MoveList } from "./MoveList";
 import { t } from "../i18n";
 import type { AnalysisSummary, EnginePhase, GameSession, SerializableMove } from "../types/game";
 
-interface HistoryPanelProps {
+export type HistoryPanelPresentation = "desktop-side" | "mobile-sheet";
+
+export interface HistoryPanelProps {
   open: boolean;
   hidden?: boolean;
+  presentation?: HistoryPanelPresentation;
   historyBadgeLabel: string;
   historyProgress: number;
   historySessionSubtitle: string;
@@ -20,11 +23,17 @@ interface HistoryPanelProps {
   onToggle: () => void;
   onSelectPly: (ply: number) => void;
   shellPointerEvents?: "auto" | "none";
+  panelId?: string;
+  toggleId?: string;
+  rootTestId?: string;
+  toggleTestId?: string;
+  panelTestId?: string;
 }
 
 export function HistoryPanel({
   open,
   hidden = false,
+  presentation = "desktop-side",
   engineLabel,
   historyBadgeLabel,
   historyProgress,
@@ -40,19 +49,41 @@ export function HistoryPanel({
   onToggle,
   onSelectPly,
   shellPointerEvents = "auto",
+  panelId = "history-panel-shell",
+  toggleId = "history-panel-toggle",
+  rootTestId = "history-panel",
+  toggleTestId = "history-panel-toggle",
+  panelTestId = "history-panel-shell",
 }: HistoryPanelProps) {
+  const headingId = `${panelId}-title`;
+  const summaryId = `${panelId}-summary`;
+  const surfaceType = presentation === "mobile-sheet" ? "sheet" : "side-panel";
+  const surfacePlacement = presentation === "mobile-sheet" ? "bottom" : "side";
+
   return (
     <aside
-      className={`history-panel${open ? " is-open" : ""}${hidden ? " is-hidden" : ""}`}
+      className={`history-panel history-panel--${presentation}${open ? " is-open" : ""}${hidden ? " is-hidden" : ""}`}
+      data-panel="history"
+      data-presentation={presentation}
       data-state={open ? "open" : "closed"}
+      data-surface={surfaceType}
+      data-surface-placement={surfacePlacement}
+      data-hidden={hidden ? "true" : "false"}
+      data-testid={rootTestId}
       aria-hidden={hidden ? "true" : undefined}
     >
       <button
-        className="history-tab"
+        className={`history-tab history-tab--${presentation}`}
         type="button"
+        id={toggleId}
         aria-label={open ? t(locale, "panel.close") : t(locale, "history.toggle")}
         aria-expanded={open}
-        aria-controls="history-panel-shell"
+        aria-controls={panelId}
+        data-panel-trigger="history"
+        data-presentation={presentation}
+        data-state={open ? "open" : "closed"}
+        data-surface-placement={surfacePlacement}
+        data-testid={toggleTestId}
         onClick={onToggle}
       >
         <span className="history-tab__icon" aria-hidden="true">
@@ -66,17 +97,27 @@ export function HistoryPanel({
         <span className="history-tab__label">{historyBadgeLabel}</span>
       </button>
       <div
-        className="history-panel__shell"
-        id="history-panel-shell"
+        className={`history-panel__shell history-panel__shell--${presentation}`}
+        id={panelId}
+        role="region"
+        aria-labelledby={headingId}
+        aria-describedby={summaryId}
         aria-hidden={!open}
+        tabIndex={-1}
+        data-panel-surface="history"
+        data-presentation={presentation}
+        data-state={open ? "open" : "closed"}
+        data-surface={surfaceType}
+        data-surface-placement={surfacePlacement}
+        data-testid={panelTestId}
         style={{ pointerEvents: open && !hidden ? shellPointerEvents : "none" }}
-        {...(!open || hidden ? ({ inert: "" } as any) : {})}
+        inert={!open || hidden ? true : undefined}
       >
         <div className="panel-header panel-header--history">
           <div className="panel-header__cluster">
             <div>
               <p className="panel-kicker">{t(locale, "history.kicker")}</p>
-              <h2>{t(locale, "hud.moves")}</h2>
+              <h2 id={headingId}>{t(locale, "hud.moves")}</h2>
             </div>
           </div>
           <div className="panel-header__meta">
@@ -114,7 +155,9 @@ export function HistoryPanel({
           <div aria-hidden="true" className="history-panel__progress">
             <span className="history-panel__progress-fill" style={{ width: `${historyProgress}%` }} />
           </div>
-          <p className="history-panel__summary">{historySummary}</p>
+          <p className="history-panel__summary" id={summaryId}>
+            {historySummary}
+          </p>
         </footer>
       </div>
     </aside>

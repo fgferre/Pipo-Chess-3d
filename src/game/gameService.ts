@@ -120,6 +120,20 @@ export function getCastlingTargetsForSquare(session: GameSession, square: Square
     .map((move) => move.to);
 }
 
+export function isSessionInCheck(session: GameSession): boolean {
+  const chess = replayMoveEntries(session.moveEntries);
+  return chess.isCheck() && !chess.isCheckmate();
+}
+
+export function getCheckedKingSquare(session: GameSession): Square | null {
+  const chess = replayMoveEntries(session.moveEntries);
+  if (!chess.isCheck() || chess.isCheckmate()) {
+    return null;
+  }
+
+  return chess.findPiece({ type: "k", color: chess.turn() })[0] ?? null;
+}
+
 export interface IllegalMoveDiagnosis {
   reason: "exposes-king" | "pinned" | "blocked" | "no-piece" | "unknown";
   attackerSquares: Square[];

@@ -1,4 +1,5 @@
 import {
+  type ComponentProps,
   startTransition,
   useDeferredValue,
   useEffect,
@@ -29,7 +30,13 @@ import { HistoryPanel } from "./components/HistoryPanel";
 import { clockPresets } from "./data/clocks";
 import { difficultyPresets, getDifficultyPreset } from "./data/difficulties";
 import { getTheme, getThemeCssVariables, themes } from "./data/themes";
-import { deriveSessionAtPly, diagnoseIllegalMove, formatIllegalMoveDiagnosis } from "./game/gameService";
+import {
+  deriveSessionAtPly,
+  diagnoseIllegalMove,
+  formatIllegalMoveDiagnosis,
+  getCheckedKingSquare,
+  isSessionInCheck,
+} from "./game/gameService";
 import { getLocaleLabel, t } from "./i18n";
 import { locales } from "./i18n/dictionaries";
 import type { SceneLoadState } from "./scene/SceneAdapter";
@@ -45,8 +52,17 @@ import type {
 import { fenToPieces } from "./utils/board";
 import { clamp, formatAbsoluteTimestamp, formatRelativeTimestamp } from "./utils/format";
 import { exportTextContent, readTextFile, type ExportTextResult } from "./utils/files";
+import { getPromotionPopupStyle } from "./utils/overlays";
 
 type TranslationKey = Parameters<typeof t>[1];
+type ShellMode = "desktop" | "mobile";
+type MenuView = "root" | "analysis" | "visual" | "library";
+type ShellActionSpec = Omit<ComponentProps<typeof ActionButton>, "compact" | "labelVisibility"> & {
+  desktopCompact?: boolean;
+  desktopLabelVisibility?: "adaptive" | "always" | "hidden";
+  mobileVisible?: boolean;
+};
+const SHELL_MEDIA_QUERY = "(max-width: 899px)";
 
 const NEW_GAME_CLOCK_PRESETS = clockPresets;
 const CAMERA_PRESETS: Array<{ id: CameraPreset; icon: string; labelKey: TranslationKey }> = [
@@ -73,18 +89,41 @@ const INITIAL_SCENE_LOAD_STATE: SceneLoadState = {
   messageKey: "scene.loading.renderer",
 };
 
-function PresenceAwareOverlayScrim({ onClick }: { onClick: () => void }) {
+function getShellMode(): ShellMode {
+  if (typeof window === "undefined") {
+    return "desktop";
+  }
+
+  if (typeof window.matchMedia === "function") {
+    return window.matchMedia(SHELL_MEDIA_QUERY).matches ? "mobile" : "desktop";
+  }
+
+  return window.innerWidth < 900 ? "mobile" : "desktop";
+}
+
+function PresenceAwareOverlayBackdrop({
+  onClick,
+  visible,
+}: {
+  onClick: () => void;
+  visible: boolean;
+}) {
   const isPresent = useIsPresent();
 
   return (
     <motion.div
-      className="overlay-scrim"
+      className={visible ? "overlay-scrim" : undefined}
       aria-hidden="true"
       initial={{ opacity: 0 }}
       animate={{ opacity: 1 }}
       exit={{ opacity: 0 }}
       transition={{ duration: 0.2 }}
-      style={{ pointerEvents: isPresent ? "auto" : "none" }}
+      style={{
+        position: "absolute",
+        inset: 0,
+        pointerEvents: isPresent ? "auto" : "none",
+        ...(visible ? {} : { background: "transparent" }),
+      }}
       onClick={onClick}
     />
   );
@@ -95,26 +134,33 @@ function BaseOverlay({
   onClose,
   showScrim = true,
   blockInteraction = showScrim,
+  dismissibleBackdrop = showScrim,
+  testId,
 }: {
   children: ReactNode;
   onClose: () => void;
   showScrim?: boolean;
   blockInteraction?: boolean;
+  dismissibleBackdrop?: boolean;
+  testId?: string;
 }) {
   const isPresent = useIsPresent();
 
   return (
     <div
       className="base-overlay"
+      data-overlay-blocking={blockInteraction ? "true" : "false"}
+      data-overlay-scrim={showScrim ? "visible" : "hidden"}
+      data-testid={testId}
+      inert={!isPresent || undefined}
       style={{
         position: "fixed",
         inset: 0,
         zIndex: 10,
         pointerEvents: blockInteraction ? "auto" : "none",
       }}
-      {...(!isPresent ? { inert: "" } as any : {})}
     >
-      {showScrim && <PresenceAwareOverlayScrim onClick={onClose} />}
+      {dismissibleBackdrop ? <PresenceAwareOverlayBackdrop onClick={onClose} visible={showScrim} /> : null}
       {children}
     </div>
   );
@@ -123,11 +169,27 @@ function BaseOverlay({
 function PresenceAwareNewGameSheet({
   ariaLabel,
   children,
+  presentation,
 }: {
   ariaLabel: string;
   children: ReactNode;
+  presentation: "desktop-modal" | "mobile-sheet";
 }) {
   const isPresent = useIsPresent();
+  const motionProps =
+    presentation === "mobile-sheet"
+      ? {
+          initial: { y: "110%", opacity: 0 },
+          animate: { y: 0, opacity: 1 },
+          exit: { y: "110%", opacity: 0 },
+          transition: { type: "spring" as const, stiffness: 320, damping: 36 },
+        }
+      : {
+          initial: { scale: 0.92, opacity: 0 },
+          animate: { scale: 1, opacity: 1 },
+          exit: { scale: 0.95, opacity: 0 },
+          transition: { type: "spring" as const, stiffness: 300, damping: 34 },
+        };
 
   return (
     <motion.section
@@ -135,10 +197,12 @@ function PresenceAwareNewGameSheet({
       role="dialog"
       aria-modal="true"
       aria-label={ariaLabel}
-      initial={{ scale: 0.92, opacity: 0 }}
-      animate={{ scale: 1, opacity: 1 }}
-      exit={{ scale: 0.95, opacity: 0 }}
-      transition={{ type: "spring", stiffness: 300, damping: 34 }}
+      data-presentation={presentation}
+      data-testid="new-game-sheet"
+      initial={motionProps.initial}
+      animate={motionProps.animate}
+      exit={motionProps.exit}
+      transition={motionProps.transition}
       style={{ pointerEvents: isPresent ? "auto" : "none" }}
     >
       {children}
@@ -194,10 +258,12 @@ function App() {
     persistCurrentAutosave,
     tickLiveClock,
   } = useGameStore();
+  const [shellMode, setShellMode] = useState<ShellMode>(() => getShellMode());
   const [topBarExpanded, setTopBarExpanded] = useState(false);
   const [bottomBarExpanded, setBottomBarExpanded] = useState(false);
   const [historyOpen, setHistoryOpen] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
+  const [menuView, setMenuView] = useState<MenuView>("root");
   const [newGameOpen, setNewGameOpen] = useState(false);
   const [cameraPickerOpen, setCameraPickerOpen] = useState(false);
   const [replacePromptOpen, setReplacePromptOpen] = useState(false);
@@ -216,6 +282,7 @@ function App() {
   const [invalidMoveDetail, setInvalidMoveDetail] = useState<string | null>(null);
   const [invalidMoveExpanded, setInvalidMoveExpanded] = useState(false);
   const [invalidMoveAnchor, setInvalidMoveAnchor] = useState<{ x: number; y: number } | null>(null);
+  const [checkAnchor, setCheckAnchor] = useState<{ x: number; y: number } | null>(null);
   const [castlingAnchor, setCastlingAnchor] = useState<{ x: number; y: number } | null>(null);
   const [sceneLoadState, setSceneLoadState] = useState<SceneLoadState>(INITIAL_SCENE_LOAD_STATE);
   const appShellRef = useRef<HTMLDivElement | null>(null);
@@ -234,6 +301,8 @@ function App() {
   const isErrorToast = !restoreNotice && !transientNotice && !!(transientError || lastError);
   const currentPly = analysisCursor ?? session.moveEntries.length;
   const currentEvaluation = getEvaluationForPly(session.analysisSummary?.evaluationsByPly, currentPly);
+  const sessionInCheck = isSessionInCheck(session);
+  const checkedKingSquare = getCheckedKingSquare(boardSession);
   const autosaveTimestamp = autosave ? formatRelativeTimestamp(autosave.updatedAt, locale) : null;
   const showSceneBootStatus =
     sceneLoadState.phase === "loading" ||
@@ -286,10 +355,58 @@ function App() {
   });
   const historySummary = buildMoveHistorySummary(session, locale);
   const historyProgress = getHistoryProgress(session.moveEntries.length, currentPly, analysisMode);
+  const isMobileShell = shellMode === "mobile";
+  const topBarCollapsed = isMobileShell || !topBarExpanded;
+  const bottomBarCompact = isMobileShell || !bottomBarExpanded;
+  const bottomBarLabelVisibility = isMobileShell ? "hidden" : "adaptive";
+  const cameraPresentation = isMobileShell ? "mobile-sheet" : "desktop-popover";
+  const newGamePresentation = isMobileShell ? "mobile-sheet" : "desktop-modal";
 
   useEffect(() => {
     void bootstrap();
   }, [bootstrap]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") {
+      return;
+    }
+
+    if (typeof window.matchMedia === "function") {
+      const mediaQuery = window.matchMedia(SHELL_MEDIA_QUERY);
+      const syncShellMode = (matches: boolean) => {
+        setShellMode(matches ? "mobile" : "desktop");
+      };
+      const handleChange = (event: MediaQueryListEvent) => {
+        syncShellMode(event.matches);
+      };
+
+      syncShellMode(mediaQuery.matches);
+
+      if (typeof mediaQuery.addEventListener === "function") {
+        mediaQuery.addEventListener("change", handleChange);
+        return () => mediaQuery.removeEventListener("change", handleChange);
+      }
+
+      mediaQuery.addListener(handleChange);
+      return () => mediaQuery.removeListener(handleChange);
+    }
+
+    const syncShellMode = () => {
+      setShellMode(getShellMode());
+    };
+    syncShellMode();
+    window.addEventListener("resize", syncShellMode);
+    return () => window.removeEventListener("resize", syncShellMode);
+  }, []);
+
+  useEffect(() => {
+    if (!isMobileShell) {
+      return;
+    }
+
+    setTopBarExpanded(false);
+    setBottomBarExpanded(false);
+  }, [isMobileShell]);
 
   useEffect(() => {
     syncNewGameForm(
@@ -357,9 +474,13 @@ function App() {
       window.setTimeout(() => {
         soundService.play("check");
         haptics.check();
+        if (sessionInCheck) {
+          setTransientError(null);
+          setTransientNotice(t(locale, "feedback.check"));
+        }
       }, 80);
     }
-  }, [session.moveEntries, session.moveEntries.length, booted]);
+  }, [session.moveEntries, session.moveEntries.length, booted, locale, sessionInCheck]);
 
   useEffect(() => {
     if (!restoreNotice) {
@@ -458,6 +579,51 @@ function App() {
     };
   }, []);
 
+  const closeMenu = () => {
+    startTransition(() => {
+      setMenuOpen(false);
+      setMenuView("root");
+    });
+  };
+
+  const toggleMenu = () => {
+    startTransition(() => {
+      setMenuOpen((value) => {
+        const nextOpen = !value;
+        if (nextOpen) {
+          setCameraPickerOpen(false);
+          setHistoryOpen(false);
+          setNewGameOpen(false);
+          setMenuView("root");
+        } else {
+          setMenuView("root");
+        }
+        return nextOpen;
+      });
+    });
+  };
+
+  const toggleCameraPicker = () => {
+    startTransition(() => {
+      setCameraPickerOpen((value) => {
+        const nextOpen = !value;
+        if (nextOpen) {
+          setMenuOpen(false);
+          setMenuView("root");
+          setHistoryOpen(false);
+          setNewGameOpen(false);
+        }
+        return nextOpen;
+      });
+    });
+  };
+
+  const closeCameraPicker = () => {
+    startTransition(() => {
+      setCameraPickerOpen(false);
+    });
+  };
+
   const handleImport = async (event: ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
     if (!file) {
@@ -470,6 +636,7 @@ function App() {
       startTransition(() => {
         setHistoryOpen(true);
         setMenuOpen(false);
+        setMenuView("root");
         setBottomBarExpanded(true);
       });
       setTransientNotice(null);
@@ -505,6 +672,7 @@ function App() {
     startTransition(() => {
       setResultModalOpen(false);
       setMenuOpen(false);
+      setMenuView("root");
       setCameraPickerOpen(false);
       setHistoryOpen(true);
       setBottomBarExpanded(true);
@@ -521,6 +689,7 @@ function App() {
     startTransition(() => {
       setResultModalOpen(false);
       setMenuOpen(false);
+      setMenuView("root");
       setCameraPickerOpen(false);
       setHistoryOpen(false);
       setBottomBarExpanded(true);
@@ -532,6 +701,7 @@ function App() {
   const openNewGameSheet = () => {
     startTransition(() => {
       setMenuOpen(false);
+      setMenuView("root");
       setCameraPickerOpen(false);
       setHistoryOpen(false);
       setNewGameColor(session.playerColor === "b" ? "black" : "white");
@@ -566,6 +736,7 @@ function App() {
       setResultModalOpen(false);
       setHistoryOpen(false);
       setMenuOpen(false);
+      setMenuView("root");
       setAnalysisAutoplay(false);
       setAnalysisCursor(null);
     });
@@ -575,6 +746,7 @@ function App() {
     startTransition(() => {
       setResultModalOpen(false);
       setMenuOpen(false);
+      setMenuView("root");
       setCameraPickerOpen(false);
       setHistoryOpen(true);
       setBottomBarExpanded(true);
@@ -590,13 +762,630 @@ function App() {
     startTransition(() => {
       setHistoryOpen((value) => {
         const willOpen = !value;
-        if (willOpen && window.innerWidth < 900) {
-          setBottomBarExpanded(false);
+        if (willOpen) {
+          setMenuOpen(false);
+          setMenuView("root");
+          setCameraPickerOpen(false);
+          if (isMobileShell) {
+            setBottomBarExpanded(false);
+          }
         }
         return willOpen;
       });
     });
   };
+
+  const primaryShellActionSpecs: ShellActionSpec[] = analysisMode
+    ? [
+        {
+          actionId: "analysis-start",
+          icon: "⏮",
+          label: t(locale, "analysis.start"),
+          testId: "shell-action-analysis-start",
+          onClick: () => {
+            setAnalysisAutoplay(false);
+            setAnalysisCursor(0);
+          },
+        },
+        {
+          actionId: "analysis-previous",
+          icon: "◀",
+          label: t(locale, "analysis.previous"),
+          testId: "shell-action-analysis-previous",
+          disabled: currentPly <= 0,
+          onClick: () => {
+            setAnalysisAutoplay(false);
+            setAnalysisCursor(currentPly - 1);
+          },
+        },
+        {
+          actionId: "analysis-play",
+          icon: analysisAutoplay ? "⏸" : "▶",
+          label: t(locale, analysisAutoplay ? "analysis.pause" : "analysis.play"),
+          testId: "shell-action-analysis-play",
+          tone: "primary",
+          onClick: () => setAnalysisAutoplay(!analysisAutoplay),
+        },
+        {
+          actionId: "analysis-next",
+          icon: "▶",
+          label: t(locale, "analysis.next"),
+          testId: "shell-action-analysis-next",
+          disabled: currentPly >= session.moveEntries.length,
+          onClick: () => {
+            setAnalysisAutoplay(false);
+            setAnalysisCursor(currentPly + 1);
+          },
+        },
+        {
+          actionId: "analysis-end",
+          icon: "⏭",
+          label: t(locale, "analysis.end"),
+          testId: "shell-action-analysis-end",
+          onClick: () => {
+            setAnalysisAutoplay(false);
+            setAnalysisCursor(session.moveEntries.length);
+          },
+        },
+        {
+          actionId: "analysis-exit",
+          icon: "↩",
+          label: t(locale, "analysis.exit"),
+          testId: "shell-action-analysis-exit",
+          onClick: () => {
+            setAnalysisAutoplay(false);
+            setAnalysisCursor(null);
+          },
+        },
+      ]
+    : [
+        {
+          actionId: "new-game",
+          icon: "＋",
+          label: t(locale, "hud.newGame"),
+          testId: "shell-action-new-game",
+          tone: "primary",
+          desktopCompact: false,
+          desktopLabelVisibility: "always",
+          onClick: openNewGameSheet,
+        },
+        {
+          actionId: "undo",
+          icon: "↺",
+          label: t(locale, "hud.undo"),
+          testId: "shell-action-undo",
+          disabled: !session.snapshot.canUndo,
+          desktopCompact: false,
+          desktopLabelVisibility: "always",
+          onClick: () => void undo(),
+        },
+        {
+          actionId: "redo",
+          icon: "↻",
+          label: t(locale, "hud.redo"),
+          testId: "shell-action-redo",
+          disabled: !session.snapshot.canRedo,
+          onClick: () => void redo(),
+        },
+        {
+          actionId: "hint",
+          icon: "💡",
+          label: t(locale, "hud.hint"),
+          testId: "shell-action-hint",
+          disabled: isHintDisabled,
+          loading: enginePhase === "thinking" && session.snapshot.sideToMove === session.playerColor,
+          onClick: () => void requestHint(),
+        },
+      ];
+  const utilityShellActionSpecs: ShellActionSpec[] = [
+    {
+      actionId: "zen",
+      icon: isZenMode ? "◎" : "○",
+      label: t(locale, "hud.zen"),
+      testId: "shell-action-zen",
+      mobileVisible: false,
+      onClick: () => setIsZenMode((value) => !value),
+    },
+    {
+      actionId: "camera",
+      icon: "🎥",
+      label: t(locale, "hud.camera"),
+      testId: "shell-action-camera",
+      onClick: toggleCameraPicker,
+    },
+    {
+      actionId: "menu",
+      icon: "☰",
+      label: t(locale, "hud.menu"),
+      testId: "shell-action-menu",
+      onClick: toggleMenu,
+    },
+  ];
+
+  const renderShellAction = (spec: ShellActionSpec, surface: "mobile" | "desktop") => {
+    if (surface === "mobile" && spec.mobileVisible === false) {
+      return null;
+    }
+
+    return (
+      <ActionButton
+        key={spec.actionId ?? spec.testId ?? spec.label}
+        actionId={spec.actionId}
+        disabled={spec.disabled}
+        icon={spec.icon}
+        label={spec.label}
+        labelVisibility={
+          surface === "mobile" ? bottomBarLabelVisibility : spec.desktopLabelVisibility ?? "adaptive"
+        }
+        loading={spec.loading}
+        compact={surface === "mobile" ? true : spec.desktopCompact ?? bottomBarCompact}
+        testId={spec.testId}
+        tone={spec.tone}
+        onClick={spec.onClick}
+      />
+    );
+  };
+
+  const analysisMenuSection = (
+    <MenuSection
+      badge={analysisSummaryCount > 0 ? String(analysisSummaryCount) : undefined}
+      subtitle={analysisSectionSubtitle}
+      title={t(locale, "section.analysis.title")}
+      tone="analysis"
+    >
+      {session.moveEntries.length > 0 ? (
+        <div className="inline-actions">
+          <button
+            className="primary-button"
+            data-testid="shell-menu-analysis-open"
+            type="button"
+            disabled={session.moveEntries.length === 0}
+            onClick={() => void enterAnalysis()}
+          >
+            {analysisProgress ? t(locale, "analysis.running") : t(locale, "analysis.open")}
+          </button>
+          <button
+            className="ghost-button"
+            data-testid="shell-menu-analysis-run"
+            type="button"
+            disabled={session.moveEntries.length === 0 || !!analysisProgress}
+            onClick={() => void runAnalysis()}
+          >
+            {t(locale, "panel.analysis.run")}
+          </button>
+        </div>
+      ) : null}
+      <AnalysisSummaryView summary={session.analysisSummary} locale={locale} />
+    </MenuSection>
+  );
+
+  const visualMenuSection = (
+    <MenuSection
+      subtitle={settingsSectionSubtitle}
+      title={t(locale, "menu.settings")}
+      tone="settings"
+    >
+      <div className="settings-stack">
+        <div className="settings-group">
+          <h3>{t(locale, "menu.quality")}</h3>
+          <div className="chip-row">
+            {QUALITY_PRESETS.map((option) => {
+              if (option.id === "auto") {
+                return (
+                  <ChipButton
+                    key={option.id}
+                    active={qualityMode === "auto"}
+                    onClick={() => {
+                      void setQualityMode("auto");
+                    }}
+                  >
+                    {t(locale, option.labelKey)}
+                  </ChipButton>
+                );
+              }
+
+              return (
+                <ChipButton
+                  key={option.id}
+                  active={qualityMode === "manual" && manualQualityTier === option.tier}
+                  onClick={() => {
+                    void setQualityTier(option.tier);
+                  }}
+                >
+                  {t(locale, option.labelKey)}
+                </ChipButton>
+              );
+            })}
+          </div>
+        </div>
+
+        <div className="settings-group">
+          <h3>{t(locale, "menu.coordinates")}</h3>
+          <div className="chip-row">
+            <ChipButton
+              active={session.settings.showCoordinates}
+              onClick={() => void setShowCoordinates(true)}
+            >
+              {t(locale, "menu.coordinates.show")}
+            </ChipButton>
+            <ChipButton
+              active={!session.settings.showCoordinates}
+              onClick={() => void setShowCoordinates(false)}
+            >
+              {t(locale, "menu.coordinates.hide")}
+            </ChipButton>
+          </div>
+        </div>
+
+        <div className="settings-group">
+          <h3>{t(locale, "menu.animation")}</h3>
+          <div className="chip-row">
+            {(["normal", "reduced", "off"] as const).map((mode) => (
+              <ChipButton
+                key={mode}
+                active={session.settings.animationMode === mode}
+                onClick={() => void setAnimationMode(mode)}
+              >
+                {t(locale, `animation.${mode}`)}
+              </ChipButton>
+            ))}
+          </div>
+        </div>
+
+        <div className="settings-group">
+          <h3>{t(locale, "menu.defaultView")}</h3>
+          <div className="chip-row">
+            {(["3d", "2d"] as const).map((mode) => (
+              <ChipButton
+                key={mode}
+                active={session.settings.defaultViewMode === mode}
+                onClick={() => void setDefaultViewMode(mode)}
+              >
+                {t(locale, mode === "3d" ? "view.3d" : "view.2d")}
+              </ChipButton>
+            ))}
+          </div>
+        </div>
+
+        <div className="settings-group">
+          <h3>{t(locale, "menu.cameraSensitivity")}</h3>
+          <div className="slider-block">
+            <label>
+              <span>{t(locale, "menu.cameraSensitivity.rotate")}</span>
+              <strong>{formatSensitivityValue(session.settings.cameraSensitivity.rotate)}</strong>
+              <input
+                aria-label={t(locale, "menu.cameraSensitivity.rotate")}
+                max={1.75}
+                min={0.5}
+                step={0.25}
+                type="range"
+                value={session.settings.cameraSensitivity.rotate}
+                onChange={(event) => {
+                  void setCameraSensitivity({
+                    ...session.settings.cameraSensitivity,
+                    rotate: Number(event.target.value),
+                  });
+                }}
+              />
+            </label>
+            <label>
+              <span>{t(locale, "menu.cameraSensitivity.zoom")}</span>
+              <strong>{formatSensitivityValue(session.settings.cameraSensitivity.zoom)}</strong>
+              <input
+                aria-label={t(locale, "menu.cameraSensitivity.zoom")}
+                max={1.75}
+                min={0.5}
+                step={0.25}
+                type="range"
+                value={session.settings.cameraSensitivity.zoom}
+                onChange={(event) => {
+                  void setCameraSensitivity({
+                    ...session.settings.cameraSensitivity,
+                    zoom: Number(event.target.value),
+                  });
+                }}
+              />
+            </label>
+          </div>
+        </div>
+
+        <div className="settings-group">
+          <h3>{t(locale, "panel.themes.title")}</h3>
+          <div className="theme-grid">
+            {themes.map((option) => (
+              <button
+                className={`theme-card ${session.settings.themeId === option.id ? "is-selected" : ""}`}
+                key={option.id}
+                type="button"
+                onClick={() => void setTheme(option.id)}
+              >
+                <strong>{option.label}</strong>
+                <span className="theme-swatch-row">
+                  <i style={{ background: option.boardLight }} />
+                  <i style={{ background: option.boardDark }} />
+                  <i style={{ background: option.highlightPrimary }} />
+                </span>
+              </button>
+            ))}
+          </div>
+        </div>
+
+        <div className="settings-group">
+          <h3>{t(locale, "panel.language.title")}</h3>
+          <div className="chip-row">
+            {locales.map((option) => (
+              <ChipButton
+                key={option}
+                active={session.settings.locale === option}
+                onClick={() => void setLocale(option)}
+              >
+                {getLocaleLabel(option)}
+              </ChipButton>
+            ))}
+          </div>
+        </div>
+
+        <div className="inline-actions">
+          <button className="ghost-button" type="button" onClick={() => void toggleOrientation()}>
+            {t(locale, "hud.flip")}
+          </button>
+        </div>
+      </div>
+    </MenuSection>
+  );
+
+  const libraryMenuSection = (
+    <MenuSection
+      badge={saveSlots.length > 0 ? String(saveSlots.length) : undefined}
+      subtitle={librarySectionSubtitle}
+      title={t(locale, "section.library.title")}
+      tone="library"
+    >
+      {autosave ? (
+        <article className="save-row save-row--autosave">
+          <span className="save-row__icon" aria-hidden="true">
+            ↺
+          </span>
+          <div className="save-row__copy">
+            <span className="save-row__eyebrow">{t(locale, "section.library.title")}</span>
+            <strong>{t(locale, "panel.saveLoad.autosave")}</strong>
+            <span>{autosaveTimestamp}</span>
+            <small>{buildSaveSummary(autosave.session, autosave.updatedAt, locale)}</small>
+          </div>
+          <div className="save-row__actions">
+            {canResumeSession(autosave.session) ? (
+              <button
+                className="ghost-button save-action-button"
+                data-icon="▶"
+                type="button"
+                onClick={() => void resumeSavedSession(restoreAutosave)}
+              >
+                {t(locale, "save.restore")}
+              </button>
+            ) : null}
+            {canAnalyzeSession(autosave.session) ? (
+              <button
+                className="ghost-button save-action-button"
+                data-icon="∿"
+                type="button"
+                onClick={() => void openSavedAnalysis(autosave.session, restoreAutosave)}
+              >
+                {t(locale, "analysis.open")}
+              </button>
+            ) : null}
+            <button
+              className="ghost-button save-action-button"
+              data-icon="↗"
+              type="button"
+              onClick={() => void handleExportSession(autosave.session, "autosave")}
+            >
+              {t(locale, "hud.export")}
+            </button>
+          </div>
+        </article>
+      ) : null}
+
+      <div className="inline-actions inline-actions--library">
+        <button
+          className="primary-button library-action-button"
+          data-icon="+"
+          type="button"
+          onClick={() => void createManualSave()}
+        >
+          {t(locale, "panel.saveLoad.create")}
+        </button>
+        <button
+          className="ghost-button library-action-button"
+          data-icon="↧"
+          type="button"
+          onClick={() => fileInputRef.current?.click()}
+        >
+          {t(locale, "hud.import")}
+        </button>
+        <button
+          className="ghost-button library-action-button"
+          data-icon="↗"
+          type="button"
+          onClick={() => void handleExportSession(session)}
+        >
+          {t(locale, "hud.export")}
+        </button>
+      </div>
+
+      <div className="save-list">
+        {saveSlots.map((save) => (
+          <article className="save-row" key={save.id}>
+            <span className="save-row__icon" aria-hidden="true">
+              ◫
+            </span>
+            <div className="save-row__copy">
+              <strong>{save.label}</strong>
+              <span>{formatRelativeTimestamp(save.updatedAt, locale)}</span>
+              <small>{buildSaveSummary(save.session, save.updatedAt, locale)}</small>
+            </div>
+            <div className="save-row__actions">
+              {canResumeSession(save.session) ? (
+                <button
+                  className="ghost-button save-action-button"
+                  data-icon="▶"
+                  type="button"
+                  onClick={() => void resumeSavedSession(() => loadManualSave(save.id!))}
+                >
+                  {t(locale, "save.continue")}
+                </button>
+              ) : null}
+              {canAnalyzeSession(save.session) ? (
+                <button
+                  className="ghost-button save-action-button"
+                  data-icon="∿"
+                  type="button"
+                  onClick={() => void openSavedAnalysis(save.session, () => loadManualSave(save.id!))}
+                >
+                  {t(locale, "analysis.open")}
+                </button>
+              ) : null}
+              <button
+                className="ghost-button save-action-button"
+                data-icon="↗"
+                type="button"
+                onClick={() => void handleExportSession(save.session, save.label)}
+              >
+                {t(locale, "hud.export")}
+              </button>
+              <button
+                className="ghost-button save-action-button"
+                data-icon="×"
+                type="button"
+                onClick={() => void deleteManualSave(save.id!)}
+              >
+                {t(locale, "panel.saveLoad.delete")}
+              </button>
+            </div>
+          </article>
+        ))}
+        {saveSlots.length === 0 ? <p className="muted-copy">{t(locale, "panel.saveLoad.empty")}</p> : null}
+      </div>
+    </MenuSection>
+  );
+
+  const mobileMenuRoot = (
+    <div className="menu-root-view" data-testid="menu-root-view">
+      <MenuSection
+        subtitle={historySessionSubtitle}
+        title={t(locale, "hud.primaryActions")}
+        tone="settings"
+      >
+        <div className="menu-root-summary">
+          <div className="menu-root-summary__meta">
+            <span className={`status-pill status-pill--${enginePhase}`}>{t(locale, getStatusKey(enginePhase))}</span>
+            <span className="panel-header__badge">{analysisMode ? t(locale, "history.analysis") : activeDifficulty.label}</span>
+          </div>
+          <strong className="menu-root-summary__heading">
+            {analysisMode ? t(locale, "history.analysis") : activeDifficulty.label}
+          </strong>
+          <p className="menu-root-summary__copy">{historySummary}</p>
+        </div>
+        <div className="inline-actions inline-actions--root">
+          {analysisMode ? (
+            <button
+              className="ghost-button"
+              data-testid="shell-menu-root-exit-analysis"
+              type="button"
+              onClick={() => {
+                setAnalysisAutoplay(false);
+                setAnalysisCursor(null);
+                closeMenu();
+              }}
+            >
+              {t(locale, "analysis.exit")}
+            </button>
+          ) : session.moveEntries.length > 0 ? (
+            <button
+              className="primary-button"
+              data-testid="shell-menu-root-open-analysis"
+              type="button"
+              onClick={() => void enterAnalysis()}
+            >
+              {analysisProgress ? t(locale, "analysis.running") : t(locale, "analysis.open")}
+            </button>
+          ) : null}
+          <button
+            className="ghost-button"
+            data-testid="shell-menu-root-flip"
+            type="button"
+            onClick={() => {
+              void toggleOrientation();
+              closeMenu();
+            }}
+          >
+            {t(locale, "hud.flip")}
+          </button>
+          <button
+            className="ghost-button"
+            data-testid="shell-menu-root-zen"
+            type="button"
+            onClick={() => {
+              setIsZenMode((value) => !value);
+              closeMenu();
+            }}
+          >
+            {t(locale, "hud.zen")}
+          </button>
+        </div>
+      </MenuSection>
+
+      <div className="menu-nav-grid" data-testid="shell-menu-root-nav">
+        <button
+          className="menu-nav-card menu-nav-card--analysis"
+          data-testid="shell-menu-nav-analysis"
+          type="button"
+          onClick={() => setMenuView("analysis")}
+        >
+          <span className="menu-nav-card__eyebrow">{t(locale, "section.analysis.title")}</span>
+          <strong>{session.moveEntries.length > 0 ? t(locale, "analysis.open") : t(locale, "panel.analysis.run")}</strong>
+          <small>{analysisSectionSubtitle}</small>
+          {analysisSummaryCount > 0 ? <span className="menu-nav-card__badge">{analysisSummaryCount}</span> : null}
+        </button>
+
+        <button
+          className="menu-nav-card menu-nav-card--visual"
+          data-testid="shell-menu-nav-visual"
+          type="button"
+          onClick={() => setMenuView("visual")}
+        >
+          <span className="menu-nav-card__eyebrow">{t(locale, "menu.settings")}</span>
+          <strong>{theme.label}</strong>
+          <small>{settingsSectionSubtitle}</small>
+        </button>
+
+        <button
+          className="menu-nav-card menu-nav-card--library"
+          data-testid="shell-menu-nav-library"
+          type="button"
+          onClick={() => setMenuView("library")}
+        >
+          <span className="menu-nav-card__eyebrow">{t(locale, "section.library.title")}</span>
+          <strong>{saveSlots.length > 0 ? String(saveSlots.length) : t(locale, "panel.saveLoad.create")}</strong>
+          <small>{librarySectionSubtitle}</small>
+          {saveSlots.length > 0 ? <span className="menu-nav-card__badge">{saveSlots.length}</span> : null}
+        </button>
+      </div>
+    </div>
+  );
+
+  const menuDrawerMotion = isMobileShell
+    ? {
+        initial: { y: "110%", opacity: 0 },
+        animate: { y: 0, opacity: 1 },
+        exit: { y: "110%", opacity: 0 },
+        transition: { type: "spring" as const, stiffness: 320, damping: 36 },
+      }
+    : {
+        initial: { x: "110%", opacity: 0 },
+        animate: { x: 0, opacity: 1 },
+        exit: { x: "110%", opacity: 0 },
+        transition: { type: "spring" as const, stiffness: 300, damping: 36 },
+      };
 
   const topSide = buildClockSide(topColor, session, locale);
   const bottomSide = buildClockSide(bottomColor, session, locale);
@@ -604,6 +1393,8 @@ function App() {
   return (
     <div
       className={`app-shell${analysisMode ? " is-analysis" : ""}${isZenMode ? " is-zen" : ""}`}
+      data-shell-mode={shellMode}
+      data-shell-zen={isZenMode ? "true" : "false"}
       ref={appShellRef}
       style={style}
     >
@@ -614,6 +1405,7 @@ function App() {
       <HistoryPanel
         open={historyOpen}
         hidden={isZenMode}
+        presentation={isMobileShell ? "mobile-sheet" : "desktop-side"}
         engineLabel={analysisMode ? t(locale, "history.analysis") : activeDifficulty.label}
         historyBadgeLabel={analysisMode ? t(locale, "history.analysis") : t(locale, "history.pgn")}
         historyProgress={historyProgress}
@@ -631,6 +1423,9 @@ function App() {
           setAnalysisAutoplay(false);
           setAnalysisCursor(ply);
         }}
+        rootTestId="history-panel"
+        toggleTestId="history-trigger"
+        panelTestId="history-panel-shell"
         shellPointerEvents={menuOpen ? "none" : "auto"}
       />
 
@@ -646,6 +1441,7 @@ function App() {
             legalTargets={analysisMode ? [] : legalTargets}
             hintMove={analysisMode ? null : hintMove}
             invalidMoveSquare={invalidMoveSquare}
+            checkSquare={invalidMoveSquare ? null : checkedKingSquare}
             castlingTargets={analysisMode ? [] : castlingTargets}
             onLoadStateChange={setSceneLoadState}
             onSquareSelect={(square) => {
@@ -668,6 +1464,8 @@ function App() {
                   setInvalidMoveDetail(formatted.detail);
                   setInvalidMoveExpanded(false);
                   setInvalidMoveSquare(square);
+                  setTransientNotice(null);
+                  setTransientError(formatted.summary);
                   soundService.play("invalid-move");
                   haptics.light();
                   return;
@@ -679,6 +1477,7 @@ function App() {
             }}
             onPromotionAnchorChange={setPromotionAnchor}
             onInvalidMoveAnchorChange={setInvalidMoveAnchor}
+            onCheckAnchorChange={setCheckAnchor}
             onCastlingAnchorChange={setCastlingAnchor}
           />
         </div>
@@ -707,6 +1506,9 @@ function App() {
 
       <motion.section
         className={`top-bar ${topBarExpanded ? "is-expanded" : ""}`}
+        data-shell-surface="top-bar"
+        data-shell-mode={shellMode}
+        data-testid="shell-top-bar"
         animate={{
           opacity: isZenMode ? 0 : 1,
           height: isZenMode ? 0 : "auto",
@@ -724,40 +1526,48 @@ function App() {
               </span>
               <div className="top-bar__brand-copy">
                 <strong>Pipo Chess 3D</strong>
-                <small>{analysisMode ? t(locale, "history.analysis") : t(locale, "hud.localAi")}</small>
+                {!isMobileShell ? (
+                  <small>{analysisMode ? t(locale, "history.analysis") : t(locale, "hud.localAi")}</small>
+                ) : null}
               </div>
             </div>
           </div>
           <div className="top-bar__island top-bar__island--timers">
             <div className="top-bar__timers">
-              <ClockPill side={topSide} collapsed={!topBarExpanded} />
-              <ClockPill side={bottomSide} collapsed={!topBarExpanded} />
+              <ClockPill side={topSide} collapsed={topBarCollapsed} />
+              <ClockPill side={bottomSide} collapsed={topBarCollapsed} />
             </div>
           </div>
           <div className="top-bar__island top-bar__island--engine">
             <div className="top-bar__engine">
               <span className={`status-pill status-pill--${enginePhase}`}>{t(locale, getStatusKey(enginePhase))}</span>
               <strong>{activeDifficulty.label}</strong>
-              <small>{engineMessage || t(locale, getStatusKey(enginePhase))}</small>
+              {!isMobileShell ? <small>{engineMessage || t(locale, getStatusKey(enginePhase))}</small> : null}
             </div>
-            <button
-              className="bar-toggle top-bar__toggle"
-              type="button"
-              aria-label={t(locale, topBarExpanded ? "panel.close" : "hud.expandStatus")}
-              onClick={() => {
-                startTransition(() => {
-                  setTopBarExpanded((value) => !value);
-                });
-              }}
-            >
-              {topBarExpanded ? "−" : "+"}
-            </button>
+            {!isMobileShell ? (
+              <button
+                className="bar-toggle top-bar__toggle"
+                data-testid="shell-top-toggle"
+                type="button"
+                aria-label={t(locale, topBarExpanded ? "panel.close" : "hud.expandStatus")}
+                onClick={() => {
+                  startTransition(() => {
+                    setTopBarExpanded((value) => !value);
+                  });
+                }}
+              >
+                {topBarExpanded ? "−" : "+"}
+              </button>
+            ) : null}
           </div>
         </div>
       </motion.section>
 
       <motion.section
         className={`bottom-bar ${bottomBarExpanded ? "is-expanded" : ""}`}
+        data-shell-surface="bottom-bar"
+        data-shell-mode={shellMode}
+        data-testid="shell-bottom-bar"
         animate={{
           opacity: isZenMode ? 0 : 1,
           height: isZenMode ? 0 : "auto",
@@ -767,159 +1577,54 @@ function App() {
         transition={{ duration: 0.3, ease: "easeInOut" }}
         style={{ overflow: "hidden", pointerEvents: isZenMode ? "none" : undefined }}
       >
-        <div className="bottom-bar__cluster bottom-bar__cluster--primary">
-          {analysisMode ? (
-            <>
-              <ActionButton
-                icon="⏮"
-                label={t(locale, "analysis.start")}
-                compact={!bottomBarExpanded}
-                onClick={() => {
-                  setAnalysisAutoplay(false);
-                  setAnalysisCursor(0);
-                }}
-              />
-              <ActionButton
-                icon="◀"
-                label={t(locale, "analysis.previous")}
-                compact={!bottomBarExpanded}
-                disabled={currentPly <= 0}
-                onClick={() => {
-                  setAnalysisAutoplay(false);
-                  setAnalysisCursor(currentPly - 1);
-                }}
-              />
-              <ActionButton
-                icon={analysisAutoplay ? "⏸" : "▶"}
-                label={t(locale, analysisAutoplay ? "analysis.pause" : "analysis.play")}
-                compact={!bottomBarExpanded}
-                tone="primary"
-                onClick={() => setAnalysisAutoplay(!analysisAutoplay)}
-              />
-              <ActionButton
-                icon="▶"
-                label={t(locale, "analysis.next")}
-                compact={!bottomBarExpanded}
-                disabled={currentPly >= session.moveEntries.length}
-                onClick={() => {
-                  setAnalysisAutoplay(false);
-                  setAnalysisCursor(currentPly + 1);
-                }}
-              />
-              <ActionButton
-                icon="⏭"
-                label={t(locale, "analysis.end")}
-                compact={!bottomBarExpanded}
-                onClick={() => {
-                  setAnalysisAutoplay(false);
-                  setAnalysisCursor(session.moveEntries.length);
-                }}
-              />
-              <ActionButton
-                icon="↩"
-                label={t(locale, "analysis.exit")}
-                compact={!bottomBarExpanded}
-                onClick={() => {
-                  setAnalysisAutoplay(false);
-                  setAnalysisCursor(null);
-                }}
-              />
-            </>
-          ) : (
-            <>
-              <ActionButton
-                icon="＋"
-                label={t(locale, "hud.newGame")}
-                compact={false}
-                tone="primary"
-                onClick={openNewGameSheet}
-              />
-              <ActionButton
-                icon="↺"
-                label={t(locale, "hud.undo")}
-                compact={false}
-                disabled={!session.snapshot.canUndo}
-                onClick={() => void undo()}
-              />
-              <ActionButton
-                icon="↻"
-                label={t(locale, "hud.redo")}
-                compact={!bottomBarExpanded}
-                disabled={!session.snapshot.canRedo}
-                onClick={() => void redo()}
-              />
-              <ActionButton
-                icon="💡"
-                label={t(locale, "hud.hint")}
-                compact={!bottomBarExpanded}
-                disabled={isHintDisabled}
-                loading={enginePhase === "thinking" && session.snapshot.sideToMove === session.playerColor}
-                onClick={() => void requestHint()}
-              />
-            </>
-          )}
-        </div>
-        <div className="bottom-bar__cluster bottom-bar__cluster--utility">
-          <ActionButton
-            icon={isZenMode ? "◎" : "○"}
-            label={t(locale, "hud.zen")}
-            compact={!bottomBarExpanded}
-            onClick={() => setIsZenMode((v) => !v)}
-          />
-          <ActionButton
-            icon="🎥"
-            label={t(locale, "hud.camera")}
-            compact={!bottomBarExpanded}
-            onClick={() => {
-              startTransition(() => {
-                setCameraPickerOpen((value) => {
-                  if (!value) {
-                    setMenuOpen(false);
-                    setHistoryOpen(false);
-                    setNewGameOpen(false);
-                  }
-                  return !value;
-                });
-              });
-            }}
-          />
-          <ActionButton
-            icon="☰"
-            label={t(locale, "hud.menu")}
-            compact={!bottomBarExpanded}
-            onClick={() => {
-              startTransition(() => {
-                setMenuOpen((value) => {
-                  if (!value) {
-                    setCameraPickerOpen(false);
-                    setHistoryOpen(false);
-                    setNewGameOpen(false);
-                  }
-                  return !value;
-                });
-              });
-            }}
-          />
-          <button
-            className="bar-toggle bottom-bar__toggle"
-            type="button"
-            aria-label={t(locale, bottomBarExpanded ? "panel.close" : "hud.expandActions")}
-            onClick={() => {
-              startTransition(() => {
-                setBottomBarExpanded((value) => !value);
-              });
-            }}
+        {isMobileShell ? (
+          <div
+            className="bottom-bar__cluster bottom-bar__cluster--primary"
+            data-shell-dock="mobile"
+            data-shell-layout="icon-only"
+            data-testid="shell-mobile-dock"
           >
-            {bottomBarExpanded ? "−" : "+"}
-          </button>
-        </div>
+            {[...primaryShellActionSpecs, ...utilityShellActionSpecs].map((spec) =>
+              renderShellAction(spec, "mobile"),
+            )}
+          </div>
+        ) : (
+          <>
+            <div className="bottom-bar__cluster bottom-bar__cluster--primary" data-shell-dock="desktop-primary">
+              {primaryShellActionSpecs.map((spec) => renderShellAction(spec, "desktop"))}
+            </div>
+            <div className="bottom-bar__cluster bottom-bar__cluster--utility" data-shell-dock="desktop-utility">
+              {utilityShellActionSpecs.map((spec) => renderShellAction(spec, "desktop"))}
+              <button
+                className="bar-toggle bottom-bar__toggle"
+                data-testid="shell-bottom-toggle"
+                type="button"
+                aria-label={t(locale, bottomBarExpanded ? "panel.close" : "hud.expandActions")}
+                onClick={() => {
+                  startTransition(() => {
+                    setBottomBarExpanded((value) => !value);
+                  });
+                }}
+              >
+                {bottomBarExpanded ? "−" : "+"}
+              </button>
+            </div>
+          </>
+        )}
       </motion.section>
 
       <AnimatePresence>
         {cameraPickerOpen && (
-          <BaseOverlay onClose={() => setCameraPickerOpen(false)}>
+          <BaseOverlay
+            blockInteraction
+            dismissibleBackdrop
+            onClose={closeCameraPicker}
+            showScrim={false}
+            testId="camera-overlay"
+          >
             <CameraPickerPanel
               cameraPreset={cameraPreset}
+              presentation={cameraPresentation}
               presets={CAMERA_PRESETS.map((preset) => ({
                 id: preset.id,
                 icon: preset.icon,
@@ -927,9 +1632,11 @@ function App() {
               }))}
               title={t(locale, "hud.camera")}
               kicker={t(locale, "camera.kicker")}
+              rootTestId="camera-panel"
+              gridTestId="camera-panel-grid"
               onSelectPreset={(preset) => {
                 setCameraPreset(preset);
-                setCameraPickerOpen(false);
+                closeCameraPicker();
               }}
             />
           </BaseOverlay>
@@ -938,344 +1645,96 @@ function App() {
 
       <AnimatePresence>
         {menuOpen && (
-          <BaseOverlay onClose={() => setMenuOpen(false)}>
+          <BaseOverlay onClose={closeMenu} testId="shell-menu-overlay">
             <motion.aside
               className="menu-drawer"
-              initial={{ x: "110%", opacity: 0 }}
-              animate={{ x: 0, opacity: 1 }}
-              exit={{ x: "110%", opacity: 0 }}
-              transition={{ type: "spring", stiffness: 300, damping: 36 }}
+              role="dialog"
+              aria-modal="true"
+              aria-label={t(locale, "hud.menu")}
+              data-menu-layout={isMobileShell ? "mobile" : "desktop"}
+              data-menu-view={menuView}
+              data-shell-mode={shellMode}
+              data-testid="shell-menu"
+              initial={menuDrawerMotion.initial}
+              animate={menuDrawerMotion.animate}
+              exit={menuDrawerMotion.exit}
+              transition={menuDrawerMotion.transition}
               style={{ pointerEvents: "auto" }}
             >
               <div className="menu-drawer__shell">
                 <div className="panel-header menu-drawer__header">
                   <div className="panel-header__cluster">
-                    <span className="panel-header__glyph" aria-hidden="true">
-                      ☰
-                    </span>
+                    {!isMobileShell || menuView === "root" ? (
+                      <span className="panel-header__glyph" aria-hidden="true">
+                        ☰
+                      </span>
+                    ) : (
+                      <button
+                        className="ghost-icon-button"
+                        data-testid="shell-menu-back"
+                        type="button"
+                        aria-label={t(locale, "analysis.exit")}
+                        onClick={() => setMenuView("root")}
+                      >
+                        ←
+                      </button>
+                    )}
                     <div>
                       <p className="panel-kicker">{t(locale, "menu.kicker")}</p>
-                      <h2>{t(locale, "hud.menu")}</h2>
-                      <p className="menu-drawer__subtitle">{historySessionSubtitle}</p>
+                      <h2>
+                        {menuView === "analysis"
+                          ? t(locale, "section.analysis.title")
+                          : menuView === "visual"
+                            ? t(locale, "menu.settings")
+                            : menuView === "library"
+                              ? t(locale, "section.library.title")
+                              : t(locale, "hud.menu")}
+                      </h2>
+                      <p className="menu-drawer__subtitle">
+                        {menuView === "analysis"
+                          ? analysisSectionSubtitle
+                          : menuView === "visual"
+                            ? settingsSectionSubtitle
+                            : menuView === "library"
+                              ? librarySectionSubtitle
+                              : historySessionSubtitle}
+                      </p>
                     </div>
                   </div>
                   <div className="panel-header__meta">
                     <span className={`status-pill status-pill--${enginePhase}`}>{t(locale, getStatusKey(enginePhase))}</span>
                     <button
                       className="ghost-icon-button"
+                      data-testid="shell-menu-close"
                       type="button"
                       aria-label={t(locale, "panel.close")}
-                      onClick={() => setMenuOpen(false)}
+                      onClick={closeMenu}
                     >
                       ×
                     </button>
                   </div>
                 </div>
-                <div className="menu-drawer__scroll">
-
-                  <MenuSection
-                    badge={analysisSummaryCount > 0 ? String(analysisSummaryCount) : undefined}
-                    subtitle={analysisSectionSubtitle}
-                    title={t(locale, "section.analysis.title")}
-                    tone="analysis"
-                  >
-                    {session.moveEntries.length > 0 ? (
-                      <div className="inline-actions">
-                        <button
-                          className="primary-button"
-                          type="button"
-                          disabled={session.moveEntries.length === 0}
-                          onClick={() => void enterAnalysis()}
-                        >
-                          {analysisProgress ? t(locale, "analysis.running") : t(locale, "analysis.open")}
-                        </button>
-                        <button
-                          className="ghost-button"
-                          type="button"
-                          disabled={session.moveEntries.length === 0 || !!analysisProgress}
-                          onClick={() => void runAnalysis()}
-                        >
-                          {t(locale, "panel.analysis.run")}
-                        </button>
-                      </div>
-                    ) : null}
-                    <AnalysisSummaryView summary={session.analysisSummary} locale={locale} />
-                  </MenuSection>
-
-                  <MenuSection
-                    subtitle={settingsSectionSubtitle}
-                    title={t(locale, "menu.settings")}
-                    tone="settings"
-                  >
-                    <div className="settings-stack">
-                      <div className="settings-group">
-                        <h3>{t(locale, "menu.quality")}</h3>
-                        <div className="chip-row">
-                          {QUALITY_PRESETS.map((option) => {
-                            if (option.id === "auto") {
-                              return (
-                                <ChipButton
-                                  key={option.id}
-                                  active={qualityMode === "auto"}
-                                  onClick={() => {
-                                    void setQualityMode("auto");
-                                  }}
-                                >
-                                  {t(locale, option.labelKey)}
-                                </ChipButton>
-                              );
-                            }
-
-                            return (
-                              <ChipButton
-                                key={option.id}
-                                active={qualityMode === "manual" && manualQualityTier === option.tier}
-                                onClick={() => {
-                                  void setQualityTier(option.tier);
-                                }}
-                              >
-                                {t(locale, option.labelKey)}
-                              </ChipButton>
-                            );
-                          })}
-                        </div>
-                      </div>
-
-                      <div className="settings-group">
-                        <h3>{t(locale, "menu.coordinates")}</h3>
-                        <div className="chip-row">
-                          <ChipButton
-                            active={session.settings.showCoordinates}
-                            onClick={() => void setShowCoordinates(true)}
-                          >
-                            {t(locale, "menu.coordinates.show")}
-                          </ChipButton>
-                          <ChipButton
-                            active={!session.settings.showCoordinates}
-                            onClick={() => void setShowCoordinates(false)}
-                          >
-                            {t(locale, "menu.coordinates.hide")}
-                          </ChipButton>
-                        </div>
-                      </div>
-
-                      <div className="settings-group">
-                        <h3>{t(locale, "menu.animation")}</h3>
-                        <div className="chip-row">
-                          {(["normal", "reduced", "off"] as const).map((mode) => (
-                            <ChipButton
-                              key={mode}
-                              active={session.settings.animationMode === mode}
-                              onClick={() => void setAnimationMode(mode)}
-                            >
-                              {t(locale, `animation.${mode}`)}
-                            </ChipButton>
-                          ))}
-                        </div>
-                      </div>
-
-                      <div className="settings-group">
-                        <h3>{t(locale, "menu.defaultView")}</h3>
-                        <div className="chip-row">
-                          {(["3d", "2d"] as const).map((mode) => (
-                            <ChipButton
-                              key={mode}
-                              active={session.settings.defaultViewMode === mode}
-                              onClick={() => void setDefaultViewMode(mode)}
-                            >
-                              {t(locale, mode === "3d" ? "view.3d" : "view.2d")}
-                            </ChipButton>
-                          ))}
-                        </div>
-                      </div>
-
-                      <div className="settings-group">
-                        <h3>{t(locale, "menu.cameraSensitivity")}</h3>
-                        <div className="slider-block">
-                          <label>
-                            <span>{t(locale, "menu.cameraSensitivity.rotate")}</span>
-                            <strong>{formatSensitivityValue(session.settings.cameraSensitivity.rotate)}</strong>
-                            <input
-                              aria-label={t(locale, "menu.cameraSensitivity.rotate")}
-                              max={1.75}
-                              min={0.5}
-                              step={0.25}
-                              type="range"
-                              value={session.settings.cameraSensitivity.rotate}
-                              onChange={(event) => {
-                                void setCameraSensitivity({
-                                  ...session.settings.cameraSensitivity,
-                                  rotate: Number(event.target.value),
-                                });
-                              }}
-                            />
-                          </label>
-                          <label>
-                            <span>{t(locale, "menu.cameraSensitivity.zoom")}</span>
-                            <strong>{formatSensitivityValue(session.settings.cameraSensitivity.zoom)}</strong>
-                            <input
-                              aria-label={t(locale, "menu.cameraSensitivity.zoom")}
-                              max={1.75}
-                              min={0.5}
-                              step={0.25}
-                              type="range"
-                              value={session.settings.cameraSensitivity.zoom}
-                              onChange={(event) => {
-                                void setCameraSensitivity({
-                                  ...session.settings.cameraSensitivity,
-                                  zoom: Number(event.target.value),
-                                });
-                              }}
-                            />
-                          </label>
-                        </div>
-                      </div>
-
-                      <div className="settings-group">
-                        <h3>{t(locale, "panel.themes.title")}</h3>
-                        <div className="theme-grid">
-                          {themes.map((option) => (
-                            <button
-                              className={`theme-card ${session.settings.themeId === option.id ? "is-selected" : ""}`}
-                              key={option.id}
-                              type="button"
-                              onClick={() => void setTheme(option.id)}
-                            >
-                              <strong>{option.label}</strong>
-                              <span className="theme-swatch-row">
-                                <i style={{ background: option.boardLight }} />
-                                <i style={{ background: option.boardDark }} />
-                                <i style={{ background: option.highlightPrimary }} />
-                              </span>
-                            </button>
-                          ))}
-                        </div>
-                      </div>
-
-                      <div className="settings-group">
-                        <h3>{t(locale, "panel.language.title")}</h3>
-                        <div className="chip-row">
-                          {locales.map((option) => (
-                            <ChipButton
-                              key={option}
-                              active={session.settings.locale === option}
-                              onClick={() => void setLocale(option)}
-                            >
-                              {getLocaleLabel(option)}
-                            </ChipButton>
-                          ))}
-                        </div>
-                      </div>
-
-                      <div className="inline-actions">
-                        <button className="ghost-button" type="button" onClick={() => void toggleOrientation()}>
-                          {t(locale, "hud.flip")}
-                        </button>
-                      </div>
-                    </div>
-                  </MenuSection>
-
-                  <MenuSection
-                    badge={saveSlots.length > 0 ? String(saveSlots.length) : undefined}
-                    subtitle={librarySectionSubtitle}
-                    title={t(locale, "section.library.title")}
-                    tone="library"
-                  >
-                    {autosave ? (
-                      <article className="save-row save-row--autosave">
-                        <span className="save-row__icon" aria-hidden="true">
-                          ↺
-                        </span>
-                        <div className="save-row__copy">
-                          <span className="save-row__eyebrow">{t(locale, "section.library.title")}</span>
-                          <strong>{t(locale, "panel.saveLoad.autosave")}</strong>
-                          <span>{autosaveTimestamp}</span>
-                          <small>{buildSaveSummary(autosave.session, autosave.updatedAt, locale)}</small>
-                        </div>
-                        <div className="save-row__actions">
-                          {canResumeSession(autosave.session) ? (
-                            <button className="ghost-button save-action-button" data-icon="▶" type="button" onClick={() => void resumeSavedSession(restoreAutosave)}>
-                              {t(locale, "save.restore")}
-                            </button>
-                          ) : null}
-                          {canAnalyzeSession(autosave.session) ? (
-                            <button
-                              className="ghost-button save-action-button"
-                              data-icon="∿"
-                              type="button"
-                              onClick={() => void openSavedAnalysis(autosave.session, restoreAutosave)}
-                            >
-                              {t(locale, "analysis.open")}
-                            </button>
-                          ) : null}
-                          <button className="ghost-button save-action-button" data-icon="↗" type="button" onClick={() => void handleExportSession(autosave.session, "autosave")}>
-                            {t(locale, "hud.export")}
-                          </button>
-                        </div>
-                      </article>
-                    ) : null}
-
-                    <div className="inline-actions inline-actions--library">
-                      <button className="primary-button library-action-button" data-icon="+" type="button" onClick={() => void createManualSave()}>
-                        {t(locale, "panel.saveLoad.create")}
-                      </button>
-                      <button className="ghost-button library-action-button" data-icon="↧" type="button" onClick={() => fileInputRef.current?.click()}>
-                        {t(locale, "hud.import")}
-                      </button>
-                      <button className="ghost-button library-action-button" data-icon="↗" type="button" onClick={() => void handleExportSession(session)}>
-                        {t(locale, "hud.export")}
-                      </button>
-                    </div>
-
-                    <div className="save-list">
-                      {saveSlots.map((save) => (
-                        <article className="save-row" key={save.id}>
-                          <span className="save-row__icon" aria-hidden="true">
-                            ◫
-                          </span>
-                          <div className="save-row__copy">
-                            <strong>{save.label}</strong>
-                            <span>{formatRelativeTimestamp(save.updatedAt, locale)}</span>
-                            <small>{buildSaveSummary(save.session, save.updatedAt, locale)}</small>
-                          </div>
-                          <div className="save-row__actions">
-                            {canResumeSession(save.session) ? (
-                              <button
-                                className="ghost-button save-action-button"
-                                data-icon="▶"
-                                type="button"
-                                onClick={() => void resumeSavedSession(() => loadManualSave(save.id!))}
-                              >
-                                {t(locale, "save.continue")}
-                              </button>
-                            ) : null}
-                            {canAnalyzeSession(save.session) ? (
-                              <button
-                                className="ghost-button save-action-button"
-                                data-icon="∿"
-                                type="button"
-                                onClick={() => void openSavedAnalysis(save.session, () => loadManualSave(save.id!))}
-                              >
-                                {t(locale, "analysis.open")}
-                              </button>
-                            ) : null}
-                            <button
-                              className="ghost-button save-action-button"
-                              data-icon="↗"
-                              type="button"
-                              onClick={() => void handleExportSession(save.session, save.label)}
-                            >
-                              {t(locale, "hud.export")}
-                            </button>
-                            <button className="ghost-button save-action-button" data-icon="×" type="button" onClick={() => void deleteManualSave(save.id!)}>
-                              {t(locale, "panel.saveLoad.delete")}
-                            </button>
-                          </div>
-                        </article>
-                      ))}
-                      {saveSlots.length === 0 ? <p className="muted-copy">{t(locale, "panel.saveLoad.empty")}</p> : null}
-                    </div>
-                  </MenuSection>
+                <div
+                  className="menu-drawer__scroll"
+                  data-menu-layout={isMobileShell ? "mobile" : "desktop"}
+                  data-menu-view={menuView}
+                  data-testid={`shell-menu-view-${menuView}`}
+                >
+                  {isMobileShell
+                    ? menuView === "analysis"
+                      ? analysisMenuSection
+                      : menuView === "visual"
+                        ? visualMenuSection
+                        : menuView === "library"
+                          ? libraryMenuSection
+                          : mobileMenuRoot
+                    : (
+                        <>
+                          {analysisMenuSection}
+                          {visualMenuSection}
+                          {libraryMenuSection}
+                        </>
+                      )}
                 </div>
               </div>
             </motion.aside>
@@ -1285,8 +1744,12 @@ function App() {
 
       <AnimatePresence>
         {newGameOpen && (
-          <BaseOverlay onClose={() => setNewGameOpen(false)}>
-            <PresenceAwareNewGameSheet key="new-game-sheet" ariaLabel={t(locale, "panel.newGame.title")}>
+          <BaseOverlay onClose={() => setNewGameOpen(false)} testId="new-game-overlay">
+            <PresenceAwareNewGameSheet
+              key="new-game-sheet"
+              ariaLabel={t(locale, "panel.newGame.title")}
+              presentation={newGamePresentation}
+            >
               <div className="panel-header panel-header--sheet">
                 <div className="panel-header__cluster">
                   <span className="panel-header__glyph" aria-hidden="true">
@@ -1309,113 +1772,117 @@ function App() {
                 </div>
               </div>
 
-              <div className="settings-group">
-                <h3>{t(locale, "newGame.color")}</h3>
-                <div className="chip-row chip-row--three">
-                  {(["white", "random", "black"] as const).map((colorChoice) => (
-                    <ChipButton
-                      key={colorChoice}
-                      active={newGameColor === colorChoice}
-                      onClick={() => setNewGameColor(colorChoice)}
-                    >
-                      {t(locale, `newGame.color.${colorChoice}`)}
-                    </ChipButton>
-                  ))}
+              <div className="new-game-sheet__content">
+                <div className="settings-group">
+                  <h3>{t(locale, "newGame.color")}</h3>
+                  <div className="chip-row chip-row--three">
+                    {(["white", "random", "black"] as const).map((colorChoice) => (
+                      <ChipButton
+                        key={colorChoice}
+                        active={newGameColor === colorChoice}
+                        onClick={() => setNewGameColor(colorChoice)}
+                      >
+                        {t(locale, `newGame.color.${colorChoice}`)}
+                      </ChipButton>
+                    ))}
+                  </div>
                 </div>
-              </div>
 
-              <div className="settings-group">
-                <h3>{t(locale, "newGame.level")}</h3>
-                <div className="slider-block slider-block--difficulty">
-                  <div className="difficulty-scale__header">
-                    <strong className="difficulty-scale__title">{selectedNewGameDifficulty.label}</strong>
-                    <div className="difficulty-scale__legend">
-                      <span className="difficulty-scale__legend-label">{t(locale, "newGame.elo")}</span>
-                      <span className="difficulty-scale__tooltip">
-                        <button
-                          className="difficulty-scale__tooltip-trigger"
-                          type="button"
-                          aria-label={t(locale, "newGame.eloHelpLabel")}
-                          aria-describedby="difficulty-elo-tooltip"
-                        >
-                          ?
-                        </button>
-                        <span className="difficulty-scale__tooltip-bubble" id="difficulty-elo-tooltip" role="tooltip">
-                          {t(locale, "newGame.eloHelp")}
+                <div className="settings-group">
+                  <h3>{t(locale, "newGame.level")}</h3>
+                  <div className="slider-block slider-block--difficulty">
+                    <div className="difficulty-scale__header">
+                      <strong className="difficulty-scale__title">{selectedNewGameDifficulty.label}</strong>
+                      <div className="difficulty-scale__legend">
+                        <span className="difficulty-scale__legend-label">{t(locale, "newGame.elo")}</span>
+                        <span className="difficulty-scale__tooltip">
+                          <button
+                            className="difficulty-scale__tooltip-trigger"
+                            type="button"
+                            aria-label={t(locale, "newGame.eloHelpLabel")}
+                            aria-describedby="difficulty-elo-tooltip"
+                          >
+                            ?
+                          </button>
+                          <span className="difficulty-scale__tooltip-bubble" id="difficulty-elo-tooltip" role="tooltip">
+                            {t(locale, "newGame.eloHelp")}
+                          </span>
                         </span>
-                      </span>
+                      </div>
                     </div>
-                  </div>
-                  <input
-                    aria-label={t(locale, "newGame.level")}
-                    aria-valuetext={formatDifficultyAriaValue(selectedNewGameDifficulty)}
-                    max={difficultyPresets.length - 1}
-                    min={0}
-                    type="range"
-                    value={selectedDifficultyIndex}
-                    onChange={(event) => {
-                      const index = Number(event.target.value);
-                      setNewGameDifficultyId(difficultyPresets[index]?.id ?? difficultyPresets[0].id);
-                    }}
-                  />
-                  <div className="difficulty-scale__footer">
-                    <div className="difficulty-scale__ticks" aria-hidden="true">
-                      {difficultyPresets.map((preset, index) => (
-                        <span
-                          key={preset.id}
-                          className={preset.id === newGameDifficultyId ? "is-active" : undefined}
-                          style={getDifficultyStopStyle(index, difficultyPresets.length)}
-                        />
-                      ))}
-                    </div>
-                    <div className="slider-labels slider-labels--difficulty" aria-hidden="true">
-                      {difficultyPresets.map((preset, index) => (
-                        <span
-                          key={preset.id}
-                          className={preset.id === newGameDifficultyId ? "is-active" : undefined}
-                          style={getDifficultyStopStyle(index, difficultyPresets.length)}
-                        >
-                          {formatDifficultyTickLabel(preset)}
-                        </span>
-                      ))}
+                    <input
+                      aria-label={t(locale, "newGame.level")}
+                      aria-valuetext={formatDifficultyAriaValue(selectedNewGameDifficulty)}
+                      max={difficultyPresets.length - 1}
+                      min={0}
+                      type="range"
+                      value={selectedDifficultyIndex}
+                      onChange={(event) => {
+                        const index = Number(event.target.value);
+                        setNewGameDifficultyId(difficultyPresets[index]?.id ?? difficultyPresets[0].id);
+                      }}
+                    />
+                    <div className="difficulty-scale__footer">
+                      <div className="difficulty-scale__ticks" aria-hidden="true">
+                        {difficultyPresets.map((preset, index) => (
+                          <span
+                            key={preset.id}
+                            className={preset.id === newGameDifficultyId ? "is-active" : undefined}
+                            style={getDifficultyStopStyle(index, difficultyPresets.length)}
+                          />
+                        ))}
+                      </div>
+                      <div className="slider-labels slider-labels--difficulty" aria-hidden="true">
+                        {difficultyPresets.map((preset, index) => (
+                          <span
+                            key={preset.id}
+                            className={preset.id === newGameDifficultyId ? "is-active" : undefined}
+                            style={getDifficultyStopStyle(index, difficultyPresets.length)}
+                          >
+                            {formatDifficultyTickLabel(preset)}
+                          </span>
+                        ))}
+                      </div>
                     </div>
                   </div>
                 </div>
-              </div>
 
-              <div className="settings-group">
-                <h3>{t(locale, "panel.clock.title")}</h3>
-                <div className="chip-row chip-row--clock" style={clockChoiceGridStyle}>
-                  {NEW_GAME_CLOCK_PRESETS.map((preset) => (
-                    <ChipButton
-                      key={getClockKey(preset)}
-                      active={selectedClockKey === getClockKey(preset)}
-                      onClick={() => setSelectedClockKey(getClockKey(preset))}
-                    >
-                      {formatClockChoiceLabel(preset, locale)}
+                <div className="settings-group">
+                  <h3>{t(locale, "panel.clock.title")}</h3>
+                  <div className="chip-row chip-row--clock" style={clockChoiceGridStyle}>
+                    {NEW_GAME_CLOCK_PRESETS.map((preset) => (
+                      <ChipButton
+                        key={getClockKey(preset)}
+                        active={selectedClockKey === getClockKey(preset)}
+                        onClick={() => setSelectedClockKey(getClockKey(preset))}
+                      >
+                        {formatClockChoiceLabel(preset, locale)}
+                      </ChipButton>
+                    ))}
+                    <ChipButton active={selectedClockKey === "custom"} onClick={() => setSelectedClockKey("custom")}>
+                      {t(locale, "panel.clock.custom")}
                     </ChipButton>
-                  ))}
-                  <ChipButton active={selectedClockKey === "custom"} onClick={() => setSelectedClockKey("custom")}>
-                    {t(locale, "panel.clock.custom")}
-                  </ChipButton>
-                </div>
-                {selectedClockKey === "custom" ? (
-                  <div className="custom-clock">
-                    <label>
-                      {t(locale, "panel.clock.minutes")}
-                      <input value={customMinutes} onChange={(event) => setCustomMinutes(event.target.value)} />
-                    </label>
-                    <label>
-                      {t(locale, "panel.clock.increment")}
-                      <input value={customIncrement} onChange={(event) => setCustomIncrement(event.target.value)} />
-                    </label>
                   </div>
-                ) : null}
+                  {selectedClockKey === "custom" ? (
+                    <div className="custom-clock">
+                      <label>
+                        {t(locale, "panel.clock.minutes")}
+                        <input value={customMinutes} onChange={(event) => setCustomMinutes(event.target.value)} />
+                      </label>
+                      <label>
+                        {t(locale, "panel.clock.increment")}
+                        <input value={customIncrement} onChange={(event) => setCustomIncrement(event.target.value)} />
+                      </label>
+                    </div>
+                  ) : null}
+                </div>
               </div>
 
-              <button className="primary-button primary-button--full" type="button" onClick={() => void applyNewGame()}>
-                {t(locale, "panel.newGame.confirm")}
-              </button>
+              <div className="new-game-sheet__footer">
+                <button className="primary-button primary-button--full" type="button" onClick={() => void applyNewGame()}>
+                  {t(locale, "panel.newGame.confirm")}
+                </button>
+              </div>
             </PresenceAwareNewGameSheet>
           </BaseOverlay>
         )}
@@ -1449,6 +1916,28 @@ function App() {
             </section>
           </BaseOverlay>
         )}
+      </AnimatePresence>
+
+      <AnimatePresence>
+        {checkAnchor ? (
+          <BaseOverlay onClose={() => {}} showScrim={false} blockInteraction={false}>
+            <motion.div
+              className="board-cue board-cue--check"
+              data-testid="check-cue"
+              key="check-cue"
+              style={getBoardCueStyle(checkAnchor)}
+              initial={{ scale: 0.85, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.92, opacity: 0 }}
+              transition={{ type: "spring", stiffness: 400, damping: 30 }}
+            >
+              <span className="board-cue__summary">
+                <span className="board-cue__glyph" aria-hidden="true">+</span>
+                <span className="board-cue__summary-text">{t(locale, "feedback.check")}</span>
+              </span>
+            </motion.div>
+          </BaseOverlay>
+        ) : null}
       </AnimatePresence>
 
       <AnimatePresence>
@@ -1852,33 +2341,6 @@ function getBoardCueStyle(anchor: { x: number; y: number }): CSSProperties {
   return {
     left: `${clampedX}px`,
     top: `${Math.max(24, anchor.y)}px`,
-  };
-}
-
-export function getPromotionPopupStyle(anchor: { x: number; y: number } | null): CSSProperties | undefined {
-  if (!anchor) {
-    return undefined;
-  }
-
-  const popupHalfWidth = 156;
-  const popupHeight = 196;
-  const edgePadding = 24;
-  const safeViewportWidth =
-    typeof window === "undefined" ? popupHalfWidth * 2 : Math.max(window.innerWidth, popupHalfWidth * 2);
-  const safeViewportHeight =
-    typeof window === "undefined"
-      ? popupHeight + edgePadding * 2
-      : Math.max(window.innerHeight, popupHeight + edgePadding * 2);
-  const placeBelow = anchor.y < popupHeight + edgePadding;
-  const clampedX = clamp(anchor.x, popupHalfWidth, Math.max(popupHalfWidth, safeViewportWidth - popupHalfWidth));
-  const clampedTop = placeBelow
-    ? clamp(anchor.y, edgePadding, Math.max(edgePadding, safeViewportHeight - popupHeight - edgePadding))
-    : clamp(anchor.y, popupHeight + edgePadding, Math.max(popupHeight + edgePadding, safeViewportHeight - edgePadding));
-
-  return {
-    left: `${clampedX}px`,
-    top: `${clampedTop}px`,
-    transform: placeBelow ? "translate(-50%, 0.75rem)" : "translate(-50%, calc(-100% - 0.75rem))",
   };
 }
 

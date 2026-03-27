@@ -21,9 +21,11 @@ interface ChessSceneProps {
   castlingTargets: Square[];
   hintMove: { from: Square; to: Square } | null;
   invalidMoveSquare: Square | null;
+  checkSquare?: Square | null;
   onSquareSelect: (square: Square) => void;
   onPromotionAnchorChange: (anchor: { x: number; y: number } | null) => void;
   onInvalidMoveAnchorChange: (anchor: { x: number; y: number } | null) => void;
+  onCheckAnchorChange?: (anchor: { x: number; y: number } | null) => void;
   onCastlingAnchorChange: (anchor: { x: number; y: number } | null) => void;
   onLoadStateChange?: (state: SceneLoadState) => void;
 }
@@ -39,9 +41,11 @@ export function ChessScene({
   castlingTargets,
   hintMove,
   invalidMoveSquare,
+  checkSquare,
   onSquareSelect,
   onPromotionAnchorChange,
   onInvalidMoveAnchorChange,
+  onCheckAnchorChange,
   onCastlingAnchorChange,
   onLoadStateChange,
 }: ChessSceneProps) {
@@ -50,6 +54,7 @@ export function ChessScene({
   const handleSquareSelect = useEffectEvent(onSquareSelect);
   const handlePromotionAnchorChange = useEffectEvent(onPromotionAnchorChange);
   const handleInvalidMoveAnchorChange = useEffectEvent(onInvalidMoveAnchorChange);
+  const handleCheckAnchorChange = useEffectEvent(onCheckAnchorChange ?? (() => undefined));
   const handleCastlingAnchorChange = useEffectEvent(onCastlingAnchorChange);
   const handleLoadStateChange = useEffectEvent(
     onLoadStateChange ?? (() => undefined),
@@ -59,6 +64,7 @@ export function ChessScene({
   // Anchor projection refs — updated on prop change and before every stage render.
   const promotionAnchorRef = useRef<AnchorProjection>({ square: null, yOffset: 1.15 });
   const invalidMoveAnchorRef = useRef<AnchorProjection>({ square: null, yOffset: 0.6 });
+  const checkAnchorRef = useRef<AnchorProjection>({ square: null, yOffset: 0.9 });
   const castlingAnchorRef = useRef<AnchorProjection>({ square: null, yOffset: 0.7 });
 
   // Project anchors when props change — single shot, no RAF loop
@@ -83,6 +89,18 @@ export function ChessScene({
       );
     }
   }, [invalidMoveSquare]);
+
+  useEffect(() => {
+    const square = checkSquare ?? null;
+    checkAnchorRef.current = { square, yOffset: 0.9 };
+    if (!square) {
+      handleCheckAnchorChange(null);
+    } else {
+      handleCheckAnchorChange(
+        stageRef.current?.projectSquareToViewport(square, 0.9) ?? null,
+      );
+    }
+  }, [checkSquare]);
 
   useEffect(() => {
     const square = castlingTargets.length > 0 ? castlingTargets[0] : null;
@@ -127,8 +145,9 @@ export function ChessScene({
     stage.setOnBeforeRender(() => {
       const promo = promotionAnchorRef.current;
       const invalid = invalidMoveAnchorRef.current;
+      const check = checkAnchorRef.current;
       const castling = castlingAnchorRef.current;
-      if (!promo.square && !invalid.square && !castling.square) {
+      if (!promo.square && !invalid.square && !check.square && !castling.square) {
         return;
       }
 
@@ -142,6 +161,12 @@ export function ChessScene({
         if (invalid.square) {
           handleInvalidMoveAnchorChange(
             stageRef.current?.projectSquareToViewport(invalid.square, invalid.yOffset) ?? null,
+          );
+        }
+
+        if (check.square) {
+          handleCheckAnchorChange(
+            stageRef.current?.projectSquareToViewport(check.square, check.yOffset) ?? null,
           );
         }
 

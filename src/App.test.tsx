@@ -59,47 +59,57 @@ vi.mock("./engine/EngineClient", () => ({
 
 vi.mock("./components/ChessScene", () => ({
   ChessScene: ({
+    checkSquare,
     onSquareSelect,
     onPromotionAnchorChange,
     onInvalidMoveAnchorChange,
+    onCheckAnchorChange,
     onLoadStateChange,
   }: {
+    checkSquare?: string | null;
     onSquareSelect: (square: "e2" | "e4" | "e5") => void;
     onPromotionAnchorChange?: (anchor: { x: number; y: number } | null) => void;
     onInvalidMoveAnchorChange?: (anchor: { x: number; y: number } | null) => void;
+    onCheckAnchorChange?: (anchor: { x: number; y: number } | null) => void;
     onLoadStateChange?: (state: { phase: string; progress: number; messageKey: string }) => void;
-  }) => (
-    <div>
-      <SceneBootReporter onLoadStateChange={onLoadStateChange} />
-      <button onClick={() => onSquareSelect("e2")}>Square e2</button>
-      <button onClick={() => onSquareSelect("e4")}>Square e4</button>
-      <button onClick={() => onSquareSelect("e5")}>Square e5</button>
-      <button onClick={() => onPromotionAnchorChange?.({ x: 160, y: 160 })}>Promotion anchor</button>
-      <button onClick={() => onInvalidMoveAnchorChange?.({ x: 160, y: 160 })}>Invalid anchor</button>
-      <button
-        onClick={() =>
-          onLoadStateChange?.({
-            phase: "loading",
-            progress: 68,
-            messageKey: "scene.loading.materials",
-          })
-        }
-      >
-        Scene loading
-      </button>
-      <button
-        onClick={() =>
-          onLoadStateChange?.({
-            phase: "ready",
-            progress: 100,
-            messageKey: "scene.loading.ready",
-          })
-        }
-      >
-        Scene ready
-      </button>
-    </div>
-  ),
+  }) => {
+    useEffect(() => {
+      onCheckAnchorChange?.(checkSquare ? { x: 200, y: 140 } : null);
+    }, [checkSquare, onCheckAnchorChange]);
+
+    return (
+      <div>
+        <SceneBootReporter onLoadStateChange={onLoadStateChange} />
+        <button onClick={() => onSquareSelect("e2")}>Square e2</button>
+        <button onClick={() => onSquareSelect("e4")}>Square e4</button>
+        <button onClick={() => onSquareSelect("e5")}>Square e5</button>
+        <button onClick={() => onPromotionAnchorChange?.({ x: 160, y: 160 })}>Promotion anchor</button>
+        <button onClick={() => onInvalidMoveAnchorChange?.({ x: 160, y: 160 })}>Invalid anchor</button>
+        <button
+          onClick={() =>
+            onLoadStateChange?.({
+              phase: "loading",
+              progress: 68,
+              messageKey: "scene.loading.materials",
+            })
+          }
+        >
+          Scene loading
+        </button>
+        <button
+          onClick={() =>
+            onLoadStateChange?.({
+              phase: "ready",
+              progress: 100,
+              messageKey: "scene.loading.ready",
+            })
+          }
+        >
+          Scene ready
+        </button>
+      </div>
+    );
+  },
 }));
 
 function SceneBootReporter({
@@ -199,6 +209,64 @@ describe("App integration", () => {
       expect(settings?.qualityMode).toBe("auto");
       expect(settings?.manualQualityTier).toBe(3);
     });
+  });
+
+  it("prefers the media-query shell mode over innerWidth snapshots and keeps the mobile menu modal", async () => {
+    const widthDescriptor = Object.getOwnPropertyDescriptor(window, "innerWidth");
+    const matchMediaDescriptor = Object.getOwnPropertyDescriptor(window, "matchMedia");
+
+    Object.defineProperty(window, "innerWidth", {
+      configurable: true,
+      value: 1280,
+    });
+
+    Object.defineProperty(window, "matchMedia", {
+      configurable: true,
+      value: vi.fn((query: string) => ({
+        matches: query === "(max-width: 899px)",
+        media: query,
+        onchange: null,
+        addEventListener: vi.fn(),
+        removeEventListener: vi.fn(),
+        addListener: vi.fn(),
+        removeListener: vi.fn(),
+        dispatchEvent: vi.fn(),
+      })),
+    });
+
+    try {
+      const { default: App } = await import("./App");
+      render(<App />);
+
+      await screen.findByText("Pipo Chess 3D");
+      expect(screen.getByTestId("shell-mobile-dock")).toBeInTheDocument();
+      expect(screen.queryByTestId("shell-action-zen")).not.toBeInTheDocument();
+
+      const menuButton = screen.getByTestId("shell-action-menu");
+      expect(menuButton).toHaveAttribute("data-label-visibility", "hidden");
+
+      fireEvent.click(menuButton);
+
+      const menuDialog = await screen.findByRole("dialog", { name: "Menu" });
+      expect(menuDialog).toHaveAttribute("aria-modal", "true");
+      expect(await screen.findByTestId("shell-menu-view-root")).toBeInTheDocument();
+      expect(screen.getByTestId("shell-menu-root-zen")).toBeInTheDocument();
+      expect(screen.getByTestId("shell-menu-nav-visual")).toBeInTheDocument();
+
+      fireEvent.click(screen.getByTestId("shell-menu-nav-visual"));
+
+      expect(await screen.findByTestId("shell-menu-view-visual")).toBeInTheDocument();
+    } finally {
+      if (widthDescriptor) {
+        Object.defineProperty(window, "innerWidth", widthDescriptor);
+      }
+
+      if (matchMediaDescriptor) {
+        Object.defineProperty(window, "matchMedia", matchMediaDescriptor);
+      } else {
+        delete (window as Partial<typeof window>).matchMedia;
+      }
+    }
   });
 
   it("ignores a stale engine response after confirming a replacement game", async () => {
@@ -490,7 +558,7 @@ describe("App integration", () => {
   });
 
   it("flips the promotion popup below the anchor near the top edge", async () => {
-    const { getPromotionPopupStyle } = await import("./App");
+    const { getPromotionPopupStyle } = await import("./utils/overlays");
     const widthDescriptor = Object.getOwnPropertyDescriptor(window, "innerWidth");
     const heightDescriptor = Object.getOwnPropertyDescriptor(window, "innerHeight");
 
@@ -529,13 +597,34 @@ describe("App integration", () => {
     fireEvent.click(screen.getByText("Square e2"));
     fireEvent.click(screen.getByText("Square e5"));
 
-    expect(await screen.findByText("Lance ilegal")).toBeInTheDocument();
+    expect(await screen.findAllByText("Lance ilegal")).toHaveLength(2);
+    expect(await screen.findByRole("alert")).toHaveTextContent("Lance ilegal");
 
     fireEvent.click(screen.getByText("Square e4"));
 
     await waitFor(() => {
       expect(engineClientMock.search).toHaveBeenCalledTimes(1);
     });
+  });
+
+  it("announces check with the existing notice toast pattern", async () => {
+    const { default: App } = await import("./App");
+    const { useGameStore } = await import("./state/gameStore");
+    const { sessionFromPgn } = await import("./game/gameService");
+    render(<App />);
+
+    await screen.findByText("Pipo Chess 3D");
+
+    act(() => {
+      useGameStore.setState((state) => ({
+        session: sessionFromPgn("1. e4 e5 2. Qh5 Nf6 3. Qxe5+", state.session.settings),
+      }));
+    });
+
+    await waitFor(() => {
+      expect(screen.getByRole("status")).toHaveTextContent("Xeque");
+    });
+    expect(await screen.findByTestId("check-cue")).toHaveTextContent("Xeque");
   });
 
   it("keeps or closes the new game sheet according to the replace dialog action", async () => {

@@ -28,23 +28,35 @@ export function ActionButton({
   icon,
   label,
   compact,
+  labelVisibility = "adaptive",
   disabled,
   loading,
   tone = "default",
+  actionId,
+  testId,
   onClick,
 }: {
   icon: string;
   label: string;
   compact: boolean;
+  labelVisibility?: "adaptive" | "always" | "hidden";
   disabled?: boolean;
   loading?: boolean;
   tone?: "default" | "primary" | "secondary";
+  actionId?: string;
+  testId?: string;
   onClick: () => void;
 }) {
+  const showLabel = labelVisibility === "always" || (labelVisibility === "adaptive" && !compact);
+
   return (
     <button
       className={`action-pill action-pill--${tone} ${compact ? "is-compact" : ""} ${loading ? "is-loading" : ""}`}
       aria-label={label}
+      data-action-id={actionId}
+      data-compact={compact ? "true" : "false"}
+      data-label-visibility={labelVisibility}
+      data-testid={testId}
       disabled={disabled}
       title={label}
       type="button"
@@ -53,7 +65,7 @@ export function ActionButton({
       <span className="action-pill__icon" aria-hidden="true">
         {loading ? "…" : icon}
       </span>
-      {!compact ? <strong className="action-pill__label">{label}</strong> : null}
+      {showLabel ? <strong className="action-pill__label">{label}</strong> : null}
     </button>
   );
 }

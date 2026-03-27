@@ -8,6 +8,7 @@ import {
   formatIllegalMoveDiagnosis,
   getCastlingTargetsForSquare,
   hydrateSession,
+  isSessionInCheck,
   redoTurn,
   sessionFromPgn,
   undoTurn,
@@ -98,6 +99,14 @@ describe("gameService", () => {
     const session = sessionFromPgn("1. f3 e5 2. g4 Qh4#", createNewSession().settings);
 
     expect(session.snapshot.status).toBe("checkmate");
+  });
+
+  it("detects when the side to move is in check without treating checkmate as check", () => {
+    const checkedSession = sessionFromPgn("1. e4 e5 2. Qh5 Nf6 3. Qxe5+", createDefaultSettings());
+    const matedSession = sessionFromPgn("1. f3 e5 2. g4 Qh4#", createDefaultSettings());
+
+    expect(isSessionInCheck(checkedSession)).toBe(true);
+    expect(isSessionInCheck(matedSession)).toBe(false);
   });
 
   it("detects threefold repetition from PGN", () => {
