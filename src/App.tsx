@@ -1,6 +1,7 @@
 import {
   type ComponentProps,
   startTransition,
+  useCallback,
   useDeferredValue,
   useEffect,
   useEffectEvent,
@@ -11,8 +12,8 @@ import {
   type ReactNode,
   type Ref,
 } from "react";
-import { AnimatePresence, motion, useIsPresent } from "framer-motion";
-import type { Color, PieceSymbol, Square } from "chess.js";
+import { AnimatePresence, motion, useIsPresent, useReducedMotion } from "framer-motion";
+import { type Color, type PieceSymbol, type Square } from "chess.js";
 import { soundService } from "./audio/soundService";
 import { haptics } from "./hooks/useHaptics";
 import {
@@ -32,10 +33,8 @@ import { difficultyPresets, getDifficultyPreset } from "./data/difficulties";
 import { getTheme, getThemeCssVariables, themes } from "./data/themes";
 import {
   deriveSessionAtPly,
-  diagnoseIllegalMove,
   formatIllegalMoveDiagnosis,
   getCheckedKingSquare,
-  isSessionInCheck,
 } from "./game/gameService";
 import { getLocaleLabel, t } from "./i18n";
 import { locales } from "./i18n/dictionaries";
@@ -46,23 +45,28 @@ import type {
   ClockConfig,
   EnginePhase,
   GameSession,
+  InteractionBlockReason,
   NewGameColorChoice,
   PositionEvaluation,
 } from "./types/game";
-import { fenToPieces } from "./utils/board";
-import { clamp, formatAbsoluteTimestamp, formatRelativeTimestamp } from "./utils/format";
+import { clamp, formatAbsoluteTimestamp, formatClock, formatRelativeTimestamp } from "./utils/format";
 import { exportTextContent, readTextFile, type ExportTextResult } from "./utils/files";
 import { getPromotionPopupStyle } from "./utils/overlays";
 
 type TranslationKey = Parameters<typeof t>[1];
 type ShellMode = "desktop" | "mobile";
 type MenuView = "root" | "analysis" | "visual" | "library";
+type OverlayMotionMode = "normal" | "reduced" | "off";
+type TransientToastTone = "notice" | "error" | "passive" | "checkmate";
+type BoardCueTone = "invalid" | "blocked" | "castling-blocked";
 type ShellActionSpec = Omit<ComponentProps<typeof ActionButton>, "compact" | "labelVisibility"> & {
   desktopCompact?: boolean;
   desktopLabelVisibility?: "adaptive" | "always" | "hidden";
   mobileVisible?: boolean;
 };
 const SHELL_MEDIA_QUERY = "(max-width: 899px)";
+const LOW_TIME_WARNING_MS = 30_000;
+const LOW_TIME_CRITICAL_MS = 10_000;
 
 const NEW_GAME_CLOCK_PRESETS = clockPresets;
 const CAMERA_PRESETS: Array<{ id: CameraPreset; icon: string; labelKey: TranslationKey }> = [
@@ -102,22 +106,25 @@ function getShellMode(): ShellMode {
 }
 
 function PresenceAwareOverlayBackdrop({
+  motionMode,
   onClick,
   visible,
 }: {
+  motionMode: OverlayMotionMode;
   onClick: () => void;
   visible: boolean;
 }) {
   const isPresent = useIsPresent();
+  const backdropMotion = getBackdropMotionProps(motionMode);
 
   return (
     <motion.div
       className={visible ? "overlay-scrim" : undefined}
       aria-hidden="true"
-      initial={{ opacity: 0 }}
-      animate={{ opacity: 1 }}
-      exit={{ opacity: 0 }}
-      transition={{ duration: 0.2 }}
+      initial={backdropMotion.initial}
+      animate={backdropMotion.animate}
+      exit={backdropMotion.exit}
+      transition={backdropMotion.transition}
       style={{
         position: "absolute",
         inset: 0,
@@ -131,6 +138,7 @@ function PresenceAwareOverlayBackdrop({
 
 function BaseOverlay({
   children,
+  motionMode,
   onClose,
   showScrim = true,
   blockInteraction = showScrim,
@@ -138,6 +146,7 @@ function BaseOverlay({
   testId,
 }: {
   children: ReactNode;
+  motionMode: OverlayMotionMode;
   onClose: () => void;
   showScrim?: boolean;
   blockInteraction?: boolean;
@@ -160,7 +169,9 @@ function BaseOverlay({
         pointerEvents: blockInteraction ? "auto" : "none",
       }}
     >
-      {dismissibleBackdrop ? <PresenceAwareOverlayBackdrop onClick={onClose} visible={showScrim} /> : null}
+      {dismissibleBackdrop ? (
+        <PresenceAwareOverlayBackdrop motionMode={motionMode} onClick={onClose} visible={showScrim} />
+      ) : null}
       {children}
     </div>
   );
@@ -169,27 +180,16 @@ function BaseOverlay({
 function PresenceAwareNewGameSheet({
   ariaLabel,
   children,
+  motionMode,
   presentation,
 }: {
   ariaLabel: string;
   children: ReactNode;
+  motionMode: OverlayMotionMode;
   presentation: "desktop-modal" | "mobile-sheet";
 }) {
   const isPresent = useIsPresent();
-  const motionProps =
-    presentation === "mobile-sheet"
-      ? {
-          initial: { y: "110%", opacity: 0 },
-          animate: { y: 0, opacity: 1 },
-          exit: { y: "110%", opacity: 0 },
-          transition: { type: "spring" as const, stiffness: 320, damping: 36 },
-        }
-      : {
-          initial: { scale: 0.92, opacity: 0 },
-          animate: { scale: 1, opacity: 1 },
-          exit: { scale: 0.95, opacity: 0 },
-          transition: { type: "spring" as const, stiffness: 300, damping: 34 },
-        };
+  const motionProps = getSheetMotionProps(motionMode, presentation);
 
   return (
     <motion.section
@@ -211,6 +211,7 @@ function PresenceAwareNewGameSheet({
 }
 
 function App() {
+  const systemPrefersReducedMotion = useReducedMotion();
   const {
     booted,
     enginePhase,
@@ -223,6 +224,9 @@ function App() {
     castlingTargets,
     hintMove,
     pendingPromotion,
+    currentRepetitionCount,
+    fiftyMoveRulePressure,
+    lowTimeState,
     analysisCursor,
     analysisAutoplay,
     analysisProgress,
@@ -245,6 +249,9 @@ function App() {
     setCameraSensitivity,
     setQualityMode,
     setQualityTier,
+    setSoundEnabled,
+    setSoundVolume,
+    setHapticsEnabled,
     setCameraPreset,
     setAnalysisCursor,
     setAnalysisAutoplay,
@@ -274,12 +281,18 @@ function App() {
   const [customMinutes, setCustomMinutes] = useState("10");
   const [customIncrement, setCustomIncrement] = useState("0");
   const [isZenMode, setIsZenMode] = useState(false);
-  const [transientNotice, setTransientNotice] = useState<string | null>(null);
-  const [transientError, setTransientError] = useState<string | null>(null);
+  const [transientToast, setTransientToast] = useState<{
+    icon: string;
+    message: string;
+    tone: TransientToastTone;
+  } | null>(null);
   const [promotionAnchor, setPromotionAnchor] = useState<{ x: number; y: number } | null>(null);
+  const [promotionSelection, setPromotionSelection] = useState<(typeof PROMOTION_CHOICES)[number] | null>(null);
   const [invalidMoveSquare, setInvalidMoveSquare] = useState<Square | null>(null);
   const [invalidMoveSummary, setInvalidMoveSummary] = useState<string | null>(null);
   const [invalidMoveDetail, setInvalidMoveDetail] = useState<string | null>(null);
+  const [invalidMoveTone, setInvalidMoveTone] = useState<BoardCueTone>("invalid");
+  const [invalidMoveIcon, setInvalidMoveIcon] = useState("!");
   const [invalidMoveExpanded, setInvalidMoveExpanded] = useState(false);
   const [invalidMoveAnchor, setInvalidMoveAnchor] = useState<{ x: number; y: number } | null>(null);
   const [checkAnchor, setCheckAnchor] = useState<{ x: number; y: number } | null>(null);
@@ -288,6 +301,9 @@ function App() {
   const appShellRef = useRef<HTMLDivElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const lastFinishedGameRef = useRef<string | null>(null);
+  const lowTimeToastRef = useRef<{ b: boolean; w: boolean }>({ w: false, b: false });
+  const repetitionToastShownRef = useRef(false);
+  const fiftyMoveToastShownRef = useRef<"normal" | "warning" | "critical" | "draw">("normal");
   const deferredMoves = useDeferredValue(session.snapshot.moveList);
   const locale = session.settings.locale;
   const theme = getTheme(session.settings.themeId);
@@ -297,12 +313,16 @@ function App() {
   const activeDifficulty = getDifficultyPreset(session.settings.difficultyId);
   const boardSession = analysisCursor === null ? session : deriveSessionAtPly(session, analysisCursor);
   const analysisMode = analysisCursor !== null;
-  const toastMessage = restoreNotice ?? transientNotice ?? transientError ?? lastError;
-  const isErrorToast = !restoreNotice && !transientNotice && !!(transientError || lastError);
+  const motionMode = resolveOverlayMotionMode(session.settings.animationMode, !!systemPrefersReducedMotion);
+  const activeToast = restoreNotice
+    ? { icon: "↺", message: restoreNotice, tone: "notice" as const }
+    : transientToast ??
+      (lastError ? { icon: "!", message: lastError, tone: "error" as const } : null);
   const currentPly = analysisCursor ?? session.moveEntries.length;
   const currentEvaluation = getEvaluationForPly(session.analysisSummary?.evaluationsByPly, currentPly);
-  const sessionInCheck = isSessionInCheck(session);
   const checkedKingSquare = getCheckedKingSquare(boardSession);
+  const repetitionCount = currentRepetitionCount;
+  const halfmoveClock = fiftyMoveRulePressure.halfmoveClock;
   const autosaveTimestamp = autosave ? formatRelativeTimestamp(autosave.updatedAt, locale) : null;
   const showSceneBootStatus =
     sceneLoadState.phase === "loading" ||
@@ -324,6 +344,9 @@ function App() {
       : gameLastMove && gameLastMove.color !== session.playerColor
         ? { from: gameLastMove.from, to: gameLastMove.to }
         : null;
+  const checkCueTone = session.snapshot.status === "checkmate" ? "checkmate" : "check";
+  const checkCueLabel =
+    session.snapshot.status === "checkmate" ? getCheckmateLabel(locale) : t(locale, "feedback.check");
   const topColor: Color = session.settings.orientation === "white" ? "b" : "w";
   const bottomColor: Color = session.settings.orientation === "white" ? "w" : "b";
   const isHintDisabled =
@@ -361,6 +384,94 @@ function App() {
   const bottomBarLabelVisibility = isMobileShell ? "hidden" : "adaptive";
   const cameraPresentation = isMobileShell ? "mobile-sheet" : "desktop-popover";
   const newGamePresentation = isMobileShell ? "mobile-sheet" : "desktop-modal";
+  const clearDecisionCue = useCallback(() => {
+    setInvalidMoveSquare(null);
+    setInvalidMoveSummary(null);
+    setInvalidMoveDetail(null);
+    setInvalidMoveTone("invalid");
+    setInvalidMoveIcon("!");
+    setInvalidMoveExpanded(false);
+  }, []);
+  const showTransientFeedback = useCallback((message: string, tone: TransientToastTone, icon: string) => {
+    setTransientToast({ message, tone, icon });
+  }, []);
+  const showBoardFeedback = useCallback(({
+    detail = null,
+    icon,
+    square,
+    summary,
+    toastTone,
+    tone,
+  }: {
+    detail?: string | null;
+    icon: string;
+    square: Square;
+    summary: string;
+    toastTone: TransientToastTone;
+    tone: BoardCueTone;
+  }) => {
+    setInvalidMoveSummary(summary);
+    setInvalidMoveDetail(detail);
+    setInvalidMoveTone(tone);
+    setInvalidMoveIcon(icon);
+    setInvalidMoveExpanded(false);
+    setInvalidMoveSquare(square);
+    showTransientFeedback(summary, toastTone, icon);
+    if (tone === "blocked" || tone === "castling-blocked") {
+      soundService.blocked();
+      haptics.blocked();
+      return;
+    }
+
+    soundService.invalidMove();
+    haptics.invalidMove();
+  }, [showTransientFeedback]);
+  const handleBoardInteraction = useCallback(async (square: Square) => {
+    if (analysisMode) {
+      return;
+    }
+
+    const outcome = await selectSquare(square);
+    if (outcome.kind === "select") {
+      clearDecisionCue();
+      soundService.select();
+      haptics.select();
+      return;
+    }
+
+    if (outcome.kind === "blocked") {
+      clearDecisionCue();
+      const blockedFeedback = getBlockedFeedback(outcome.reason, locale);
+      showBoardFeedback({
+        square: outcome.square,
+        summary: blockedFeedback.summary,
+        detail: blockedFeedback.detail,
+        icon: blockedFeedback.icon,
+        tone: "blocked",
+        toastTone: "error",
+      });
+      return;
+    }
+
+    if (outcome.kind === "illegal") {
+      const formatted = formatIllegalMoveDiagnosis(outcome.diagnosis, locale);
+      const castlingBlocked = outcome.diagnosis.reason.startsWith("castling-");
+
+      showBoardFeedback({
+        square: outcome.to,
+        summary: formatted.summary,
+        detail: formatted.detail,
+        icon: castlingBlocked ? "♜" : "!",
+        tone: castlingBlocked ? "castling-blocked" : "invalid",
+        toastTone: "error",
+      });
+      return;
+    }
+
+    if (outcome.kind === "move" || outcome.kind === "promotion" || outcome.kind === "clear") {
+      clearDecisionCue();
+    }
+  }, [analysisMode, clearDecisionCue, locale, selectSquare, showBoardFeedback]);
 
   useEffect(() => {
     void bootstrap();
@@ -409,6 +520,12 @@ function App() {
   }, [isMobileShell]);
 
   useEffect(() => {
+    if (!pendingPromotion) {
+      setPromotionSelection(null);
+    }
+  }, [pendingPromotion]);
+
+  useEffect(() => {
     syncNewGameForm(
       session.settings.clockConfig,
       session.settings.difficultyId,
@@ -420,12 +537,32 @@ function App() {
   }, [session.settings.clockConfig, session.settings.difficultyId]);
 
   useEffect(() => {
+    const preferences = {
+      soundEnabled: session.settings.soundEnabled,
+      soundVolume: session.settings.soundVolume,
+      hapticsEnabled: session.settings.hapticsEnabled,
+    };
+
+    soundService.applyPreferences(preferences);
+    haptics.applyPreferences(preferences);
+  }, [
+    session.settings.hapticsEnabled,
+    session.settings.soundEnabled,
+    session.settings.soundVolume,
+  ]);
+
+  useEffect(() => {
     if (isTerminalStatus(session.snapshot.status)) {
       if (lastFinishedGameRef.current !== session.snapshot.pgn) {
         setResultModalOpen(true);
         lastFinishedGameRef.current = session.snapshot.pgn;
-        soundService.play("game-over");
-        haptics.gameOver();
+        if (session.snapshot.status === "checkmate") {
+          soundService.checkmate();
+          haptics.checkmate();
+        } else {
+          soundService.gameOver();
+          haptics.gameOver();
+        }
       }
       return;
     }
@@ -443,8 +580,8 @@ function App() {
     }
     if (moveCount < prevMoveLengthRef.current) {
       prevMoveLengthRef.current = moveCount;
-      soundService.play("undo");
-      haptics.light();
+      soundService.undo();
+      haptics.undo();
       return;
     }
     if (moveCount === 0 || moveCount === prevMoveLengthRef.current) {
@@ -457,30 +594,45 @@ function App() {
 
     const isCastle = lastEntry.san.startsWith("O-O");
     const isCapture = lastEntry.captured !== undefined;
+    const isPromotion = lastEntry.promotion !== undefined;
+    const isCheckmate = lastEntry.san.includes("#") || session.snapshot.status === "checkmate";
 
-    if (isCapture) {
-      soundService.play("piece-capture");
-      haptics.heavy();
+    if (isPromotion) {
+      soundService.promotion();
+      haptics.promotion();
+    } else if (isCapture) {
+      soundService.capture();
+      haptics.capture();
     } else if (isCastle) {
-      soundService.play("castle");
-      haptics.medium();
+      soundService.castle();
+      haptics.castle();
     } else {
-      soundService.play("piece-move");
-      haptics.medium();
+      soundService.move();
+      haptics.move();
     }
 
-    // Check or checkmate notification (after move sound settles)
-    if (lastEntry.san.includes("+") || lastEntry.san.includes("#")) {
+    if (isCheckmate) {
       window.setTimeout(() => {
-        soundService.play("check");
+        showTransientFeedback(getCheckmateLabel(locale), "checkmate", "#");
+      }, 80);
+      return;
+    }
+
+    if (lastEntry.san.includes("+")) {
+      window.setTimeout(() => {
+        soundService.check();
         haptics.check();
-        if (sessionInCheck) {
-          setTransientError(null);
-          setTransientNotice(t(locale, "feedback.check"));
-        }
+        showTransientFeedback(t(locale, "feedback.check"), "notice", "+");
       }, 80);
     }
-  }, [session.moveEntries, session.moveEntries.length, booted, locale, sessionInCheck]);
+  }, [
+    session.moveEntries,
+    session.moveEntries.length,
+    booted,
+    locale,
+    session.snapshot.status,
+    showTransientFeedback,
+  ]);
 
   useEffect(() => {
     if (!restoreNotice) {
@@ -497,31 +649,96 @@ function App() {
   }, [clearRestoreNotice, restoreNotice]);
 
   useEffect(() => {
-    if (!transientNotice && !transientError) {
+    if (!transientToast) {
       return;
     }
 
     const timeout = window.setTimeout(() => {
-      setTransientNotice(null);
-      setTransientError(null);
+      setTransientToast(null);
     }, 3200);
 
     return () => {
       window.clearTimeout(timeout);
     };
-  }, [transientError, transientNotice]);
+  }, [transientToast]);
 
   useEffect(() => {
     if (!invalidMoveSquare) return;
     const delay = invalidMoveExpanded ? 4000 : 1800;
     const timeout = window.setTimeout(() => {
-      setInvalidMoveSquare(null);
-      setInvalidMoveSummary(null);
-      setInvalidMoveDetail(null);
-      setInvalidMoveExpanded(false);
+      clearDecisionCue();
     }, delay);
     return () => window.clearTimeout(timeout);
-  }, [invalidMoveSquare, invalidMoveExpanded]);
+  }, [clearDecisionCue, invalidMoveExpanded, invalidMoveSquare]);
+
+  useEffect(() => {
+    if (!session.settings.clockConfig.enabled || analysisMode || session.snapshot.status !== "active") {
+      lowTimeToastRef.current = { w: false, b: false };
+      return;
+    }
+
+    const nextFlags = lowTimeState.byColor;
+    const activeColor = session.snapshot.clockState.activeColor;
+
+    if (activeColor && nextFlags[activeColor] && !lowTimeToastRef.current[activeColor]) {
+      const side = buildClockSide(activeColor, session, locale);
+      soundService.lowTime();
+      haptics.lowTime();
+      showTransientFeedback(
+        getLowTimeToastLabel(locale, side.label, side.time),
+        "passive",
+        "⌛",
+      );
+    }
+
+    lowTimeToastRef.current = nextFlags;
+  }, [
+    analysisMode,
+    locale,
+    lowTimeState.byColor,
+    session,
+    session.settings.clockConfig.enabled,
+    session.snapshot.clockState.activeColor,
+    session.snapshot.status,
+    showTransientFeedback,
+  ]);
+
+  useEffect(() => {
+    if (analysisMode || session.snapshot.status !== "active") {
+      repetitionToastShownRef.current = repetitionCount >= 2;
+      return;
+    }
+
+    if (repetitionCount >= 2 && !repetitionToastShownRef.current) {
+      showTransientFeedback(getSecondRepetitionLabel(locale), "passive", "∞");
+      repetitionToastShownRef.current = true;
+      return;
+    }
+
+    if (repetitionCount < 2) {
+      repetitionToastShownRef.current = false;
+    }
+  }, [analysisMode, locale, repetitionCount, session.snapshot.status, showTransientFeedback]);
+
+  useEffect(() => {
+    if (analysisMode || session.snapshot.status !== "active") {
+      fiftyMoveToastShownRef.current = fiftyMoveRulePressure.state;
+      return;
+    }
+
+    if (
+      (fiftyMoveRulePressure.state === "warning" || fiftyMoveRulePressure.state === "critical") &&
+      fiftyMoveToastShownRef.current !== fiftyMoveRulePressure.state
+    ) {
+      showTransientFeedback(getFiftyMoveWarningLabel(locale, halfmoveClock), "passive", "50");
+      fiftyMoveToastShownRef.current = fiftyMoveRulePressure.state;
+      return;
+    }
+
+    if (fiftyMoveRulePressure.state === "normal") {
+      fiftyMoveToastShownRef.current = "normal";
+    }
+  }, [analysisMode, fiftyMoveRulePressure.state, halfmoveClock, locale, session.snapshot.status, showTransientFeedback]);
 
   useEffect(() => {
     if (!analysisAutoplay || analysisCursor === null) {
@@ -639,10 +856,9 @@ function App() {
         setMenuView("root");
         setBottomBarExpanded(true);
       });
-      setTransientNotice(null);
-      setTransientError(null);
+      setTransientToast(null);
     } catch {
-      setTransientError(t(locale, "save.importError"));
+      showTransientFeedback(t(locale, "save.importError"), "error", "!");
     } finally {
       event.target.value = "";
     }
@@ -659,11 +875,9 @@ function App() {
         return;
       }
 
-      setTransientError(null);
-      setTransientNotice(t(locale, getExportToastKey(result)));
+      showTransientFeedback(t(locale, getExportToastKey(result)), "notice", "•");
     } catch {
-      setTransientNotice(null);
-      setTransientError(t(locale, "save.exportError"));
+      showTransientFeedback(t(locale, "save.exportError"), "error", "!");
     }
   };
 
@@ -1033,6 +1247,59 @@ function App() {
         </div>
 
         <div className="settings-group">
+          <h3>{t(locale, "menu.feedback")}</h3>
+          <div className="slider-block">
+            <label>
+              <span>{t(locale, "menu.sound")}</span>
+              <div className="chip-row">
+                <ChipButton
+                  active={session.settings.soundEnabled}
+                  onClick={() => void setSoundEnabled(true)}
+                >
+                  {t(locale, "settings.on")}
+                </ChipButton>
+                <ChipButton
+                  active={!session.settings.soundEnabled}
+                  onClick={() => void setSoundEnabled(false)}
+                >
+                  {t(locale, "settings.off")}
+                </ChipButton>
+              </div>
+            </label>
+            <label>
+              <span>{t(locale, "menu.sound.volume")}</span>
+              <strong>{Math.round(session.settings.soundVolume * 100)}%</strong>
+              <input
+                aria-label={t(locale, "menu.sound.volume")}
+                max={1}
+                min={0}
+                step={0.05}
+                type="range"
+                value={session.settings.soundVolume}
+                onChange={(event) => void setSoundVolume(Number(event.target.value))}
+              />
+            </label>
+            <label>
+              <span>{t(locale, "menu.haptics")}</span>
+              <div className="chip-row">
+                <ChipButton
+                  active={session.settings.hapticsEnabled}
+                  onClick={() => void setHapticsEnabled(true)}
+                >
+                  {t(locale, "settings.on")}
+                </ChipButton>
+                <ChipButton
+                  active={!session.settings.hapticsEnabled}
+                  onClick={() => void setHapticsEnabled(false)}
+                >
+                  {t(locale, "settings.off")}
+                </ChipButton>
+              </div>
+            </label>
+          </div>
+        </div>
+
+        <div className="settings-group">
           <h3>{t(locale, "menu.defaultView")}</h3>
           <div className="chip-row">
             {(["3d", "2d"] as const).map((mode) => (
@@ -1373,19 +1640,10 @@ function App() {
     </div>
   );
 
-  const menuDrawerMotion = isMobileShell
-    ? {
-        initial: { y: "110%", opacity: 0 },
-        animate: { y: 0, opacity: 1 },
-        exit: { y: "110%", opacity: 0 },
-        transition: { type: "spring" as const, stiffness: 320, damping: 36 },
-      }
-    : {
-        initial: { x: "110%", opacity: 0 },
-        animate: { x: 0, opacity: 1 },
-        exit: { x: "110%", opacity: 0 },
-        transition: { type: "spring" as const, stiffness: 300, damping: 36 },
-      };
+  const menuDrawerMotion = getDrawerMotionProps(
+    motionMode,
+    isMobileShell ? "mobile-sheet" : "desktop-side",
+  );
 
   const topSide = buildClockSide(topColor, session, locale);
   const bottomSide = buildClockSide(bottomColor, session, locale);
@@ -1393,6 +1651,7 @@ function App() {
   return (
     <div
       className={`app-shell${analysisMode ? " is-analysis" : ""}${isZenMode ? " is-zen" : ""}`}
+      data-motion-mode={motionMode}
       data-shell-mode={shellMode}
       data-shell-zen={isZenMode ? "true" : "false"}
       ref={appShellRef}
@@ -1444,37 +1703,7 @@ function App() {
             checkSquare={invalidMoveSquare ? null : checkedKingSquare}
             castlingTargets={analysisMode ? [] : castlingTargets}
             onLoadStateChange={setSceneLoadState}
-            onSquareSelect={(square) => {
-              if (analysisMode) {
-                return;
-              }
-              if (
-                selectedSquare &&
-                legalTargets.length > 0 &&
-                !legalTargets.includes(square)
-              ) {
-                const pieces = fenToPieces(session.snapshot.fen);
-                const isPlayerPiece = pieces.some(
-                  (p) => p.square === square && p.color === session.playerColor,
-                );
-                if (!isPlayerPiece) {
-                  const diagnosis = diagnoseIllegalMove(session, selectedSquare, square);
-                  const formatted = formatIllegalMoveDiagnosis(diagnosis, locale);
-                  setInvalidMoveSummary(formatted.summary);
-                  setInvalidMoveDetail(formatted.detail);
-                  setInvalidMoveExpanded(false);
-                  setInvalidMoveSquare(square);
-                  setTransientNotice(null);
-                  setTransientError(formatted.summary);
-                  soundService.play("invalid-move");
-                  haptics.light();
-                  return;
-                }
-              }
-              haptics.light();
-              soundService.play("piece-select");
-              void selectSquare(square);
-            }}
+            onSquareSelect={(square) => void handleBoardInteraction(square)}
             onPromotionAnchorChange={setPromotionAnchor}
             onInvalidMoveAnchorChange={setInvalidMoveAnchor}
             onCheckAnchorChange={setCheckAnchor}
@@ -1616,6 +1845,7 @@ function App() {
       <AnimatePresence>
         {cameraPickerOpen && (
           <BaseOverlay
+            motionMode={motionMode}
             blockInteraction
             dismissibleBackdrop
             onClose={closeCameraPicker}
@@ -1645,7 +1875,7 @@ function App() {
 
       <AnimatePresence>
         {menuOpen && (
-          <BaseOverlay onClose={closeMenu} testId="shell-menu-overlay">
+          <BaseOverlay motionMode={motionMode} onClose={closeMenu} testId="shell-menu-overlay">
             <motion.aside
               className="menu-drawer"
               role="dialog"
@@ -1744,10 +1974,11 @@ function App() {
 
       <AnimatePresence>
         {newGameOpen && (
-          <BaseOverlay onClose={() => setNewGameOpen(false)} testId="new-game-overlay">
+          <BaseOverlay motionMode={motionMode} onClose={() => setNewGameOpen(false)} testId="new-game-overlay">
             <PresenceAwareNewGameSheet
               key="new-game-sheet"
               ariaLabel={t(locale, "panel.newGame.title")}
+              motionMode={motionMode}
               presentation={newGamePresentation}
             >
               <div className="panel-header panel-header--sheet">
@@ -1890,21 +2121,31 @@ function App() {
 
       <AnimatePresence>
         {pendingPromotion && (
-          <BaseOverlay onClose={() => {}} showScrim={false} blockInteraction>
-            <section
+          <BaseOverlay motionMode={motionMode} onClose={() => {}} showScrim={false} blockInteraction>
+            <motion.section
               className="promotion-popup"
               role="dialog"
+              aria-busy={promotionSelection ? "true" : undefined}
               aria-label={t(locale, "promotion.title")}
+              data-promotion-state={promotionSelection ? "resolving" : "ready"}
               style={getPromotionPopupStyle(promotionAnchor)}
+              initial={getPromotionPopupMotionProps(motionMode).initial}
+              animate={getPromotionPopupMotionProps(motionMode).animate}
+              exit={getPromotionPopupMotionProps(motionMode).exit}
+              transition={getPromotionPopupMotionProps(motionMode).transition}
             >
               <p className="panel-kicker promotion-popup__kicker">{t(locale, "promotion.title")}</p>
               <div className="promotion-options">
                 {PROMOTION_CHOICES.map((piece) => (
                   <button
-                    className="promotion-option"
+                    className={`promotion-option${promotionSelection === piece ? " is-selected" : ""}`}
                     key={piece}
                     type="button"
-                    onClick={() => void confirmPromotion(piece)}
+                    disabled={promotionSelection !== null}
+                    onClick={() => {
+                      setPromotionSelection(piece);
+                      void confirmPromotion(piece);
+                    }}
                   >
                     <span className="promotion-option__well" aria-hidden="true">
                       <span className="promotion-option__glyph">{getPromotionGlyph(piece, session.playerColor)}</span>
@@ -1913,27 +2154,27 @@ function App() {
                   </button>
                 ))}
               </div>
-            </section>
+            </motion.section>
           </BaseOverlay>
         )}
       </AnimatePresence>
 
       <AnimatePresence>
         {checkAnchor ? (
-          <BaseOverlay onClose={() => {}} showScrim={false} blockInteraction={false}>
+          <BaseOverlay motionMode={motionMode} onClose={() => {}} showScrim={false} blockInteraction={false}>
             <motion.div
-              className="board-cue board-cue--check"
+              className={`board-cue board-cue--${checkCueTone}`}
               data-testid="check-cue"
               key="check-cue"
               style={getBoardCueStyle(checkAnchor)}
-              initial={{ scale: 0.85, opacity: 0 }}
-              animate={{ scale: 1, opacity: 1 }}
-              exit={{ scale: 0.92, opacity: 0 }}
-              transition={{ type: "spring", stiffness: 400, damping: 30 }}
+              initial={getCueMotionProps(motionMode).initial}
+              animate={getCueMotionProps(motionMode).animate}
+              exit={getCueMotionProps(motionMode).exit}
+              transition={getCueMotionProps(motionMode).transition}
             >
               <span className="board-cue__summary">
-                <span className="board-cue__glyph" aria-hidden="true">+</span>
-                <span className="board-cue__summary-text">{t(locale, "feedback.check")}</span>
+                <span className="board-cue__glyph" aria-hidden="true">{checkCueTone === "checkmate" ? "#" : "+"}</span>
+                <span className="board-cue__summary-text">{checkCueLabel}</span>
               </span>
             </motion.div>
           </BaseOverlay>
@@ -1943,25 +2184,26 @@ function App() {
       <AnimatePresence>
         {invalidMoveSquare && invalidMoveAnchor ? (
           <BaseOverlay
-            onClose={() => setInvalidMoveSquare(null)}
+            motionMode={motionMode}
+            onClose={clearDecisionCue}
             showScrim={false}
             blockInteraction={false}
           >
             <motion.div
-              className={`board-cue board-cue--invalid${invalidMoveExpanded ? " board-cue--expanded" : ""}`}
+              className={`board-cue board-cue--${invalidMoveTone}${invalidMoveExpanded ? " board-cue--expanded" : ""}`}
               key="invalid-move-cue"
               style={{
                 ...getBoardCueStyle(invalidMoveAnchor),
                 ...(invalidMoveDetail ? { cursor: "pointer", pointerEvents: "auto" as const } : {}),
               }}
-              initial={{ scale: 0.85, opacity: 0 }}
-              animate={{ scale: 1, opacity: 1 }}
-              exit={{ scale: 0.92, opacity: 0 }}
-              transition={{ type: "spring", stiffness: 400, damping: 30 }}
+              initial={getCueMotionProps(motionMode).initial}
+              animate={getCueMotionProps(motionMode).animate}
+              exit={getCueMotionProps(motionMode).exit}
+              transition={getCueMotionProps(motionMode).transition}
               onClick={invalidMoveDetail ? () => setInvalidMoveExpanded((v) => !v) : undefined}
             >
               <span className="board-cue__summary">
-                <span className="board-cue__glyph" aria-hidden="true">!</span>
+                <span className="board-cue__glyph" aria-hidden="true">{invalidMoveIcon}</span>
                 <span className="board-cue__summary-text">
                   {invalidMoveSummary ?? t(locale, "feedback.invalidMove")}
                 </span>
@@ -1974,10 +2216,10 @@ function App() {
                   <motion.span
                     className="board-cue__detail"
                     key="detail"
-                    initial={{ height: 0, opacity: 0 }}
-                    animate={{ height: "auto", opacity: 1 }}
-                    exit={{ height: 0, opacity: 0 }}
-                    transition={{ duration: 0.2 }}
+                    initial={getCueDetailMotionProps(motionMode).initial}
+                    animate={getCueDetailMotionProps(motionMode).animate}
+                    exit={getCueDetailMotionProps(motionMode).exit}
+                    transition={getCueDetailMotionProps(motionMode).transition}
                   >
                     {invalidMoveDetail}
                   </motion.span>
@@ -1990,15 +2232,15 @@ function App() {
 
       <AnimatePresence>
         {castlingTargets.length > 0 && castlingAnchor ? (
-          <BaseOverlay onClose={() => {}} showScrim={false} blockInteraction={false}>
+          <BaseOverlay motionMode={motionMode} onClose={() => {}} showScrim={false} blockInteraction={false}>
             <motion.div
               className="board-cue board-cue--castling"
               key="castling-cue"
               style={getBoardCueStyle(castlingAnchor)}
-              initial={{ scale: 0.85, opacity: 0 }}
-              animate={{ scale: 1, opacity: 1 }}
-              exit={{ scale: 0.92, opacity: 0 }}
-              transition={{ type: "spring", stiffness: 400, damping: 30 }}
+              initial={getCueMotionProps(motionMode).initial}
+              animate={getCueMotionProps(motionMode).animate}
+              exit={getCueMotionProps(motionMode).exit}
+              transition={getCueMotionProps(motionMode).transition}
             >
               <span className="board-cue__summary">
                 <span className="board-cue__glyph" aria-hidden="true">♜</span>
@@ -2012,6 +2254,7 @@ function App() {
       <AnimatePresence>
         {replacePromptOpen ? (
           <ReplaceGameDialog
+            motionMode={motionMode}
             open={replacePromptOpen}
             badge={t(locale, "panel.newGame.title")}
             title={t(locale, "confirm.newGame.title")}
@@ -2032,9 +2275,11 @@ function App() {
       <AnimatePresence>
         {resultModalOpen ? (
           <ResultModalOverlay
+            motionMode={motionMode}
             open={resultModalOpen}
             kicker={t(locale, "result.kicker")}
             glyph={getResultGlyph(session)}
+            tone={session.snapshot.status === "checkmate" ? "checkmate" : "default"}
             title={t(locale, getFriendlyResultKey(session))}
             subtitle={t(locale, getResultStatusKey(session.snapshot.status))}
             metrics={[
@@ -2056,21 +2301,21 @@ function App() {
       </AnimatePresence>
 
       <AnimatePresence>
-        {toastMessage ? (
+        {activeToast ? (
           <motion.div
-            aria-live={isErrorToast ? "assertive" : "polite"}
-            className={`toast ${isErrorToast ? "is-error" : "is-notice"}`}
+            aria-live={activeToast.tone === "error" || activeToast.tone === "checkmate" ? "assertive" : "polite"}
+            className={`toast is-${activeToast.tone}`}
             key="toast"
-            role={isErrorToast ? "alert" : "status"}
-            initial={{ opacity: 0, y: -12 }}
-            animate={{ opacity: 1, y: 0 }}
-            exit={{ opacity: 0, y: -12 }}
-            transition={{ duration: 0.22, ease: "easeOut" }}
+            role={activeToast.tone === "error" || activeToast.tone === "checkmate" ? "alert" : "status"}
+            initial={getToastMotionProps(motionMode).initial}
+            animate={getToastMotionProps(motionMode).animate}
+            exit={getToastMotionProps(motionMode).exit}
+            transition={getToastMotionProps(motionMode).transition}
           >
             <span className="toast__icon" aria-hidden="true">
-              {isErrorToast ? "!" : restoreNotice ? "↺" : "•"}
+              {activeToast.icon}
             </span>
-            <span className="toast__message">{toastMessage}</span>
+            <span className="toast__message">{activeToast.message}</span>
           </motion.div>
         ) : null}
       </AnimatePresence>
@@ -2080,8 +2325,8 @@ function App() {
           <motion.div
             className="boot-scrim"
             key="boot-scrim"
-            exit={{ opacity: 0 }}
-            transition={{ duration: 0.4 }}
+            exit={getBootScrimExitProps(motionMode)}
+            transition={getBootScrimTransition(motionMode)}
           >
             <div className="boot-scrim__content">
               <span className="boot-scrim__icon" aria-hidden="true">
@@ -2142,17 +2387,310 @@ function EvalBar({
 
 function buildClockSide(color: Color, session: GameSession, locale: GameSession["settings"]["locale"]): ClockSideState {
   const isPlayer = color === session.playerColor;
+  const time = color === "w" ? session.snapshot.clockState.whiteMs : session.snapshot.clockState.blackMs;
 
   return {
     label: isPlayer ? t(locale, "hud.you") : t(locale, "hud.localAi"),
     subtitle: isPlayer ? t(locale, "hud.player") : `${t(locale, "hud.engine")} · ${getDifficultyPreset(session.settings.difficultyId).label}`,
-    time: color === "w" ? session.snapshot.clockState.whiteMs : session.snapshot.clockState.blackMs,
+    time,
     active: session.snapshot.clockState.activeColor === color,
     thinking:
       !isPlayer &&
       session.snapshot.clockState.activeColor === color &&
       session.snapshot.status === "active",
+    lowTime:
+      !session.settings.clockConfig.enabled || session.snapshot.status === "timeout"
+        ? "off"
+        : time <= LOW_TIME_CRITICAL_MS
+          ? "critical"
+          : time <= LOW_TIME_WARNING_MS
+            ? "warning"
+            : "off",
   };
+}
+
+function resolveOverlayMotionMode(
+  animationMode: GameSession["settings"]["animationMode"],
+  systemPrefersReducedMotion: boolean,
+): OverlayMotionMode {
+  if (animationMode === "off") {
+    return "off";
+  }
+
+  if (animationMode === "reduced" || systemPrefersReducedMotion) {
+    return "reduced";
+  }
+
+  return "normal";
+}
+
+function getBackdropMotionProps(motionMode: OverlayMotionMode) {
+  if (motionMode === "off") {
+    return {
+      initial: { opacity: 1 },
+      animate: { opacity: 1 },
+      exit: { opacity: 1 },
+      transition: { duration: 0 },
+    };
+  }
+
+  return {
+    initial: { opacity: 0 },
+    animate: { opacity: 1 },
+    exit: { opacity: 0 },
+    transition: { duration: motionMode === "reduced" ? 0.12 : 0.2 },
+  };
+}
+
+function getSheetMotionProps(
+  motionMode: OverlayMotionMode,
+  presentation: "desktop-modal" | "mobile-sheet",
+) {
+  if (motionMode === "off") {
+    return {
+      initial: { opacity: 1, scale: 1, x: 0, y: 0 },
+      animate: { opacity: 1, scale: 1, x: 0, y: 0 },
+      exit: { opacity: 1, scale: 1, x: 0, y: 0 },
+      transition: { duration: 0 },
+    };
+  }
+
+  if (presentation === "mobile-sheet") {
+    return motionMode === "reduced"
+      ? {
+          initial: { y: "4%", opacity: 0 },
+          animate: { y: 0, opacity: 1 },
+          exit: { y: "4%", opacity: 0 },
+          transition: { duration: 0.16, ease: "easeOut" as const },
+        }
+      : {
+          initial: { y: "110%", opacity: 0 },
+          animate: { y: 0, opacity: 1 },
+          exit: { y: "110%", opacity: 0 },
+          transition: { type: "spring" as const, stiffness: 320, damping: 36 },
+        };
+  }
+
+  return motionMode === "reduced"
+    ? {
+        initial: { opacity: 0, scale: 0.98 },
+        animate: { opacity: 1, scale: 1 },
+        exit: { opacity: 0, scale: 0.99 },
+        transition: { duration: 0.14, ease: "easeOut" as const },
+      }
+    : {
+        initial: { scale: 0.92, opacity: 0 },
+        animate: { scale: 1, opacity: 1 },
+        exit: { scale: 0.95, opacity: 0 },
+        transition: { type: "spring" as const, stiffness: 300, damping: 34 },
+      };
+}
+
+function getDrawerMotionProps(
+  motionMode: OverlayMotionMode,
+  presentation: "desktop-side" | "mobile-sheet",
+) {
+  if (motionMode === "off") {
+    return {
+      initial: { opacity: 1, x: 0, y: 0 },
+      animate: { opacity: 1, x: 0, y: 0 },
+      exit: { opacity: 1, x: 0, y: 0 },
+      transition: { duration: 0 },
+    };
+  }
+
+  if (presentation === "mobile-sheet") {
+    return motionMode === "reduced"
+      ? {
+          initial: { y: "6%", opacity: 0 },
+          animate: { y: 0, opacity: 1 },
+          exit: { y: "6%", opacity: 0 },
+          transition: { duration: 0.16, ease: "easeOut" as const },
+        }
+      : {
+          initial: { y: "110%", opacity: 0 },
+          animate: { y: 0, opacity: 1 },
+          exit: { y: "110%", opacity: 0 },
+          transition: { type: "spring" as const, stiffness: 320, damping: 36 },
+        };
+  }
+
+  return motionMode === "reduced"
+    ? {
+        initial: { x: "4%", opacity: 0 },
+        animate: { x: 0, opacity: 1 },
+        exit: { x: "4%", opacity: 0 },
+        transition: { duration: 0.16, ease: "easeOut" as const },
+      }
+    : {
+        initial: { x: "110%", opacity: 0 },
+        animate: { x: 0, opacity: 1 },
+        exit: { x: "110%", opacity: 0 },
+        transition: { type: "spring" as const, stiffness: 300, damping: 36 },
+      };
+}
+
+function getPromotionPopupMotionProps(motionMode: OverlayMotionMode) {
+  if (motionMode === "off") {
+    return {
+      initial: { opacity: 1, scale: 1, y: 0 },
+      animate: { opacity: 1, scale: 1, y: 0 },
+      exit: { opacity: 1, scale: 1, y: 0 },
+      transition: { duration: 0 },
+    };
+  }
+
+  return motionMode === "reduced"
+    ? {
+        initial: { opacity: 0, scale: 0.985 },
+        animate: { opacity: 1, scale: 1 },
+        exit: { opacity: 0, scale: 0.99 },
+        transition: { duration: 0.14, ease: "easeOut" as const },
+      }
+    : {
+        initial: { opacity: 0, scale: 0.92, y: 10 },
+        animate: { opacity: 1, scale: 1, y: 0 },
+        exit: { opacity: 0, scale: 0.97, y: 4 },
+        transition: { type: "spring" as const, stiffness: 360, damping: 28 },
+      };
+}
+
+function getCueMotionProps(motionMode: OverlayMotionMode) {
+  if (motionMode === "off") {
+    return {
+      initial: { opacity: 1, scale: 1 },
+      animate: { opacity: 1, scale: 1 },
+      exit: { opacity: 1, scale: 1 },
+      transition: { duration: 0 },
+    };
+  }
+
+  return motionMode === "reduced"
+    ? {
+        initial: { opacity: 0 },
+        animate: { opacity: 1 },
+        exit: { opacity: 0 },
+        transition: { duration: 0.12, ease: "easeOut" as const },
+      }
+    : {
+        initial: { scale: 0.85, opacity: 0 },
+        animate: { scale: 1, opacity: 1 },
+        exit: { scale: 0.92, opacity: 0 },
+        transition: { type: "spring" as const, stiffness: 400, damping: 30 },
+      };
+}
+
+function getCueDetailMotionProps(motionMode: OverlayMotionMode) {
+  if (motionMode === "off") {
+    return {
+      initial: { height: "auto", opacity: 1 },
+      animate: { height: "auto", opacity: 1 },
+      exit: { height: "auto", opacity: 1 },
+      transition: { duration: 0 },
+    };
+  }
+
+  return {
+    initial: { height: 0, opacity: 0 },
+    animate: { height: "auto", opacity: 1 },
+    exit: { height: 0, opacity: 0 },
+    transition: { duration: motionMode === "reduced" ? 0.14 : 0.2 },
+  };
+}
+
+function getToastMotionProps(motionMode: OverlayMotionMode) {
+  if (motionMode === "off") {
+    return {
+      initial: { opacity: 1, y: 0 },
+      animate: { opacity: 1, y: 0 },
+      exit: { opacity: 1, y: 0 },
+      transition: { duration: 0 },
+    };
+  }
+
+  return {
+    initial: { opacity: 0, y: motionMode === "reduced" ? -4 : -12 },
+    animate: { opacity: 1, y: 0 },
+    exit: { opacity: 0, y: motionMode === "reduced" ? -4 : -12 },
+    transition: { duration: motionMode === "reduced" ? 0.14 : 0.22, ease: "easeOut" as const },
+  };
+}
+
+function getBootScrimExitProps(motionMode: OverlayMotionMode) {
+  return motionMode === "off" ? { opacity: 1 } : { opacity: 0 };
+}
+
+function getBootScrimTransition(motionMode: OverlayMotionMode) {
+  return { duration: motionMode === "off" ? 0 : motionMode === "reduced" ? 0.2 : 0.4 };
+}
+
+function getBlockedFeedback(
+  reason: InteractionBlockReason,
+  locale: GameSession["settings"]["locale"],
+): { detail: string; icon: string; summary: string } {
+  switch (reason) {
+    case "opponent-piece":
+      return {
+        summary: t(locale, "feedback.blockedPiece.summary"),
+        detail: t(locale, "feedback.blockedPiece.detail"),
+        icon: "!",
+      };
+    case "analysis-active":
+      return {
+        summary: t(locale, "feedback.analysisLocked.summary"),
+        detail: t(locale, "feedback.analysisLocked.detail"),
+        icon: "∿",
+      };
+    case "promotion-pending":
+      return {
+        summary: t(locale, "feedback.promotionPending.summary"),
+        detail: t(locale, "feedback.promotionPending.detail"),
+        icon: "♛",
+      };
+    case "inactive-session":
+      return {
+        summary: t(locale, "feedback.inactiveSession.summary"),
+        detail: t(locale, "feedback.inactiveSession.detail"),
+        icon: "!",
+      };
+    case "out-of-turn":
+    default:
+      return {
+        summary: t(locale, "feedback.blockedTurn.summary"),
+        detail: t(locale, "feedback.blockedTurn.detail"),
+        icon: "!",
+      };
+  }
+}
+
+function getCheckmateLabel(locale: GameSession["settings"]["locale"]): string {
+  return locale === "pt-BR" ? "Xeque-mate" : "Checkmate";
+}
+
+function getLowTimeToastLabel(
+  locale: GameSession["settings"]["locale"],
+  sideLabel: string,
+  time: number,
+): string {
+  return locale === "pt-BR"
+    ? `Tempo baixo: ${sideLabel} ${formatClock(time)}`
+    : `Low time: ${sideLabel} ${formatClock(time)}`;
+}
+
+function getSecondRepetitionLabel(locale: GameSession["settings"]["locale"]): string {
+  return locale === "pt-BR"
+    ? "Segunda repetição: mais uma repete a posição."
+    : "Second repetition: one more repeat draws the game.";
+}
+
+function getFiftyMoveWarningLabel(
+  locale: GameSession["settings"]["locale"],
+  halfmoveClock: number,
+): string {
+  const remaining = Math.max(0, 100 - halfmoveClock);
+  return locale === "pt-BR"
+    ? `Regra dos 50 lances se aproxima: faltam ${remaining} meios-lances sem captura ou peão.`
+    : `50-move rule approaching: ${remaining} halfmoves left without a pawn move or capture.`;
 }
 
 function syncNewGameForm(

@@ -7,11 +7,17 @@ export interface ClockSideState {
   time: number;
   active: boolean;
   thinking: boolean;
+  lowTime: "off" | "warning" | "critical";
 }
 
 export function ClockPill({ side, collapsed }: { side: ClockSideState; collapsed: boolean }) {
   return (
-    <article className={`clock-pill ${side.active ? "is-active" : ""} ${collapsed ? "is-collapsed" : ""}`}>
+    <article
+      className={`clock-pill ${side.active ? "is-active" : ""} ${collapsed ? "is-collapsed" : ""} ${
+        side.lowTime !== "off" ? `is-low-time is-low-time-${side.lowTime}` : ""
+      }`}
+      data-low-time={side.lowTime}
+    >
       <div className="clock-pill__dot" aria-hidden="true" />
       <div className="clock-pill__copy">
         {!collapsed ? <span className="clock-pill__eyebrow">{side.subtitle}</span> : null}

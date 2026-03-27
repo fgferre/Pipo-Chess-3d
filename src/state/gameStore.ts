@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import type { PieceSymbol, Square } from "chess.js";
+import { Chess, type PieceSymbol, type Square } from "chess.js";
 import { getDifficultyPreset } from "../data/difficulties";
 import { buildAnalysisPayload } from "../game/analysis";
 import {
@@ -8,10 +8,14 @@ import {
   createDefaultSettings,
   createNewSession,
   getCastlingTargetsForSquare,
+  getCurrentRepetitionCount,
+  getFiftyMoveRulePressure,
   getLegalMovesForSquare,
+  getLowTimeState,
   hydrateSession,
   pauseClock,
   resumeClock,
+  resolveSquareInteraction,
   sessionFromPgn,
   setSessionSettings,
   tickClock,
@@ -36,8 +40,11 @@ import type {
   AutosaveRecord,
   CameraPreset,
   EnginePhase,
+  FiftyMoveRulePressure,
   GameSession,
+  InteractionOutcome,
   Locale,
+  LowTimeState,
   NewGameOptions,
   PendingPromotion,
   SaveSlotRecord,
@@ -47,7 +54,6 @@ import {
   type QualityMode,
   type QualityTier,
 } from "../quality/qualityPolicy";
-import { fenToPieces } from "../utils/board";
 import { engineClient } from "../engine/EngineClient";
 
 interface HintMove {
@@ -71,6 +77,9 @@ interface GameStore {
   castlingTargets: Square[];
   hintMove: HintMove | null;
   pendingPromotion: PendingPromotion | null;
+  currentRepetitionCount: number;
+  fiftyMoveRulePressure: FiftyMoveRulePressure;
+  lowTimeState: LowTimeState;
   analysisCursor: number | null;
   analysisAutoplay: boolean;
   analysisProgress: { completed: number; total: number; currentPly: number } | null;
@@ -78,7 +87,7 @@ interface GameStore {
   restoreNotice: string | null;
   lastError: string | null;
   bootstrap: () => Promise<void>;
-  selectSquare: (square: Square) => Promise<void>;
+  selectSquare: (square: Square) => Promise<InteractionOutcome>;
   confirmPromotion: (piece: PieceSymbol) => Promise<void>;
   requestHint: () => Promise<void>;
   undo: () => Promise<void>;
@@ -93,6 +102,9 @@ interface GameStore {
   setCameraSensitivity: (cameraSensitivity: GameSession["settings"]["cameraSensitivity"]) => Promise<void>;
   setQualityMode: (mode: QualityMode) => Promise<void>;
   setQualityTier: (tier: QualityTier) => Promise<void>;
+  setSoundEnabled: (enabled: boolean) => Promise<void>;
+  setSoundVolume: (volume: number) => Promise<void>;
+  setHapticsEnabled: (enabled: boolean) => Promise<void>;
   setCameraPreset: (preset: CameraPreset) => void;
   setAnalysisCursor: (cursor: number | null) => void;
   setAnalysisAutoplay: (enabled: boolean) => void;
@@ -150,11 +162,34 @@ function updateSessionSettings(
   return setSessionSettings(currentSession, nextSettings);
 }
 
+function buildSessionIndicators(session: QualitySession): Pick<
+  GameStore,
+  "currentRepetitionCount" | "fiftyMoveRulePressure" | "lowTimeState"
+> {
+  return {
+    currentRepetitionCount: getCurrentRepetitionCount(session),
+    fiftyMoveRulePressure: getFiftyMoveRulePressure(session),
+    lowTimeState: getLowTimeState(session),
+  };
+}
+
+function buildSessionPatch(session: QualitySession): Pick<
+  GameStore,
+  "session" | "currentRepetitionCount" | "fiftyMoveRulePressure" | "lowTimeState"
+> {
+  return {
+    session,
+    ...buildSessionIndicators(session),
+  };
+}
+
+const initialSession = createQualitySession(createDefaultSettings());
+
 export const useGameStore = create<GameStore>((set, get) => ({
   booted: false,
   enginePhase: "booting",
   engineMessage: "",
-  session: createQualitySession(createDefaultSettings()),
+  ...buildSessionPatch(initialSession),
   autosave: null,
   saveSlots: [],
   selectedSquare: null,
@@ -249,7 +284,7 @@ export const useGameStore = create<GameStore>((set, get) => ({
 
       set({
         booted: true,
-        session: liveSession,
+        ...buildSessionPatch(liveSession),
         autosave,
         saveSlots,
         selectedSquare: null,
@@ -293,73 +328,129 @@ export const useGameStore = create<GameStore>((set, get) => ({
 
   selectSquare: async (square) => {
     const state = get();
-    const { session, selectedSquare, legalTargets, analysisCursor, pendingPromotion } = state;
+    const { session, selectedSquare, analysisCursor, pendingPromotion } = state;
+    const selection = {
+      selectedSquare,
+      legalTargets: state.legalTargets,
+      castlingTargets: state.castlingTargets,
+    };
+    const clickedPiece = new Chess(session.snapshot.fen).get(square);
 
     if (
-      analysisCursor !== null ||
-      pendingPromotion ||
-      session.snapshot.sideToMove !== session.playerColor ||
-      (session.snapshot.status !== "active" && session.snapshot.status !== "idle")
+      analysisCursor !== null
     ) {
-      return;
+      const outcome: InteractionOutcome = {
+        kind: "blocked",
+        reason: "analysis-active",
+        square,
+        selection,
+      };
+      return outcome;
     }
 
-    const pieces = fenToPieces(session.snapshot.fen);
-    const clickedPiece = pieces.find((piece) => piece.square === square);
-    const clickedIsPlayerPiece = clickedPiece?.color === session.playerColor;
-
-    if (!selectedSquare && clickedIsPlayerPiece) {
-      set({
-        selectedSquare: square,
-        legalTargets: getLegalMovesForSquare(session, square),
-        castlingTargets: getCastlingTargetsForSquare(session, square),
-        hintMove: null,
-      });
-      return;
+    if (pendingPromotion) {
+      const outcome: InteractionOutcome = {
+        kind: "blocked",
+        reason: "promotion-pending",
+        square,
+        selection,
+      };
+      return outcome;
     }
 
-    if (selectedSquare && legalTargets.includes(square)) {
-      const movingPiece = pieces.find((piece) => piece.square === selectedSquare);
-      const isPromotion =
-        movingPiece?.type === "p" &&
-        ((movingPiece.color === "w" && square.endsWith("8")) ||
-          (movingPiece.color === "b" && square.endsWith("1")));
-
-      if (isPromotion) {
-        set({
-          pendingPromotion: {
-            from: selectedSquare,
-            to: square,
-            anchorSquare: square,
-          },
-          selectedSquare: null,
-          legalTargets: [],
-          castlingTargets: [],
-          hintMove: null,
-        });
-        return;
+    if (session.snapshot.status !== "active" && session.snapshot.status !== "idle") {
+      if (!clickedPiece && !selectedSquare) {
+        return {
+          kind: "ignored",
+          selection,
+        };
       }
 
-      await commitPlayerMove(set, get, selectedSquare, square);
-      return;
+      const outcome: InteractionOutcome = {
+        kind: "blocked",
+        reason: "inactive-session",
+        square,
+        selection,
+      };
+      return outcome;
     }
 
-    if (clickedIsPlayerPiece) {
+    if (session.snapshot.sideToMove !== session.playerColor) {
+      if (!clickedPiece && !selectedSquare) {
+        return {
+          kind: "ignored",
+          selection,
+        };
+      }
+
+      const outcome: InteractionOutcome = {
+        kind: "blocked",
+        reason: "out-of-turn",
+        square,
+        selection,
+      };
+      return outcome;
+    }
+
+    if (!selectedSquare && clickedPiece && clickedPiece.color !== session.playerColor) {
+      const outcome: InteractionOutcome = {
+        kind: "blocked",
+        reason: "opponent-piece",
+        square,
+        selection,
+      };
+      return outcome;
+    }
+
+    const outcome = resolveSquareInteraction(session, selectedSquare, square);
+
+    if (outcome.kind === "select") {
       set({
-        selectedSquare: square,
-        legalTargets: getLegalMovesForSquare(session, square),
-        castlingTargets: getCastlingTargetsForSquare(session, square),
+        selectedSquare: outcome.selection.selectedSquare,
+        legalTargets: outcome.selection.legalTargets,
+        castlingTargets: outcome.selection.castlingTargets,
         hintMove: null,
       });
-      return;
+      return outcome;
     }
 
-    set({
-      selectedSquare: null,
-      legalTargets: [],
-      castlingTargets: [],
-      hintMove: null,
-    });
+    if (outcome.kind === "promotion") {
+      set({
+        pendingPromotion: outcome.pendingPromotion,
+        selectedSquare: null,
+        legalTargets: [],
+        castlingTargets: [],
+        hintMove: null,
+      });
+      return outcome;
+    }
+
+    if (outcome.kind === "move") {
+      await commitPlayerMove(set, get, outcome.from, outcome.to);
+      return outcome;
+    }
+
+    if (outcome.kind === "illegal") {
+      set({
+        selectedSquare: outcome.selection.selectedSquare,
+        legalTargets: outcome.selection.legalTargets,
+        castlingTargets: outcome.selection.castlingTargets,
+        hintMove: null,
+      });
+      return outcome;
+    }
+
+    if (outcome.kind === "clear") {
+      set({
+        selectedSquare: null,
+        legalTargets: [],
+        castlingTargets: [],
+        hintMove: null,
+      });
+      return outcome;
+    }
+
+    return outcome;
   },
 
   confirmPromotion: async (piece) => {
@@ -423,7 +514,7 @@ export const useGameStore = create<GameStore>((set, get) => ({
     }
     const nextSession = appliedSession;
     set({
-      session: nextSession,
+      ...buildSessionPatch(nextSession),
       selectedSquare: null,
       legalTargets: [],
       castlingTargets: [],
@@ -448,7 +539,7 @@ export const useGameStore = create<GameStore>((set, get) => ({
     }
     const nextSession = appliedSession;
     set({
-      session: nextSession,
+      ...buildSessionPatch(nextSession),
       selectedSquare: null,
       legalTargets: [],
       castlingTargets: [],
@@ -484,7 +575,7 @@ export const useGameStore = create<GameStore>((set, get) => ({
     const nextSession = createQualitySession(nextSettings, { playerColor });
 
     set({
-      session: nextSession,
+      ...buildSessionPatch(nextSession),
       selectedSquare: null,
       legalTargets: [],
       castlingTargets: [],
@@ -519,14 +610,14 @@ export const useGameStore = create<GameStore>((set, get) => ({
 
   setTheme: async (themeId) => {
     const nextSession = updateSessionSettings(get, { themeId });
-    set({ session: nextSession, lastError: null });
+    set({ ...buildSessionPatch(nextSession), lastError: null });
     await persistLiveSettings(get, set);
     await persistLiveAutosave(get, set);
   },
 
   setLocale: async (locale) => {
     const nextSession = updateSessionSettings(get, { locale });
-    set({ session: nextSession, lastError: null });
+    set({ ...buildSessionPatch(nextSession), lastError: null });
     await persistLiveSettings(get, set);
     await persistLiveAutosave(get, set);
   },
@@ -534,21 +625,21 @@ export const useGameStore = create<GameStore>((set, get) => ({
   toggleOrientation: async () => {
     const orientation = get().session.settings.orientation === "white" ? "black" : "white";
     const nextSession = updateSessionSettings(get, { orientation });
-    set({ session: nextSession, lastError: null });
+    set({ ...buildSessionPatch(nextSession), lastError: null });
     await persistLiveSettings(get, set);
     await persistLiveAutosave(get, set);
   },
 
   setShowCoordinates: async (show) => {
     const nextSession = updateSessionSettings(get, { showCoordinates: show });
-    set({ session: nextSession, lastError: null });
+    set({ ...buildSessionPatch(nextSession), lastError: null });
     await persistLiveSettings(get, set);
     await persistLiveAutosave(get, set);
   },
 
   setAnimationMode: async (mode) => {
     const nextSession = updateSessionSettings(get, { animationMode: mode });
-    set({ session: nextSession, lastError: null });
+    set({ ...buildSessionPatch(nextSession), lastError: null });
     await persistLiveSettings(get, set);
     await persistLiveAutosave(get, set);
   },
@@ -556,7 +647,7 @@ export const useGameStore = create<GameStore>((set, get) => ({
   setDefaultViewMode: async (mode) => {
     const nextSession = updateSessionSettings(get, { defaultViewMode: mode });
     set({
-      session: nextSession,
+      ...buildSessionPatch(nextSession),
       cameraPreset: mode === "2d" ? "2d" : "classic",
       lastError: null,
     });
@@ -566,7 +657,7 @@ export const useGameStore = create<GameStore>((set, get) => ({
 
   setCameraSensitivity: async (cameraSensitivity) => {
     const nextSession = updateSessionSettings(get, { cameraSensitivity });
-    set({ session: nextSession, lastError: null });
+    set({ ...buildSessionPatch(nextSession), lastError: null });
     scheduleCameraSensitivityPersistence(get, set);
   },
 
@@ -574,7 +665,7 @@ export const useGameStore = create<GameStore>((set, get) => ({
     const nextSession = updateSessionSettings(get, {
       qualityMode: mode,
     });
-    set({ session: nextSession, lastError: null });
+    set({ ...buildSessionPatch(nextSession), lastError: null });
     await persistLiveSettings(get, set);
     await persistLiveAutosave(get, set);
   },
@@ -584,7 +675,28 @@ export const useGameStore = create<GameStore>((set, get) => ({
       qualityMode: "manual",
       manualQualityTier: tier,
     });
-    set({ session: nextSession, lastError: null });
+    set({ ...buildSessionPatch(nextSession), lastError: null });
+    await persistLiveSettings(get, set);
+    await persistLiveAutosave(get, set);
+  },
+
+  setSoundEnabled: async (enabled) => {
+    const nextSession = updateSessionSettings(get, { soundEnabled: enabled });
+    set({ ...buildSessionPatch(nextSession), lastError: null });
+    await persistLiveSettings(get, set);
+    await persistLiveAutosave(get, set);
+  },
+
+  setSoundVolume: async (volume) => {
+    const nextSession = updateSessionSettings(get, { soundVolume: volume });
+    set({ ...buildSessionPatch(nextSession), lastError: null });
+    await persistLiveSettings(get, set);
+    await persistLiveAutosave(get, set);
+  },
+
+  setHapticsEnabled: async (enabled) => {
+    const nextSession = updateSessionSettings(get, { hapticsEnabled: enabled });
+    set({ ...buildSessionPatch(nextSession), lastError: null });
     await persistLiveSettings(get, set);
     await persistLiveAutosave(get, set);
   },
@@ -669,7 +781,7 @@ export const useGameStore = create<GameStore>((set, get) => ({
       activeAnalysisSignature = null;
       const nextSession = resumePersistedSession(hydrateQualitySession(record.session, get().session.settings));
       set({
-        session: nextSession,
+        ...buildSessionPatch(nextSession),
         selectedSquare: null,
         legalTargets: [],
         castlingTargets: [],
@@ -700,7 +812,7 @@ export const useGameStore = create<GameStore>((set, get) => ({
       activeAnalysisSignature = null;
       const nextSession = resumePersistedSession(hydrateQualitySession(autosave.session, get().session.settings));
       set({
-        session: nextSession,
+        ...buildSessionPatch(nextSession),
         selectedSquare: null,
         legalTargets: [],
         castlingTargets: [],
@@ -735,7 +847,7 @@ export const useGameStore = create<GameStore>((set, get) => ({
     const nextSession = sessionFromPgn(pgn, get().session.settings);
     activeAnalysisSignature = null;
     set({
-      session: nextSession,
+      ...buildSessionPatch(nextSession),
       selectedSquare: null,
       legalTargets: [],
       castlingTargets: [],
@@ -783,7 +895,7 @@ export const useGameStore = create<GameStore>((set, get) => ({
       const nextSession = withAnalysis(currentSession, summary);
 
       set({
-        session: nextSession,
+        ...buildSessionPatch(nextSession),
         analysisProgress: null,
       });
 
@@ -834,7 +946,7 @@ export const useGameStore = create<GameStore>((set, get) => ({
     }
 
     set({
-      session: withClockState(state.session, nextClockState),
+      ...buildSessionPatch(withClockState(state.session, nextClockState)),
     });
   },
 }));
@@ -857,7 +969,7 @@ async function commitPlayerMove(
   await interruptEngineWork();
   activeAnalysisSignature = null;
   set({
-    session: nextSession,
+    ...buildSessionPatch(nextSession),
     selectedSquare: null,
     legalTargets: [],
     castlingTargets: [],
@@ -915,7 +1027,7 @@ async function runEngineMove(
     const nextSession = appliedSession;
 
     set({
-      session: nextSession,
+      ...buildSessionPatch(nextSession),
       hintMove: null,
       selectedSquare: null,
       legalTargets: [],

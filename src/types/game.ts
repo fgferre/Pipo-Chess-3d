@@ -6,6 +6,12 @@ export type Orientation = "white" | "black";
 export type EnginePhase = "booting" | "ready" | "thinking" | "analyzing" | "error";
 export type CameraPreset = "classic" | "side" | "topdown" | "2d";
 export type NewGameColorChoice = "white" | "black" | "random";
+export type InteractionBlockReason =
+  | "opponent-piece"
+  | "out-of-turn"
+  | "promotion-pending"
+  | "analysis-active"
+  | "inactive-session";
 
 export interface ClockConfig {
   enabled: boolean;
@@ -96,6 +102,91 @@ export interface GameSnapshot {
   canRedo: boolean;
 }
 
+export type IllegalMoveReason =
+  | "exposes-king"
+  | "pinned"
+  | "blocked"
+  | "no-piece"
+  | "occupied-by-friendly"
+  | "invalid-pattern"
+  | "pawn-forward-blocked"
+  | "pawn-double-step-blocked"
+  | "pawn-diagonal-capture-required"
+  | "castling-no-rights"
+  | "castling-blocked"
+  | "castling-through-check"
+  | "castling-while-in-check"
+  | "unknown";
+
+export interface IllegalMoveDiagnosis {
+  reason: IllegalMoveReason;
+  piece?: PieceSymbol | null;
+  attackerSquares: readonly Square[];
+  attackerTypes: readonly PieceSymbol[];
+  relatedSquares?: readonly Square[];
+  castlingSide?: "king" | "queen" | null;
+}
+
+export interface FormattedIllegalMoveDiagnosis {
+  summary: string;
+  detail: string | null;
+}
+
+export interface InteractionSelectionState {
+  selectedSquare: Square | null;
+  legalTargets: Square[];
+  castlingTargets: Square[];
+}
+
+export type InteractionOutcome =
+  | {
+      kind: "ignored";
+      selection: InteractionSelectionState;
+    }
+  | {
+      kind: "blocked";
+      reason: InteractionBlockReason;
+      square: Square;
+      selection: InteractionSelectionState;
+    }
+  | {
+      kind: "clear";
+      selection: InteractionSelectionState;
+    }
+  | {
+      kind: "select";
+      square: Square;
+      selection: InteractionSelectionState;
+    }
+  | {
+      kind: "move";
+      from: Square;
+      to: Square;
+      selection: InteractionSelectionState;
+    }
+  | {
+      kind: "promotion";
+      pendingPromotion: PendingPromotion;
+      selection: InteractionSelectionState;
+    }
+  | {
+      kind: "illegal";
+      from: Square;
+      to: Square;
+      diagnosis: IllegalMoveDiagnosis;
+      selection: InteractionSelectionState;
+    };
+
+export interface FiftyMoveRulePressure {
+  halfmoveClock: number;
+  state: "normal" | "warning" | "critical" | "draw";
+}
+
+export interface LowTimeState {
+  thresholdMs: number;
+  byColor: Record<Color, boolean>;
+}
+
 export interface CriticalMoment {
   ply: number;
   moveUci: string;
@@ -135,6 +226,9 @@ export interface AppSettings {
   qualityMode: QualityMode;
   manualQualityTier: QualityTier;
   showCoordinates: boolean;
+  soundEnabled: boolean;
+  soundVolume: number;
+  hapticsEnabled: boolean;
 }
 
 export interface GameSession {
