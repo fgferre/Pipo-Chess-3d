@@ -85,9 +85,9 @@ const _motionControl = new Vector3();
 const _motionTail = new Vector3();
 
 const DEFAULT_BOARD_PALETTE = {
-  lightSquares: { baseHex: "#e0b576", veinHex: "#a36d26", isKnotty: false },
-  darkSquares: { baseHex: "#5c2e16", veinHex: "#1a0b05", isKnotty: true },
-  frame: { baseHex: "#361a0d", veinHex: "#0a0402", isKnotty: true },
+  lightSquares: { tone: "light", baseHex: "#e0b576", veinHex: "#a36d26", isKnotty: false },
+  darkSquares: { tone: "dark", baseHex: "#5c2e16", veinHex: "#1a0b05", isKnotty: true },
+  frame: { tone: "dark", baseHex: "#361a0d", veinHex: "#0a0402", isKnotty: true },
   groutHex: "#050505",
 } satisfies BoardMaterialPalette;
 
@@ -298,6 +298,7 @@ const SPRITE_SCALE_BY_TYPE: Record<PieceSymbol, number> = {
 };
 
 interface WoodPalette {
+  tone: "light" | "dark";
   baseHex: string;
   veinHex: string;
   isKnotty: boolean;
@@ -308,6 +309,43 @@ interface BoardMaterialPalette {
   darkSquares: WoodPalette;
   frame: WoodPalette;
   groutHex: string;
+}
+
+interface WoodShaderProfile {
+  centerX: number;
+  centerY: number;
+  centerJitterX: number;
+  centerJitterY: number;
+  maxRadius: number;
+  stretchY: number;
+  stretchJitter: number;
+  ringSpacingMin: number;
+  ringSpacingMax: number;
+  lineWidthMin: number;
+  lineWidthMax: number;
+  lineAlphaMin: number;
+  lineAlphaMax: number;
+  arcStep: number;
+  grainFrequency: number;
+  grainAmplitude: number;
+  detailFrequency: number;
+  detailAmplitude: number;
+  radiusFrequency: number;
+  radiusAmplitude: number;
+  knotFrequency: number;
+  knotAmplitude: number;
+  secondaryRotation: number;
+  secondarySpacingMultiplier: number;
+  secondaryWidthMultiplier: number;
+  secondaryAlphaMultiplier: number;
+  vignetteInner: number;
+  vignetteOuter: number;
+  vignetteAlpha: number;
+  highlightAlpha: number;
+}
+
+interface ResolvedWoodShaderParams extends WoodShaderProfile {
+  seed: number;
 }
 
 interface WoodMaterialTuning {
@@ -419,16 +457,19 @@ function shiftHex(hex: string, saturationDelta: number, lightnessDelta: number):
 export function deriveBoardPalette(theme: ThemeDefinition): BoardMaterialPalette {
   return {
     lightSquares: {
+      tone: "light",
       baseHex: shiftHex(mixHex(theme.boardLight, "#f6e3bf", 0.14), 0.04, 0.03),
       veinHex: shiftHex(mixHex(theme.boardLight, theme.boardDark, 0.52), 0.08, -0.16),
       isKnotty: false,
     },
     darkSquares: {
+      tone: "dark",
       baseHex: shiftHex(mixHex(theme.boardDark, theme.boardFrame, 0.18), 0.03, -0.02),
       veinHex: shiftHex(mixHex(theme.boardFrame, "#050302", 0.62), 0.04, -0.08),
       isKnotty: true,
     },
     frame: {
+      tone: "dark",
       baseHex: shiftHex(mixHex(theme.boardFrame, theme.boardDark, 0.1), 0.03, -0.02),
       veinHex: shiftHex(mixHex(theme.boardFrame, "#050302", 0.7), 0.05, -0.1),
       isKnotty: true,
@@ -437,81 +478,246 @@ export function deriveBoardPalette(theme: ThemeDefinition): BoardMaterialPalette
   };
 }
 
-// ─── Wood Texture Generator ────────────────────────────────────────────────
+// ─── Procedural Wood Texture Engine ────────────────────────────────────────
 
-function createWoodTexture(
-  renderer: WebGLRenderer,
-  baseHex: string,
-  veinHex: string,
-  isKnotty = false,
-  maxAnisotropy = 1,
-): CanvasTexture {
-  const SIZE = 2048;
-  const canvas = document.createElement("canvas");
-  canvas.width = SIZE;
-  canvas.height = SIZE;
-  const ctx = canvas.getContext("2d")!;
+function hashStringToSeed(...parts: string[]): number {
+  let hash = 2166136261;
 
-  ctx.fillStyle = baseHex;
-  ctx.fillRect(0, 0, SIZE, SIZE);
+  for (const part of parts) {
+    for (let i = 0; i < part.length; i++) {
+      hash ^= part.charCodeAt(i);
+      hash = Math.imul(hash, 16777619);
+    }
+    hash ^= 0x9e3779b9;
+    hash = Math.imul(hash, 16777619);
+  }
 
-  const centerX = isKnotty ? 600 : -3000;
-  const centerY = isKnotty ? 800 : 1024;
+  return hash >>> 0 || 1;
+}
+
+function createSeededRandom(seed: number): () => number {
+  let state = seed >>> 0;
+
+  return () => {
+    state = (state + 0x6d2b79f5) >>> 0;
+    let t = Math.imul(state ^ (state >>> 15), 1 | state);
+    t ^= t + Math.imul(t ^ (t >>> 7), 61 | t);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+function randomBetween(nextRandom: () => number, min: number, max: number): number {
+  return min + (max - min) * nextRandom();
+}
+
+function getWoodShaderProfile(palette: WoodPalette): WoodShaderProfile {
+  if (palette.tone === "light") {
+    return {
+      centerX: -1.45,
+      centerY: 0.5,
+      centerJitterX: 0.12,
+      centerJitterY: 0.08,
+      maxRadius: 3.4,
+      stretchY: 3.9,
+      stretchJitter: 0.3,
+      ringSpacingMin: 0.016,
+      ringSpacingMax: 0.038,
+      lineWidthMin: 0.006,
+      lineWidthMax: 0.018,
+      lineAlphaMin: 0.1,
+      lineAlphaMax: 0.26,
+      arcStep: 0.055,
+      grainFrequency: 6.2,
+      grainAmplitude: 0.018,
+      detailFrequency: 3.4,
+      detailAmplitude: 0.024,
+      radiusFrequency: 0.02,
+      radiusAmplitude: 0.05,
+      knotFrequency: 8.5,
+      knotAmplitude: 0.01,
+      secondaryRotation: Math.PI / 18,
+      secondarySpacingMultiplier: 1.6,
+      secondaryWidthMultiplier: 0.55,
+      secondaryAlphaMultiplier: 0.45,
+      vignetteInner: 0.26,
+      vignetteOuter: 0.78,
+      vignetteAlpha: 0.08,
+      highlightAlpha: 0.018,
+    };
+  }
+
+  return {
+    centerX: 0.28,
+    centerY: 0.42,
+    centerJitterX: 0.08,
+    centerJitterY: 0.06,
+    maxRadius: 3.9,
+    stretchY: 1.55,
+    stretchJitter: 0.18,
+    ringSpacingMin: 0.014,
+    ringSpacingMax: 0.032,
+    lineWidthMin: 0.008,
+    lineWidthMax: 0.022,
+    lineAlphaMin: 0.16,
+    lineAlphaMax: 0.38,
+    arcStep: 0.05,
+    grainFrequency: 6.6,
+    grainAmplitude: 0.015,
+    detailFrequency: 4.3,
+    detailAmplitude: 0.02,
+    radiusFrequency: 0.022,
+    radiusAmplitude: 0.026,
+    knotFrequency: 11.5,
+    knotAmplitude: palette.isKnotty ? 0.018 : 0.012,
+    secondaryRotation: Math.PI / 24,
+    secondarySpacingMultiplier: 1.35,
+    secondaryWidthMultiplier: 0.68,
+    secondaryAlphaMultiplier: 0.52,
+    vignetteInner: 0.28,
+    vignetteOuter: 0.82,
+    vignetteAlpha: 0.14,
+    highlightAlpha: 0.012,
+  };
+}
+
+function resolveWoodShaderParams(
+  palette: WoodPalette,
+  variantSeed: number,
+): ResolvedWoodShaderParams {
+  const seed = hashStringToSeed(
+    palette.tone,
+    palette.baseHex,
+    palette.veinHex,
+    palette.isKnotty ? "knotted" : "smooth",
+    String(variantSeed),
+  );
+  const profile = getWoodShaderProfile(palette);
+  const nextRandom = createSeededRandom(seed);
+
+  return {
+    ...profile,
+    centerX: profile.centerX + randomBetween(nextRandom, -profile.centerJitterX, profile.centerJitterX),
+    centerY: profile.centerY + randomBetween(nextRandom, -profile.centerJitterY, profile.centerJitterY),
+    stretchY: profile.stretchY + randomBetween(nextRandom, -profile.stretchJitter, profile.stretchJitter),
+    grainAmplitude: profile.grainAmplitude * randomBetween(nextRandom, 0.92, 1.08),
+    detailAmplitude: profile.detailAmplitude * randomBetween(nextRandom, 0.92, 1.08),
+    knotAmplitude: profile.knotAmplitude * randomBetween(nextRandom, 0.9, 1.12),
+    secondaryRotation:
+      profile.secondaryRotation * randomBetween(nextRandom, 0.9, 1.12),
+    seed,
+  };
+}
+
+function strokeWoodPass(
+  ctx: CanvasRenderingContext2D,
+  size: number,
+  palette: WoodPalette,
+  params: ResolvedWoodShaderParams,
+  rotation: number,
+  spacingMultiplier: number,
+  widthMultiplier: number,
+  alphaMultiplier: number,
+  seedOffset: string,
+): void {
+  const nextRandom = createSeededRandom(hashStringToSeed(String(params.seed), seedOffset));
+  const centerX = size * (0.5 + params.centerX);
+  const centerY = size * params.centerY;
+  const maxRadius = size * params.maxRadius;
+  const cosRotation = Math.cos(rotation);
+  const sinRotation = Math.sin(rotation);
 
   ctx.lineCap = "round";
   ctx.lineJoin = "round";
 
-  // Primary grain layer
-  for (let r = 10; r < 7000; r += Math.random() * 25 + 15) {
+  for (
+    let radius = size * 0.012;
+    radius < maxRadius;
+    radius += size * randomBetween(nextRandom, params.ringSpacingMin, params.ringSpacingMax) * spacingMultiplier
+  ) {
     ctx.beginPath();
-    ctx.strokeStyle = veinHex;
-    ctx.globalAlpha = Math.random() * 0.4 + 0.15;
-    ctx.lineWidth = Math.random() * 14 + 6;
+    ctx.strokeStyle = palette.veinHex;
+    ctx.globalAlpha =
+      randomBetween(nextRandom, params.lineAlphaMin, params.lineAlphaMax) * alphaMultiplier;
+    ctx.lineWidth =
+      size * randomBetween(nextRandom, params.lineWidthMin, params.lineWidthMax) * widthMultiplier;
 
-    for (let angle = -Math.PI / 2; angle < Math.PI * 1.5; angle += 0.04) {
-      let noise = Math.sin(angle * 6) * 15 + Math.cos(angle * 4) * 20;
-      if (isKnotty) {
-        noise += Math.sin(angle * 12) * 10;
+    const phaseA = nextRandom() * Math.PI * 2;
+    const phaseB = nextRandom() * Math.PI * 2;
+    const phaseC = nextRandom() * Math.PI * 2;
+
+    for (let angle = -Math.PI / 2; angle < Math.PI * 1.5; angle += params.arcStep) {
+      const primaryWave =
+        Math.sin(angle * params.grainFrequency + phaseA) * size * params.grainAmplitude;
+      const detailWave =
+        Math.cos(angle * params.detailFrequency + phaseB) * size * params.detailAmplitude;
+      const radialWave =
+        Math.sin(radius * params.radiusFrequency + angle * 2.8 + phaseC) *
+        size *
+        params.radiusAmplitude;
+      const knotWave = palette.isKnotty
+        ? Math.sin(angle * params.knotFrequency + phaseC * 0.7) * size * params.knotAmplitude
+        : 0;
+      const distance = radius + primaryWave + detailWave + radialWave + knotWave;
+
+      const baseX = Math.cos(angle) * distance;
+      const baseY = Math.sin(angle) * distance * params.stretchY;
+      const rotatedX = baseX * cosRotation - baseY * sinRotation;
+      const rotatedY = baseX * sinRotation + baseY * cosRotation;
+      const x = centerX + rotatedX;
+      const y = centerY + rotatedY;
+
+      if (angle === -Math.PI / 2) {
+        ctx.moveTo(x, y);
       } else {
-        noise += Math.sin(r * 0.02 + angle * 3) * 50;
+        ctx.lineTo(x, y);
       }
-      const x = centerX + Math.cos(angle) * (r + noise);
-      const y = centerY + Math.sin(angle) * (r + noise) * (isKnotty ? 1.5 : 4.0);
-      if (angle === -Math.PI / 2) ctx.moveTo(x, y);
-      else ctx.lineTo(x, y);
     }
+
     ctx.stroke();
   }
+}
 
-  // Secondary grain layer — offset by 15 degrees for depth
-  const cos15 = Math.cos(Math.PI / 12);
-  const sin15 = Math.sin(Math.PI / 12);
-  for (let r = 30; r < 7000; r += Math.random() * 40 + 28) {
-    ctx.beginPath();
-    ctx.strokeStyle = veinHex;
-    ctx.globalAlpha = Math.random() * 0.18 + 0.05;
-    ctx.lineWidth = Math.random() * 7 + 2;
+function createWoodTexture(
+  renderer: WebGLRenderer,
+  palette: WoodPalette,
+  maxAnisotropy = 1,
+  variantSeed = 0,
+): CanvasTexture {
+  const SIZE = maxAnisotropy >= 12 ? 1024 : maxAnisotropy >= 4 ? 768 : 512;
+  const canvas = document.createElement("canvas");
+  canvas.width = SIZE;
+  canvas.height = SIZE;
+  const ctx = canvas.getContext("2d")!;
+  const params = resolveWoodShaderParams(palette, variantSeed);
 
-    for (let angle = -Math.PI / 2; angle < Math.PI * 1.5; angle += 0.06) {
-      const noise = Math.sin(angle * 5) * 18 + Math.cos(angle * 3) * 14 + Math.sin(r * 0.018 + angle * 2.5) * 38;
-      const baseX = centerX + Math.cos(angle) * (r + noise);
-      const baseY = centerY + Math.sin(angle) * (r + noise) * (isKnotty ? 1.3 : 3.6);
-      // Rotate 15 degrees around center
-      const rx = baseX - SIZE / 2;
-      const ry = baseY - SIZE / 2;
-      const x = rx * cos15 - ry * sin15 + SIZE / 2;
-      const y = rx * sin15 + ry * cos15 + SIZE / 2;
-      if (angle === -Math.PI / 2) ctx.moveTo(x, y);
-      else ctx.lineTo(x, y);
-    }
-    ctx.stroke();
-  }
+  ctx.fillStyle = palette.baseHex;
+  ctx.fillRect(0, 0, SIZE, SIZE);
 
-  const grad = ctx.createRadialGradient(SIZE / 2, SIZE / 2, SIZE * 0.28, SIZE / 2, SIZE / 2, SIZE * 0.76);
-  grad.addColorStop(0, "rgba(255,255,255,0.025)");
-  grad.addColorStop(1, "rgba(0,0,0,0.22)");
-  ctx.globalAlpha = 1.0;
-  ctx.fillStyle = grad;
+  strokeWoodPass(ctx, SIZE, palette, params, 0, 1, 1, 1, "primary");
+  strokeWoodPass(
+    ctx,
+    SIZE,
+    palette,
+    params,
+    params.secondaryRotation,
+    params.secondarySpacingMultiplier,
+    params.secondaryWidthMultiplier,
+    params.secondaryAlphaMultiplier,
+    "secondary",
+  );
+
+  const vignette = ctx.createRadialGradient(
+    SIZE / 2,
+    SIZE / 2,
+    SIZE * params.vignetteInner,
+    SIZE / 2,
+    SIZE / 2,
+    SIZE * params.vignetteOuter,
+  );
+  vignette.addColorStop(0, `rgba(255,255,255,${params.highlightAlpha})`);
+  vignette.addColorStop(1, `rgba(0,0,0,${params.vignetteAlpha})`);
+  ctx.globalAlpha = 1;
+  ctx.fillStyle = vignette;
   ctx.fillRect(0, 0, SIZE, SIZE);
 
   const texture = new CanvasTexture(canvas);
@@ -544,15 +750,10 @@ function applyWoodMaterialTheme(
   palette: WoodPalette,
   tuning: WoodMaterialTuning,
   textureAnisotropy: number,
+  variantSeed = 0,
 ): void {
   const previousTextures = collectMaterialTextures(material);
-  const texture = createWoodTexture(
-    renderer,
-    palette.baseHex,
-    palette.veinHex,
-    palette.isKnotty,
-    textureAnisotropy,
-  );
+  const texture = createWoodTexture(renderer, palette, textureAnisotropy, variantSeed);
 
   material.map = texture;
   material.bumpMap = texture;
@@ -566,6 +767,8 @@ function applyWoodMaterialTheme(
   }
   material.userData.boardRole = role;
   material.userData.boardPalette = { ...palette };
+  material.userData.boardShaderParams = { ...resolveWoodShaderParams(palette, variantSeed) };
+  material.userData.boardTextureVariant = variantSeed;
   material.needsUpdate = true;
 
   previousTextures.forEach((previousTexture) => previousTexture.dispose());
@@ -890,10 +1093,10 @@ function createCoordinateLabelTexture(char: string, color: string): CanvasTextur
   const ctx = canvas.getContext("2d")!;
   ctx.clearRect(0, 0, size, size);
   ctx.fillStyle = color;
-  ctx.font = `bold 42px Georgia, "Times New Roman", serif`;
+  ctx.font = `600 28px "Inter", "Montserrat", "Segoe UI", sans-serif`;
   ctx.textAlign = "center";
   ctx.textBaseline = "middle";
-  ctx.fillText(char, size / 2, size / 2);
+  ctx.fillText(char, size / 2, size / 2 + 1);
   const texture = new CanvasTexture(canvas);
   texture.needsUpdate = true;
   return texture;
@@ -2049,10 +2252,8 @@ export class ChessStage implements SceneAdapter {
   private buildCoordinateLabels(orientation: Orientation): void {
     this.disposeCoordinateLabels();
 
-    const palette = this.currentState?.theme
-      ? deriveBoardPalette(this.currentState.theme)
-      : DEFAULT_BOARD_PALETTE;
-    const textColor = palette.lightSquares.baseHex;
+    // Use a premium gold/bronze color matching typical rich frames
+    const textColor = "#d6b57a";
 
     const isBlack = orientation === "black";
     const fileLetters = isBlack
@@ -2062,51 +2263,46 @@ export class ChessStage implements SceneAdapter {
       ? ["8", "7", "6", "5", "4", "3", "2", "1"]
       : ["1", "2", "3", "4", "5", "6", "7", "8"];
 
-    const LABEL_HEIGHT = 0.045;
-    const geo = new BoxGeometry(0.45, LABEL_HEIGHT, 0.45);
-    const sideMat = new MeshStandardMaterial({
-      color: new Color(palette.frame.baseHex),
-      roughness: 0.85,
-      metalness: 0.0,
-    });
+    const geo = new PlaneGeometry(0.35, 0.35);
+    // Align with the exact flat top of `border1` (which is at y = -0.25)
+    // Offset slightly by 0.002 to safely clear the frame geometry without floating.
+    const FRAME_HEIGHT = -0.248;
 
     const createLabelMesh = (char: string, x: number, z: number, rotZ: number): Mesh => {
       const texture = createCoordinateLabelTexture(char, textColor);
-      const topMat = new MeshStandardMaterial({
+      const mat = new MeshStandardMaterial({
         map: texture,
         transparent: true,
-        opacity: 0.82,
+        opacity: 0.9,
         emissive: new Color(textColor),
-        emissiveIntensity: 0.12,
-        roughness: 0.6,
+        emissiveIntensity: 0.1,
+        roughness: 0.4,
+        metalness: 0.5,
+        depthWrite: false, 
       });
-      // BoxGeometry face order: +X, -X, +Y (top), -Y (bottom), +Z, -Z
-      const mesh = new Mesh(geo, [sideMat, sideMat, topMat, sideMat, sideMat, sideMat]);
-      mesh.rotation.y = rotZ;
-      mesh.castShadow = true;
-      mesh.receiveShadow = true;
-      mesh.position.set(x, LABEL_HEIGHT / 2, z);
+      const mesh = new Mesh(geo, mat);
+      
+      mesh.rotation.x = -Math.PI / 2;
+      mesh.rotation.z = rotZ;
+      mesh.position.set(x, FRAME_HEIGHT, z);
       return mesh;
     };
 
+    // Center of the frame margin is around 4.3
+    const margin = 4.3;
+
     // File labels (a-h) along bottom and top edges
-    // The root rotates by PI for black, so labels are placed at fixed positions
-    // and the text content is swapped based on orientation.
     for (let i = 0; i < 8; i++) {
       const x = i - 3.5;
-      // Bottom edge (near white side when orientation=white)
-      this.coordinateGroup.add(createLabelMesh(fileLetters[i], x, 4.3, 0));
-      // Top edge — rotate text by PI so it reads correctly from the other side
-      this.coordinateGroup.add(createLabelMesh(fileLetters[i], x, -4.3, Math.PI));
+      this.coordinateGroup.add(createLabelMesh(fileLetters[i], x, margin, 0));
+      this.coordinateGroup.add(createLabelMesh(fileLetters[i], x, -margin, Math.PI));
     }
 
     // Rank labels (1-8) along left and right edges
     for (let i = 0; i < 8; i++) {
       const z = 3.5 - i;
-      // Left edge
-      this.coordinateGroup.add(createLabelMesh(rankNumbers[i], -4.3, z, Math.PI / 2));
-      // Right edge — rotate text so it reads correctly from the other side
-      this.coordinateGroup.add(createLabelMesh(rankNumbers[i], 4.3, z, -Math.PI / 2));
+      this.coordinateGroup.add(createLabelMesh(rankNumbers[i], -margin, z, Math.PI / 2));
+      this.coordinateGroup.add(createLabelMesh(rankNumbers[i], margin, z, -Math.PI / 2));
     }
   }
 
@@ -2116,6 +2312,7 @@ export class ChessStage implements SceneAdapter {
       const child = this.coordinateGroup.children[0];
       this.coordinateGroup.remove(child);
       if (child instanceof Mesh) {
+        child.geometry.dispose();
         const mats = Array.isArray(child.material) ? child.material : [child.material];
         for (const mat of mats) {
           if (disposedMats.has(mat)) continue;
@@ -2373,6 +2570,7 @@ export class ChessStage implements SceneAdapter {
     lightMats: QualityMaterial[],
     darkMats: QualityMaterial[],
   ): void {
+    const variantSeed = lightMats.length;
     const lightMat = createTieredMaterial(
       this.qualityProfile.usePhysicalMaterials,
       0xffffff,
@@ -2391,6 +2589,7 @@ export class ChessStage implements SceneAdapter {
       DEFAULT_BOARD_PALETTE.lightSquares,
       this.qualityProfile.boardLight,
       this.qualityProfile.textureAnisotropy,
+      variantSeed,
     );
     applyWoodMaterialTheme(
       this.renderer,
@@ -2399,6 +2598,7 @@ export class ChessStage implements SceneAdapter {
       DEFAULT_BOARD_PALETTE.darkSquares,
       this.qualityProfile.boardDark,
       this.qualityProfile.textureAnisotropy,
+      variantSeed,
     );
 
     lightMats.push(lightMat);
@@ -2453,6 +2653,7 @@ export class ChessStage implements SceneAdapter {
       DEFAULT_BOARD_PALETTE.frame,
       this.qualityProfile.boardFrame,
       this.qualityProfile.textureAnisotropy,
+      0,
     );
     this.frameMats.push(baseMat);
 
@@ -3242,6 +3443,7 @@ export class ChessStage implements SceneAdapter {
         boardPalette.lightSquares,
         this.qualityProfile.boardLight,
         this.qualityProfile.textureAnisotropy,
+        material.userData.boardTextureVariant ?? 0,
       ),
     );
     this.darkSquareMats.forEach((material) =>
@@ -3252,6 +3454,7 @@ export class ChessStage implements SceneAdapter {
         boardPalette.darkSquares,
         this.qualityProfile.boardDark,
         this.qualityProfile.textureAnisotropy,
+        material.userData.boardTextureVariant ?? 0,
       ),
     );
     this.frameMats.forEach((material) =>
@@ -3262,6 +3465,7 @@ export class ChessStage implements SceneAdapter {
         boardPalette.frame,
         this.qualityProfile.boardFrame,
         this.qualityProfile.textureAnisotropy,
+        material.userData.boardTextureVariant ?? 0,
       ),
     );
     if (this.groutMat) {
