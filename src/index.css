@@ -494,7 +494,7 @@ button {
   width: 100%;
   display: grid;
   grid-template-columns: auto 1fr auto;
-  align-items: start;
+  align-items: center;
   gap: 0.9rem;
   background: none;
   border: none;
@@ -527,7 +527,7 @@ button {
 .top-bar__island--engine {
   justify-self: end;
   gap: 0.5rem;
-  max-width: min(24rem, 100%);
+  max-width: min(26rem, 100%);
 }
 
 .top-bar__brand {
@@ -594,10 +594,17 @@ button {
 
 .top-bar__engine {
   display: flex;
+  flex: 1 1 auto;
   align-items: center;
   gap: 0.55rem;
   min-width: 0;
   padding: 0.18rem 0.2rem 0.18rem 0.28rem;
+}
+
+.top-bar__engine-copy {
+  display: grid;
+  gap: 0.12rem;
+  min-width: 0;
 }
 
 .top-bar:not(.is-expanded) .top-bar__engine small {
@@ -605,16 +612,19 @@ button {
 }
 
 .top-bar__engine strong {
+  display: block;
   min-width: 0;
   font-size: 0.78rem;
   white-space: nowrap;
 }
 
 .top-bar__engine small {
+  display: block;
   min-width: 0;
   color: var(--text-muted);
   overflow: hidden;
   text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .top-bar__island--engine .status-pill {

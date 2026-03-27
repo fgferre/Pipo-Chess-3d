@@ -1770,8 +1770,10 @@ function App() {
           <div className="top-bar__island top-bar__island--engine">
             <div className="top-bar__engine">
               <span className={`status-pill status-pill--${enginePhase}`}>{t(locale, getStatusKey(enginePhase))}</span>
-              <strong>{activeDifficulty.label}</strong>
-              {!isMobileShell ? <small>{engineMessage || t(locale, getStatusKey(enginePhase))}</small> : null}
+              <div className="top-bar__engine-copy">
+                <strong>{activeDifficulty.label}</strong>
+                {!isMobileShell ? <small>{engineMessage || t(locale, getStatusKey(enginePhase))}</small> : null}
+              </div>
             </div>
             {!isMobileShell ? (
               <button
@@ -1804,7 +1806,7 @@ function App() {
           paddingBlock: isZenMode ? 0 : undefined,
         }}
         transition={{ duration: 0.3, ease: "easeInOut" }}
-        style={{ overflow: "hidden", pointerEvents: isZenMode ? "none" : undefined }}
+        style={{ overflow: isZenMode ? "hidden" : "visible", pointerEvents: isZenMode ? "none" : undefined }}
       >
         {isMobileShell ? (
           <div

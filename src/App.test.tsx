@@ -215,6 +215,18 @@ describe("App feedback integration", () => {
     expect(await screen.findByText("Aguarde sua vez")).toBeInTheDocument();
   });
 
+  it("reveals the engine detail in the expanded top bar", async () => {
+    const { default: App } = await import("./App");
+    render(<App />);
+
+    await screen.findByText("Pipo Chess 3D");
+
+    fireEvent.click(screen.getByTestId("shell-top-toggle"));
+
+    const topBar = screen.getByTestId("shell-top-bar");
+    expect(within(topBar).getByText("Stockfish local pronto")).toBeInTheDocument();
+  });
+
   it("persists sound and haptic preferences from the settings drawer", async () => {
     const { default: App } = await import("./App");
     const { loadBootstrapData } = await import("./persistence/db");
