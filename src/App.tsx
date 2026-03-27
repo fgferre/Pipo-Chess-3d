@@ -268,6 +268,10 @@ function App() {
     0,
     difficultyPresets.findIndex((preset) => preset.id === newGameDifficultyId),
   );
+  const selectedNewGameDifficulty = getDifficultyPreset(newGameDifficultyId);
+  const clockChoiceCount = NEW_GAME_CLOCK_PRESETS.length + 1;
+  const clockChoiceColumns = clockChoiceCount % 2 === 0 ? clockChoiceCount / 2 : clockChoiceCount;
+  const clockChoiceGridStyle = { "--clock-columns": clockChoiceColumns } as CSSProperties;
   const analysisSectionSubtitle = getAnalysisSectionSubtitle(
     session,
     locale,
@@ -582,6 +586,18 @@ function App() {
     }
   };
 
+  const toggleHistory = () => {
+    startTransition(() => {
+      setHistoryOpen((value) => {
+        const willOpen = !value;
+        if (willOpen && window.innerWidth < 900) {
+          setBottomBarExpanded(false);
+        }
+        return willOpen;
+      });
+    });
+  };
+
   const topSide = buildClockSide(topColor, session, locale);
   const bottomSide = buildClockSide(bottomColor, session, locale);
 
@@ -594,6 +610,29 @@ function App() {
       <div className="canvas-backdrop" />
       <div className="backdrop-orb backdrop-orb--primary" />
       <div className="backdrop-orb backdrop-orb--secondary" />
+
+      <HistoryPanel
+        open={historyOpen}
+        hidden={isZenMode}
+        engineLabel={analysisMode ? t(locale, "history.analysis") : activeDifficulty.label}
+        historyBadgeLabel={analysisMode ? t(locale, "history.analysis") : t(locale, "history.pgn")}
+        historyProgress={historyProgress}
+        historySessionSubtitle={historySessionSubtitle}
+        historySummary={historySummary}
+        locale={locale}
+        moveCount={session.moveEntries.length}
+        moves={deferredMoves}
+        selectedPly={analysisMode ? currentPly : null}
+        sessionStatusLabel={analysisMode ? t(locale, "history.analysis") : t(locale, getStatusKey(enginePhase))}
+        sessionStatusTone={analysisMode ? "analyzing" : enginePhase}
+        tagsByPly={session.analysisSummary?.tagsByPly}
+        onToggle={toggleHistory}
+        onSelectPly={(ply) => {
+          setAnalysisAutoplay(false);
+          setAnalysisCursor(ply);
+        }}
+        shellPointerEvents={menuOpen ? "none" : "auto"}
+      />
 
       <main className="stage-root">
         <div className="stage-playfield">
@@ -665,37 +704,6 @@ function App() {
           </motion.button>
         )}
       </AnimatePresence>
-
-      <motion.button
-        className={`history-tab ${historyOpen ? "is-open" : ""}`}
-        type="button"
-        aria-label={t(locale, "history.toggle")}
-        animate={{ opacity: isZenMode ? 0 : 1 }}
-        transition={{ duration: 0.3, ease: "easeInOut" }}
-        style={{ pointerEvents: isZenMode ? "none" : undefined }}
-        onClick={() => {
-          startTransition(() => {
-            setHistoryOpen((value) => {
-              const willOpen = !value;
-              // No mobile, fechar a barra inferior ao abrir o histórico
-              if (willOpen && window.innerWidth < 900) {
-                setBottomBarExpanded(false);
-              }
-              return willOpen;
-            });
-          });
-        }}
-      >
-        <span className="history-tab__icon" aria-hidden="true">
-          ◫
-        </span>
-        <span className="history-tab__dots" aria-hidden="true">
-          <i />
-          <i />
-          <i />
-        </span>
-        <span className="history-tab__label">{analysisMode ? t(locale, "history.analysis") : t(locale, "history.pgn")}</span>
-      </motion.button>
 
       <motion.section
         className={`top-bar ${topBarExpanded ? "is-expanded" : ""}`}
@@ -906,33 +914,6 @@ function App() {
           </button>
         </div>
       </motion.section>
-
-      <AnimatePresence>
-        {historyOpen && (
-          <BaseOverlay onClose={() => setHistoryOpen(false)} showScrim={false} blockInteraction={false}>
-            <HistoryPanel
-              engineLabel={analysisMode ? t(locale, "history.analysis") : activeDifficulty.label}
-              historyBadgeLabel={analysisMode ? t(locale, "history.analysis") : t(locale, "history.pgn")}
-              historyProgress={historyProgress}
-              historySessionSubtitle={historySessionSubtitle}
-              historySummary={historySummary}
-              locale={locale}
-              moveCount={session.moveEntries.length}
-              moves={deferredMoves}
-              selectedPly={analysisMode ? currentPly : null}
-              sessionStatusLabel={analysisMode ? t(locale, "history.analysis") : t(locale, getStatusKey(enginePhase))}
-              sessionStatusTone={analysisMode ? "analyzing" : enginePhase}
-              tagsByPly={session.analysisSummary?.tagsByPly}
-              onClose={() => setHistoryOpen(false)}
-              onSelectPly={(ply) => {
-                setAnalysisAutoplay(false);
-                setAnalysisCursor(ply);
-              }}
-              pointerEvents={menuOpen ? "none" : "auto"}
-            />
-          </BaseOverlay>
-        )}
-      </AnimatePresence>
 
       <AnimatePresence>
         {cameraPickerOpen && (
@@ -1345,10 +1326,29 @@ function App() {
 
               <div className="settings-group">
                 <h3>{t(locale, "newGame.level")}</h3>
-                <div className="slider-block">
-                  <strong>{getDifficultyPreset(newGameDifficultyId).label}</strong>
+                <div className="slider-block slider-block--difficulty">
+                  <div className="difficulty-scale__header">
+                    <strong className="difficulty-scale__title">{selectedNewGameDifficulty.label}</strong>
+                    <div className="difficulty-scale__legend">
+                      <span className="difficulty-scale__legend-label">{t(locale, "newGame.elo")}</span>
+                      <span className="difficulty-scale__tooltip">
+                        <button
+                          className="difficulty-scale__tooltip-trigger"
+                          type="button"
+                          aria-label={t(locale, "newGame.eloHelpLabel")}
+                          aria-describedby="difficulty-elo-tooltip"
+                        >
+                          ?
+                        </button>
+                        <span className="difficulty-scale__tooltip-bubble" id="difficulty-elo-tooltip" role="tooltip">
+                          {t(locale, "newGame.eloHelp")}
+                        </span>
+                      </span>
+                    </div>
+                  </div>
                   <input
                     aria-label={t(locale, "newGame.level")}
+                    aria-valuetext={formatDifficultyAriaValue(selectedNewGameDifficulty)}
                     max={difficultyPresets.length - 1}
                     min={0}
                     type="range"
@@ -1358,24 +1358,36 @@ function App() {
                       setNewGameDifficultyId(difficultyPresets[index]?.id ?? difficultyPresets[0].id);
                     }}
                   />
-                  <div className="slider-labels">
-                    {difficultyPresets.map((preset) => (
-                      <span key={preset.id}>{preset.label}</span>
-                    ))}
+                  <div className="difficulty-scale__footer">
+                    <div className="slider-labels slider-labels--difficulty" aria-hidden="true">
+                      {difficultyPresets.map((preset, index) => (
+                        <span
+                          key={preset.id}
+                          className={preset.id === newGameDifficultyId ? "is-active" : undefined}
+                          style={
+                            {
+                              "--difficulty-stop": `${(index / Math.max(1, difficultyPresets.length - 1)) * 100}%`,
+                            } as CSSProperties
+                          }
+                        >
+                          {formatDifficultyTickLabel(preset)}
+                        </span>
+                      ))}
+                    </div>
                   </div>
                 </div>
               </div>
 
               <div className="settings-group">
                 <h3>{t(locale, "panel.clock.title")}</h3>
-                <div className="chip-row chip-row--wrap">
+                <div className="chip-row chip-row--clock" style={clockChoiceGridStyle}>
                   {NEW_GAME_CLOCK_PRESETS.map((preset) => (
                     <ChipButton
                       key={getClockKey(preset)}
                       active={selectedClockKey === getClockKey(preset)}
                       onClick={() => setSelectedClockKey(getClockKey(preset))}
                     >
-                      {formatClockPresetLabel(preset, locale)}
+                      {formatClockChoiceLabel(preset, locale)}
                     </ChipButton>
                   ))}
                   <ChipButton active={selectedClockKey === "custom"} onClick={() => setSelectedClockKey("custom")}>
@@ -1690,8 +1702,24 @@ function getClockKey(clockConfig: ClockConfig): string {
   return `${clockConfig.enabled ? "on" : "off"}:${clockConfig.baseMs}:${clockConfig.incrementMs}`;
 }
 
-function formatClockPresetLabel(clockConfig: ClockConfig, locale: GameSession["settings"]["locale"]): string {
-  return clockConfig.enabled ? clockConfig.label : t(locale, "clock.none");
+function formatClockChoiceLabel(clockConfig: ClockConfig, locale: GameSession["settings"]["locale"]): string {
+  if (!clockConfig.enabled) {
+    return t(locale, "clock.off");
+  }
+
+  const minutes = Math.max(0, Math.round(clockConfig.baseMs / 60_000));
+  const increment = Math.max(0, Math.round(clockConfig.incrementMs / 1_000));
+  return increment > 0 ? `${minutes}+${increment}` : String(minutes);
+}
+
+function formatDifficultyTickLabel(difficulty: ReturnType<typeof getDifficultyPreset>): string {
+  return difficulty.uciElo === null ? "MAX" : String(difficulty.uciElo);
+}
+
+function formatDifficultyAriaValue(difficulty: ReturnType<typeof getDifficultyPreset>): string {
+  return difficulty.uciElo === null
+    ? `${difficulty.label} max`
+    : `${difficulty.label} ${difficulty.uciElo}`;
 }
 
 function canResumeSession(session: GameSession): boolean {

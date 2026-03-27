@@ -1,9 +1,10 @@
-import { motion, useIsPresent } from "framer-motion";
 import { MoveList } from "./MoveList";
 import { t } from "../i18n";
 import type { AnalysisSummary, EnginePhase, GameSession, SerializableMove } from "../types/game";
 
 interface HistoryPanelProps {
+  open: boolean;
+  hidden?: boolean;
   historyBadgeLabel: string;
   historyProgress: number;
   historySessionSubtitle: string;
@@ -16,12 +17,14 @@ interface HistoryPanelProps {
   sessionStatusLabel: string;
   sessionStatusTone: "analyzing" | EnginePhase;
   tagsByPly?: AnalysisSummary["tagsByPly"];
-  onClose: () => void;
+  onToggle: () => void;
   onSelectPly: (ply: number) => void;
-  pointerEvents?: "auto" | "none";
+  shellPointerEvents?: "auto" | "none";
 }
 
 export function HistoryPanel({
+  open,
+  hidden = false,
   engineLabel,
   historyBadgeLabel,
   historyProgress,
@@ -34,27 +37,43 @@ export function HistoryPanel({
   sessionStatusLabel,
   sessionStatusTone,
   tagsByPly,
-  onClose,
+  onToggle,
   onSelectPly,
-  pointerEvents = "auto",
+  shellPointerEvents = "auto",
 }: HistoryPanelProps) {
-  const isPresent = useIsPresent();
-
   return (
-    <motion.aside
-      className="history-panel"
-      initial={{ x: "110%", opacity: 0 }}
-      animate={{ x: 0, opacity: 1 }}
-      exit={{ x: "110%", opacity: 0 }}
-      transition={{ type: "spring", stiffness: 280, damping: 32 }}
-      style={{ pointerEvents: isPresent ? pointerEvents : "none" }}
+    <aside
+      className={`history-panel${open ? " is-open" : ""}${hidden ? " is-hidden" : ""}`}
+      data-state={open ? "open" : "closed"}
+      aria-hidden={hidden ? "true" : undefined}
     >
-      <div className="history-panel__shell">
+      <button
+        className="history-tab"
+        type="button"
+        aria-label={open ? t(locale, "panel.close") : t(locale, "history.toggle")}
+        aria-expanded={open}
+        aria-controls="history-panel-shell"
+        onClick={onToggle}
+      >
+        <span className="history-tab__icon" aria-hidden="true">
+          ◫
+        </span>
+        <span className="history-tab__dots" aria-hidden="true">
+          <i />
+          <i />
+          <i />
+        </span>
+        <span className="history-tab__label">{historyBadgeLabel}</span>
+      </button>
+      <div
+        className="history-panel__shell"
+        id="history-panel-shell"
+        aria-hidden={!open}
+        style={{ pointerEvents: open && !hidden ? shellPointerEvents : "none" }}
+        {...(!open || hidden ? ({ inert: "" } as any) : {})}
+      >
         <div className="panel-header panel-header--history">
           <div className="panel-header__cluster">
-            <span className="panel-header__glyph" aria-hidden="true">
-              ≡
-            </span>
             <div>
               <p className="panel-kicker">{t(locale, "history.kicker")}</p>
               <h2>{t(locale, "hud.moves")}</h2>
@@ -62,14 +81,6 @@ export function HistoryPanel({
           </div>
           <div className="panel-header__meta">
             <span className="panel-header__badge">{historyBadgeLabel}</span>
-            <button
-              className="ghost-icon-button"
-              type="button"
-              aria-label={t(locale, "panel.close")}
-              onClick={onClose}
-            >
-              ×
-            </button>
           </div>
         </div>
         <section className="history-panel__session">
@@ -106,6 +117,6 @@ export function HistoryPanel({
           <p className="history-panel__summary">{historySummary}</p>
         </footer>
       </div>
-    </motion.aside>
+    </aside>
   );
 }

@@ -154,7 +154,7 @@ describe("App integration", () => {
     render(<App />);
 
     await screen.findByText("Pipo Chess 3D");
-    await screen.findByText("Pronto para jogar");
+    await screen.findAllByText("Pronto para jogar");
     fireEvent.click(screen.getByRole("button", { name: "Menu" }));
     fireEvent.click(await screen.findByRole("button", { name: "Emerald" }));
     fireEvent.click(await screen.findByRole("button", { name: "English" }));
@@ -180,7 +180,7 @@ describe("App integration", () => {
     render(<App />);
 
     await screen.findByText("Pipo Chess 3D");
-    await screen.findByText("Pronto para jogar");
+    await screen.findAllByText("Pronto para jogar");
     fireEvent.click(screen.getByRole("button", { name: "Menu" }));
     fireEvent.click(screen.getByRole("button", { name: "Ultra" }));
 
@@ -298,23 +298,22 @@ describe("App integration", () => {
     });
   });
 
-  it("closes the history panel from its close button", async () => {
+  it("closes the history panel from its integrated toggle", async () => {
     const { default: App } = await import("./App");
     const { container } = render(<App />);
 
     await screen.findByText("Pipo Chess 3D");
 
-    // Panel is conditionally rendered — not in DOM when closed
-    expect(container.querySelector(".history-panel")).toBeNull();
-
-    fireEvent.click(screen.getByRole("button", { name: "Abrir histórico" }));
-
     const historyPanel = container.querySelector(".history-panel");
     expect(historyPanel).not.toBeNull();
+    expect(historyPanel).not.toHaveClass("is-open");
 
-    fireEvent.click(within(historyPanel as HTMLElement).getByRole("button", { name: "Fechar" }));
+    fireEvent.click(screen.getByRole("button", { name: "Abrir histórico" }));
+    expect(historyPanel).toHaveClass("is-open");
+
+    fireEvent.click(screen.getByRole("button", { name: "Fechar" }));
     await waitFor(() => {
-      expect(container.querySelector(".history-panel")).toBeNull();
+      expect(historyPanel).not.toHaveClass("is-open");
     });
   });
 
@@ -339,27 +338,32 @@ describe("App integration", () => {
     });
   });
 
-  it("keeps the history overlay wrapper non-blocking when no scrim is shown", async () => {
+  it("keeps the history drawer mounted without using an overlay wrapper", async () => {
     const { default: App } = await import("./App");
     const { container } = render(<App />);
 
     await screen.findByText("Pipo Chess 3D");
 
-    fireEvent.click(screen.getByRole("button", { name: "Abrir histórico" }));
+    const historyPanel = container.querySelector(".history-panel");
+    expect(historyPanel).not.toBeNull();
+    expect(historyPanel?.closest(".base-overlay")).toBeNull();
 
-    const historyOverlay = container.querySelector(".history-panel")?.closest(".base-overlay");
-    expect(historyOverlay).not.toBeNull();
-    expect((historyOverlay as HTMLElement).style.pointerEvents).toBe("none");
+    fireEvent.click(screen.getByRole("button", { name: "Abrir histórico" }));
+    expect(historyPanel).toHaveClass("is-open");
+    expect(historyPanel?.closest(".base-overlay")).toBeNull();
   });
 
-  it("makes the exiting history panel non-interactive when opening the menu", async () => {
+  it("makes the history shell non-interactive when opening the menu", async () => {
     const { default: App } = await import("./App");
     const { container } = render(<App />);
 
     await screen.findByText("Pipo Chess 3D");
 
     fireEvent.click(screen.getByRole("button", { name: "Abrir histórico" }));
-    expect(container.querySelector(".history-panel")).not.toBeNull();
+    const historyPanel = container.querySelector(".history-panel");
+    const historyShell = container.querySelector(".history-panel__shell");
+    expect(historyPanel).toHaveClass("is-open");
+    expect(historyShell).not.toBeNull();
 
     fireEvent.click(screen.getByRole("button", { name: "Menu" }));
 
@@ -367,14 +371,8 @@ describe("App integration", () => {
       expect(container.querySelector(".menu-drawer")).not.toBeNull();
     });
 
-    const exitingHistoryPanel = container.querySelector(".history-panel");
-    if (exitingHistoryPanel) {
-      expect((exitingHistoryPanel as HTMLElement).style.pointerEvents).toBe("none");
-    }
-
-    await waitFor(() => {
-      expect(container.querySelector(".history-panel")).toBeNull();
-    });
+    expect(historyPanel).not.toHaveClass("is-open");
+    expect((historyShell as HTMLElement).style.pointerEvents).toBe("none");
   });
 
   it("keeps camera presets accessible after entering analysis mode", async () => {

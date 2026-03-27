@@ -15,7 +15,7 @@ test.describe("Viewport Centering and Axis Stability", () => {
     
     // 2. Open history panel.
     await page.getByRole("button", { name: /Abrir histórico|Open history/i }).click();
-    await expect(page.locator(".history-panel")).toBeVisible();
+    await expect(page.locator(".history-panel")).toHaveAttribute("data-state", "open");
     await page.waitForTimeout(1000);
 
     // 3. The board stage should remain stable while the panel overlays from the right.
@@ -25,16 +25,16 @@ test.describe("Viewport Centering and Axis Stability", () => {
     expect(Math.abs(playfieldBox!.x - initialBox!.x)).toBeLessThan(8);
     expect(Math.abs(playfieldBox!.x + playfieldBox!.width / 2 - initialCenterX)).toBeLessThan(8);
 
-    // 4. Verify the history panel is docked near the right edge of the viewport.
-    const historyBox = await page.locator(".history-panel").boundingBox();
+    // 4. Verify the unified drawer keeps its handle on the viewport edge and the shell attached to it.
+    const historyBox = await page.locator(".history-panel__shell").boundingBox();
     expect(historyBox).not.toBeNull();
     const historyTabBox = await page.locator(".history-tab").boundingBox();
     expect(historyTabBox).not.toBeNull();
     const viewport = page.viewportSize();
     expect(viewport).not.toBeNull();
-    const historyRightGap = viewport!.width - (historyBox!.x + historyBox!.width);
-    expect(historyRightGap).toBeLessThanOrEqual(4);
-    expect(Math.abs(historyTabBox!.x + historyTabBox!.width - historyBox!.x)).toBeLessThanOrEqual(8);
+    const handleRightGap = viewport!.width - (historyTabBox!.x + historyTabBox!.width);
+    expect(handleRightGap).toBeLessThanOrEqual(4);
+    expect(Math.abs(historyBox!.x + historyBox!.width - historyTabBox!.x)).toBeLessThanOrEqual(8);
   });
 
   test("camera target remains at [0,0,0] in all presets", async ({ page }) => {
