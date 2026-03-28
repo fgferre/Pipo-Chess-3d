@@ -75,7 +75,7 @@ const RETURN_DURATION_MS = 160;
 const LAST_MOVE_HIGHLIGHT_MS = 1800;
 const HINT_HIGHLIGHT_MS = 4200;
 const STANDARD_BOARD_TEXTURE_VARIATIONS = 2;
-const ULTRA_BOARD_TEXTURE_VARIATIONS = 3;
+const ULTRA_BOARD_TEXTURE_VARIATIONS = 5;
 const BASE_FOV = 40;
 const MAX_PORTRAIT_FOV = 58;
 
@@ -297,6 +297,8 @@ const SPRITE_SCALE_BY_TYPE: Record<PieceSymbol, number> = {
   p: 1.24,
 };
 
+const woodTextureCanvasCache = new Map<string, HTMLCanvasElement>();
+
 interface WoodPalette {
   tone: "light" | "dark";
   baseHex: string;
@@ -311,41 +313,23 @@ interface BoardMaterialPalette {
   groutHex: string;
 }
 
-interface WoodShaderProfile {
-  centerX: number;
-  centerY: number;
-  centerJitterX: number;
-  centerJitterY: number;
-  maxRadius: number;
-  stretchY: number;
-  stretchJitter: number;
-  ringSpacingMin: number;
-  ringSpacingMax: number;
-  lineWidthMin: number;
-  lineWidthMax: number;
-  lineAlphaMin: number;
-  lineAlphaMax: number;
-  arcStep: number;
-  grainFrequency: number;
-  grainAmplitude: number;
-  detailFrequency: number;
-  detailAmplitude: number;
-  radiusFrequency: number;
-  radiusAmplitude: number;
-  knotFrequency: number;
-  knotAmplitude: number;
-  secondaryRotation: number;
-  secondarySpacingMultiplier: number;
-  secondaryWidthMultiplier: number;
-  secondaryAlphaMultiplier: number;
-  vignetteInner: number;
-  vignetteOuter: number;
-  vignetteAlpha: number;
-  highlightAlpha: number;
+interface WoodRgb {
+  r: number;
+  g: number;
+  b: number;
 }
 
-interface ResolvedWoodShaderParams extends WoodShaderProfile {
-  seed: number;
+interface WoodShaderMetadata {
+  shaderId: "shadertoy-mdy3R1";
+  slice: number;
+  domainRotation: number;
+  domainScale: number;
+  domainOffset: [number, number];
+  distortionScale: [number, number, number];
+  distortionAmount: number;
+  musgraveScale: number;
+  dirtScale: [number, number, number];
+  grainScale: [number, number, number];
 }
 
 interface WoodMaterialTuning {
@@ -478,203 +462,323 @@ export function deriveBoardPalette(theme: ThemeDefinition): BoardMaterialPalette
   };
 }
 
-// ─── Procedural Wood Texture Engine ────────────────────────────────────────
-
-function hashStringToSeed(...parts: string[]): number {
-  let hash = 2166136261;
-
-  for (const part of parts) {
-    for (let i = 0; i < part.length; i++) {
-      hash ^= part.charCodeAt(i);
-      hash = Math.imul(hash, 16777619);
-    }
-    hash ^= 0x9e3779b9;
-    hash = Math.imul(hash, 16777619);
-  }
-
-  return hash >>> 0 || 1;
+function fract(value: number): number {
+  return value - Math.floor(value);
 }
 
-function createSeededRandom(seed: number): () => number {
-  let state = seed >>> 0;
+function mixNumber(start: number, end: number, amount: number): number {
+  return start + (end - start) * amount;
+}
 
-  return () => {
-    state = (state + 0x6d2b79f5) >>> 0;
-    let t = Math.imul(state ^ (state >>> 15), 1 | state);
-    t ^= t + Math.imul(t ^ (t >>> 7), 61 | t);
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+function smoothstep(edge0: number, edge1: number, value: number): number {
+  const t = clampUnit((value - edge0) / (edge1 - edge0));
+  return t * t * (3 - 2 * t);
+}
+
+function hashNumber(value: number): number {
+  let hash = value | 0;
+  hash ^= hash >>> 16;
+  hash = Math.imul(hash, 0x7feb352d);
+  hash ^= hash >>> 15;
+  hash = Math.imul(hash, 0x846ca68b);
+  hash ^= hash >>> 16;
+  return hash >>> 0;
+}
+
+function hashToUnit(value: number): number {
+  return hashNumber(value) / 0xffffffff;
+}
+
+function hexToRgb(hex: string): WoodRgb {
+  const color = new Color(hex);
+  return { r: color.r, g: color.g, b: color.b };
+}
+
+function mixRgb(start: WoodRgb, end: WoodRgb, amount: number): WoodRgb {
+  return {
+    r: mixNumber(start.r, end.r, amount),
+    g: mixNumber(start.g, end.g, amount),
+    b: mixNumber(start.b, end.b, amount),
   };
 }
 
-function randomBetween(nextRandom: () => number, min: number, max: number): number {
-  return min + (max - min) * nextRandom();
+function toByte(value: number): number {
+  return Math.max(0, Math.min(255, Math.round(clampUnit(value) * 255)));
 }
 
-function getWoodShaderProfile(palette: WoodPalette): WoodShaderProfile {
-  if (palette.tone === "light") {
-    return {
-      centerX: -1.45,
-      centerY: 0.5,
-      centerJitterX: 0.12,
-      centerJitterY: 0.08,
-      maxRadius: 3.4,
-      stretchY: 3.9,
-      stretchJitter: 0.3,
-      ringSpacingMin: 0.016,
-      ringSpacingMax: 0.038,
-      lineWidthMin: 0.006,
-      lineWidthMax: 0.018,
-      lineAlphaMin: 0.1,
-      lineAlphaMax: 0.26,
-      arcStep: 0.055,
-      grainFrequency: 6.2,
-      grainAmplitude: 0.018,
-      detailFrequency: 3.4,
-      detailAmplitude: 0.024,
-      radiusFrequency: 0.02,
-      radiusAmplitude: 0.05,
-      knotFrequency: 8.5,
-      knotAmplitude: 0.01,
-      secondaryRotation: Math.PI / 18,
-      secondarySpacingMultiplier: 1.6,
-      secondaryWidthMultiplier: 0.55,
-      secondaryAlphaMultiplier: 0.45,
-      vignetteInner: 0.26,
-      vignetteOuter: 0.78,
-      vignetteAlpha: 0.08,
-      highlightAlpha: 0.018,
-    };
+function sum2(x: number, y: number): number {
+  return x + y;
+}
+
+function h31(x: number, y: number, z: number): number {
+  x = fract(x * 0.1031);
+  y = fract(y * 0.1031);
+  z = fract(z * 0.1031);
+  const dotValue = x * (y + 333.3456) + y * (z + 333.3456) + z * (x + 333.3456);
+  x += dotValue;
+  y += dotValue;
+  z += dotValue;
+  return fract(sum2(x, y) * z);
+}
+
+function h21(x: number, y: number): number {
+  return h31(x, y, x);
+}
+
+function n31(x: number, y: number, z: number): number {
+  const sx = 7;
+  const sy = 157;
+  const sz = 113;
+  const ipx = Math.floor(x);
+  const ipy = Math.floor(y);
+  const ipz = Math.floor(z);
+  const fx = fract(x);
+  const fy = fract(y);
+  const fz = fract(z);
+  const ux = fx * fx * (3 - 2 * fx);
+  const uy = fy * fy * (3 - 2 * fy);
+  const uz = fz * fz * (3 - 2 * fz);
+  const base = ipx * sx + ipy * sy + ipz * sz;
+  const h0 = fract(Math.sin(base) * 43758.545);
+  const h1 = fract(Math.sin(base + sy) * 43758.545);
+  const h2 = fract(Math.sin(base + sz) * 43758.545);
+  const h3 = fract(Math.sin(base + sy + sz) * 43758.545);
+  const h4 = fract(Math.sin(base + sx) * 43758.545);
+  const h5 = fract(Math.sin(base + sx + sy) * 43758.545);
+  const h6 = fract(Math.sin(base + sx + sz) * 43758.545);
+  const h7 = fract(Math.sin(base + sx + sy + sz) * 43758.545);
+  const mx0 = mixNumber(h0, h4, ux);
+  const mx1 = mixNumber(h1, h5, ux);
+  const mx2 = mixNumber(h2, h6, ux);
+  const mx3 = mixNumber(h3, h7, ux);
+  const my0 = mixNumber(mx0, mx2, uy);
+  const my1 = mixNumber(mx1, mx3, uy);
+  return mixNumber(my0, my1, uz);
+}
+
+function fbm(x: number, y: number, z: number, octaves: number, roughness: number): number {
+  let sum = 0;
+  let amplitude = 1;
+  let total = 0;
+  let px = x;
+  let py = y;
+  let pz = z;
+  const clampedRoughness = clampUnit(roughness);
+
+  for (let i = 0; i < octaves; i++) {
+    sum += amplitude * n31(px, py, pz);
+    total += amplitude;
+    amplitude *= clampedRoughness;
+    px *= 2;
+    py *= 2;
+    pz *= 2;
   }
+
+  return total > 0 ? sum / total : 0;
+}
+
+function randomPos(seed: number): [number, number, number] {
+  return [
+    h21(seed, 0) * 100 + 100,
+    h21(seed, 1) * 100 + 100,
+    h21(seed, 2) * 100 + 100,
+  ];
+}
+
+const DISTORTION_RANDOM_POSITIONS = [randomPos(0), randomPos(1), randomPos(2)] as const;
+
+function fbmDistorted(x: number, y: number, z: number): number {
+  const originalX = x;
+  const originalY = y;
+  const originalZ = z;
+  x +=
+    (n31(
+      originalX + DISTORTION_RANDOM_POSITIONS[0][0],
+      originalY + DISTORTION_RANDOM_POSITIONS[0][1],
+      originalZ + DISTORTION_RANDOM_POSITIONS[0][2],
+    ) *
+      2 -
+      1) *
+    1.12;
+  y +=
+    (n31(
+      originalX + DISTORTION_RANDOM_POSITIONS[1][0],
+      originalY + DISTORTION_RANDOM_POSITIONS[1][1],
+      originalZ + DISTORTION_RANDOM_POSITIONS[1][2],
+    ) *
+      2 -
+      1) *
+    1.12;
+  z +=
+    (n31(
+      originalX + DISTORTION_RANDOM_POSITIONS[2][0],
+      originalY + DISTORTION_RANDOM_POSITIONS[2][1],
+      originalZ + DISTORTION_RANDOM_POSITIONS[2][2],
+    ) *
+      2 -
+      1) *
+    1.12;
+  return fbm(x, y, z, 8, 0.5);
+}
+
+function musgraveFbm(
+  x: number,
+  y: number,
+  z: number,
+  octaves: number,
+  dimension: number,
+  lacunarity: number,
+): number {
+  let sum = 0;
+  let amplitude = 1;
+  let px = x;
+  let py = y;
+  let pz = z;
+  const multiplier = Math.pow(lacunarity, -dimension);
+
+  for (let i = 0; i < octaves; i++) {
+    sum += (n31(px, py, pz) * 2 - 1) * amplitude;
+    amplitude *= multiplier;
+    px *= lacunarity;
+    py *= lacunarity;
+    pz *= lacunarity;
+  }
+
+  return sum;
+}
+
+function waveFbmX(x: number, y: number, z: number): [number, number, number] {
+  let wave = x * 20;
+  wave += 0.4 * fbm(x * 3, y * 3, z * 3, 3, 0.5);
+  return [Math.sin(wave) * 0.5 + 0.5, y, z];
+}
+
+function remap01(value: number, in1: number, in2: number): number {
+  return clampUnit((value - in1) / (in2 - in1));
+}
+
+function buildWoodColorRamp(palette: WoodPalette): [WoodRgb, WoodRgb, WoodRgb] {
+  if (palette.tone === "light") {
+    return [
+      hexToRgb(mixHex(palette.veinHex, "#120804", 0.12)),
+      hexToRgb(mixHex(palette.baseHex, palette.veinHex, 0.44)),
+      hexToRgb(mixHex(palette.baseHex, "#f3debc", 0.28)),
+    ];
+  }
+
+  return [
+    hexToRgb(mixHex(palette.veinHex, "#050302", 0.46)),
+    hexToRgb(mixHex(palette.baseHex, palette.veinHex, 0.36)),
+    hexToRgb(mixHex(palette.baseHex, "#8c5934", 0.2)),
+  ];
+}
+
+function matWood(
+  x: number,
+  y: number,
+  z: number,
+  colorRamp: [WoodRgb, WoodRgb, WoodRgb],
+): WoodRgb {
+  let n1 = fbmDistorted(x * 7.8, y * 1.17, z * 1.17);
+  n1 = mixNumber(n1, 1, 0.2);
+  let n2 = mixNumber(musgraveFbm(n1 * 4.6, n1 * 4.6, n1 * 4.6, 8, 0, 2.5), n1, 0.85);
+  const wave = waveFbmX(x * 0.01, y * 0.15, z * 0.15);
+  const dirt = 1 - musgraveFbm(wave[0], wave[1], wave[2], 15, 0.26, 2.4) * 0.4;
+  const grain = 1 - smoothstep(0.2, 1, musgraveFbm(x * 500, y * 6, z, 2, 2, 2.5)) * 0.2;
+  n2 *= dirt * grain;
+
+  const [shadow, midtone, highlight] = colorRamp;
+  const darkToMid = mixRgb(shadow, midtone, remap01(n2, 0.19, 0.56));
+  return mixRgb(darkToMid, highlight, remap01(n2, 0.56, 1));
+}
+
+function resolveWoodShaderMetadata(variantSeed: number): WoodShaderMetadata {
+  const baseSeed = hashNumber(variantSeed + 1);
 
   return {
-    centerX: 0.28,
-    centerY: 0.42,
-    centerJitterX: 0.08,
-    centerJitterY: 0.06,
-    maxRadius: 3.9,
-    stretchY: 1.55,
-    stretchJitter: 0.18,
-    ringSpacingMin: 0.014,
-    ringSpacingMax: 0.032,
-    lineWidthMin: 0.008,
-    lineWidthMax: 0.022,
-    lineAlphaMin: 0.16,
-    lineAlphaMax: 0.38,
-    arcStep: 0.05,
-    grainFrequency: 6.6,
-    grainAmplitude: 0.015,
-    detailFrequency: 4.3,
-    detailAmplitude: 0.02,
-    radiusFrequency: 0.022,
-    radiusAmplitude: 0.026,
-    knotFrequency: 11.5,
-    knotAmplitude: palette.isKnotty ? 0.018 : 0.012,
-    secondaryRotation: Math.PI / 24,
-    secondarySpacingMultiplier: 1.35,
-    secondaryWidthMultiplier: 0.68,
-    secondaryAlphaMultiplier: 0.52,
-    vignetteInner: 0.28,
-    vignetteOuter: 0.82,
-    vignetteAlpha: 0.14,
-    highlightAlpha: 0.012,
+    shaderId: "shadertoy-mdy3R1",
+    slice: variantSeed % 8,
+    domainRotation: hashToUnit(baseSeed ^ 0x51f15e3d) * Math.PI * 2,
+    domainScale: mixNumber(0.82, 1.24, hashToUnit(baseSeed ^ 0x68bc21eb)),
+    domainOffset: [
+      mixNumber(-2.4, 2.4, hashToUnit(baseSeed ^ 0x02e5be93)),
+      mixNumber(-2.4, 2.4, hashToUnit(baseSeed ^ 0x967a889b)),
+    ],
+    distortionScale: [7.8, 1.17, 1.17],
+    distortionAmount: 1.12,
+    musgraveScale: 4.6,
+    dirtScale: [0.01, 0.15, 0.15],
+    grainScale: [500, 6, 1],
   };
 }
 
-function resolveWoodShaderParams(
+function createWoodTextureCacheKey(
   palette: WoodPalette,
-  variantSeed: number,
-): ResolvedWoodShaderParams {
-  const seed = hashStringToSeed(
+  size: number,
+  metadata: WoodShaderMetadata,
+): string {
+  return [
     palette.tone,
     palette.baseHex,
     palette.veinHex,
-    palette.isKnotty ? "knotted" : "smooth",
-    String(variantSeed),
-  );
-  const profile = getWoodShaderProfile(palette);
-  const nextRandom = createSeededRandom(seed);
-
-  return {
-    ...profile,
-    centerX: profile.centerX + randomBetween(nextRandom, -profile.centerJitterX, profile.centerJitterX),
-    centerY: profile.centerY + randomBetween(nextRandom, -profile.centerJitterY, profile.centerJitterY),
-    stretchY: profile.stretchY + randomBetween(nextRandom, -profile.stretchJitter, profile.stretchJitter),
-    grainAmplitude: profile.grainAmplitude * randomBetween(nextRandom, 0.92, 1.08),
-    detailAmplitude: profile.detailAmplitude * randomBetween(nextRandom, 0.92, 1.08),
-    knotAmplitude: profile.knotAmplitude * randomBetween(nextRandom, 0.9, 1.12),
-    secondaryRotation:
-      profile.secondaryRotation * randomBetween(nextRandom, 0.9, 1.12),
-    seed,
-  };
+    palette.isKnotty ? "1" : "0",
+    size,
+    metadata.slice,
+    metadata.domainRotation.toFixed(6),
+    metadata.domainScale.toFixed(6),
+    metadata.domainOffset[0].toFixed(6),
+    metadata.domainOffset[1].toFixed(6),
+  ].join("|");
 }
 
-function strokeWoodPass(
-  ctx: CanvasRenderingContext2D,
-  size: number,
+function bakeWoodTextureCanvas(
   palette: WoodPalette,
-  params: ResolvedWoodShaderParams,
-  rotation: number,
-  spacingMultiplier: number,
-  widthMultiplier: number,
-  alphaMultiplier: number,
-  seedOffset: string,
-): void {
-  const nextRandom = createSeededRandom(hashStringToSeed(String(params.seed), seedOffset));
-  const centerX = size * (0.5 + params.centerX);
-  const centerY = size * params.centerY;
-  const maxRadius = size * params.maxRadius;
-  const cosRotation = Math.cos(rotation);
-  const sinRotation = Math.sin(rotation);
-
-  ctx.lineCap = "round";
-  ctx.lineJoin = "round";
-
-  for (
-    let radius = size * 0.012;
-    radius < maxRadius;
-    radius += size * randomBetween(nextRandom, params.ringSpacingMin, params.ringSpacingMax) * spacingMultiplier
-  ) {
-    ctx.beginPath();
-    ctx.strokeStyle = palette.veinHex;
-    ctx.globalAlpha =
-      randomBetween(nextRandom, params.lineAlphaMin, params.lineAlphaMax) * alphaMultiplier;
-    ctx.lineWidth =
-      size * randomBetween(nextRandom, params.lineWidthMin, params.lineWidthMax) * widthMultiplier;
-
-    const phaseA = nextRandom() * Math.PI * 2;
-    const phaseB = nextRandom() * Math.PI * 2;
-    const phaseC = nextRandom() * Math.PI * 2;
-
-    for (let angle = -Math.PI / 2; angle < Math.PI * 1.5; angle += params.arcStep) {
-      const primaryWave =
-        Math.sin(angle * params.grainFrequency + phaseA) * size * params.grainAmplitude;
-      const detailWave =
-        Math.cos(angle * params.detailFrequency + phaseB) * size * params.detailAmplitude;
-      const radialWave =
-        Math.sin(radius * params.radiusFrequency + angle * 2.8 + phaseC) *
-        size *
-        params.radiusAmplitude;
-      const knotWave = palette.isKnotty
-        ? Math.sin(angle * params.knotFrequency + phaseC * 0.7) * size * params.knotAmplitude
-        : 0;
-      const distance = radius + primaryWave + detailWave + radialWave + knotWave;
-
-      const baseX = Math.cos(angle) * distance;
-      const baseY = Math.sin(angle) * distance * params.stretchY;
-      const rotatedX = baseX * cosRotation - baseY * sinRotation;
-      const rotatedY = baseX * sinRotation + baseY * cosRotation;
-      const x = centerX + rotatedX;
-      const y = centerY + rotatedY;
-
-      if (angle === -Math.PI / 2) {
-        ctx.moveTo(x, y);
-      } else {
-        ctx.lineTo(x, y);
-      }
-    }
-
-    ctx.stroke();
+  size: number,
+  metadata: WoodShaderMetadata,
+): HTMLCanvasElement {
+  const cacheKey = createWoodTextureCacheKey(palette, size, metadata);
+  const cachedCanvas = woodTextureCanvasCache.get(cacheKey);
+  if (cachedCanvas) {
+    return cachedCanvas;
   }
+
+  const canvas = document.createElement("canvas");
+  canvas.width = size;
+  canvas.height = size;
+  const ctx = canvas.getContext("2d")!;
+  const imageData = ctx.createImageData(size, size);
+  const data = imageData.data;
+  const colorRamp = buildWoodColorRamp(palette);
+  const sinRotation = Math.sin(metadata.domainRotation);
+  const cosRotation = Math.cos(metadata.domainRotation);
+
+  for (let py = 0; py < size; py++) {
+    const normalizedY = (py - 0.5 * size) / size;
+
+    for (let px = 0; px < size; px++) {
+      const normalizedX = (px - 0.5 * size) / size;
+      const scaledX = normalizedX * metadata.domainScale;
+      const scaledY = normalizedY * metadata.domainScale;
+      const rotatedX = scaledX * cosRotation - scaledY * sinRotation;
+      const rotatedY = scaledX * sinRotation + scaledY * cosRotation;
+      const color = matWood(
+        rotatedX + metadata.domainOffset[0],
+        rotatedY + metadata.domainOffset[1],
+        metadata.slice,
+        colorRamp,
+      );
+      const index = (py * size + px) * 4;
+
+      data[index] = toByte(Math.pow(color.r, 0.4545));
+      data[index + 1] = toByte(Math.pow(color.g, 0.4545));
+      data[index + 2] = toByte(Math.pow(color.b, 0.4545));
+      data[index + 3] = 255;
+    }
+  }
+
+  ctx.putImageData(imageData, 0, 0);
+  woodTextureCanvasCache.set(cacheKey, canvas);
+  return canvas;
 }
 
 function createWoodTexture(
@@ -683,42 +787,9 @@ function createWoodTexture(
   maxAnisotropy = 1,
   variantSeed = 0,
 ): CanvasTexture {
-  const SIZE = maxAnisotropy >= 12 ? 1024 : maxAnisotropy >= 4 ? 768 : 512;
-  const canvas = document.createElement("canvas");
-  canvas.width = SIZE;
-  canvas.height = SIZE;
-  const ctx = canvas.getContext("2d")!;
-  const params = resolveWoodShaderParams(palette, variantSeed);
-
-  ctx.fillStyle = palette.baseHex;
-  ctx.fillRect(0, 0, SIZE, SIZE);
-
-  strokeWoodPass(ctx, SIZE, palette, params, 0, 1, 1, 1, "primary");
-  strokeWoodPass(
-    ctx,
-    SIZE,
-    palette,
-    params,
-    params.secondaryRotation,
-    params.secondarySpacingMultiplier,
-    params.secondaryWidthMultiplier,
-    params.secondaryAlphaMultiplier,
-    "secondary",
-  );
-
-  const vignette = ctx.createRadialGradient(
-    SIZE / 2,
-    SIZE / 2,
-    SIZE * params.vignetteInner,
-    SIZE / 2,
-    SIZE / 2,
-    SIZE * params.vignetteOuter,
-  );
-  vignette.addColorStop(0, `rgba(255,255,255,${params.highlightAlpha})`);
-  vignette.addColorStop(1, `rgba(0,0,0,${params.vignetteAlpha})`);
-  ctx.globalAlpha = 1;
-  ctx.fillStyle = vignette;
-  ctx.fillRect(0, 0, SIZE, SIZE);
+  const SIZE = maxAnisotropy >= 12 ? 208 : maxAnisotropy >= 4 ? 144 : 96;
+  const metadata = resolveWoodShaderMetadata(variantSeed);
+  const canvas = bakeWoodTextureCanvas(palette, SIZE, metadata);
 
   const texture = new CanvasTexture(canvas);
   texture.anisotropy = Math.min(renderer.capabilities.getMaxAnisotropy(), maxAnisotropy);
@@ -767,7 +838,7 @@ function applyWoodMaterialTheme(
   }
   material.userData.boardRole = role;
   material.userData.boardPalette = { ...palette };
-  material.userData.boardShaderParams = { ...resolveWoodShaderParams(palette, variantSeed) };
+  material.userData.boardShaderParams = resolveWoodShaderMetadata(variantSeed);
   material.userData.boardTextureVariant = variantSeed;
   material.needsUpdate = true;
 
@@ -2614,14 +2685,14 @@ export class ChessStage implements SceneAdapter {
       for (let row = 0; row < 8; row++) {
         const isLight = (col + row) % 2 !== 0;
         const poolList = isLight ? lightMats : darkMats;
-        const mat = poolList[Math.floor(Math.random() * poolList.length)];
+        const squareSeed = hashNumber((row + 1) * 131 + (col + 1) * 977 + (isLight ? 17 : 31));
+        const mat = poolList[squareSeed % poolList.length];
 
         const square = new Mesh(squareGeo, mat);
         square.position.set(col - 3.5, -0.25, row - 3.5);
 
         const baseRot = isLight ? 0 : Math.PI / 2;
-        const flipRot = Math.floor(Math.random() * 2) * Math.PI;
-        square.rotation.y = baseRot + flipRot;
+        square.rotation.y = baseRot + (squareSeed % 4) * (Math.PI / 2);
 
         square.receiveShadow = true;
         square.castShadow = true;

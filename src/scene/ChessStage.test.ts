@@ -169,10 +169,16 @@ function createCanvasContextMock(): CanvasRenderingContext2D {
     beginPath: vi.fn(),
     clearRect: vi.fn(),
     createRadialGradient: vi.fn(() => ({ addColorStop: vi.fn() })),
+    createImageData: vi.fn((width: number, height: number) => ({
+      data: new Uint8ClampedArray(width * height * 4),
+      height,
+      width,
+    })),
     fillRect: vi.fn(),
     fillText: vi.fn(),
     lineTo: vi.fn(),
     moveTo: vi.fn(),
+    putImageData: vi.fn(),
     strokeText: vi.fn(),
     stroke: vi.fn(),
     fillStyle: "",
@@ -1083,6 +1089,66 @@ describe("ChessStage", () => {
     expect(stageInternals.pipeline?.setBloomResolutionScale).toHaveBeenCalledWith(1);
     expect(stageInternals.lightPieceMat).toBeInstanceOf(MeshPhysicalMaterial);
     expect(stageInternals.lightSquareMats[0]?.map?.anisotropy).toBe(16);
+  }, 15000);
+
+  it("builds distinct light and dark procedural wood tones for the board", async () => {
+    latestRendererProbe = {
+      renderer: "NVIDIA GeForce RTX 4090",
+      vendor: "NVIDIA",
+    };
+
+    const { stage } = createStage();
+    const stageInternals = stage as unknown as {
+      lightSquareMats: Array<{
+        map: Texture | null;
+        userData: {
+          boardPalette?: { tone?: string };
+          boardShaderParams?: { shaderId?: string; slice?: number };
+          boardTextureVariant?: number;
+        };
+      }>;
+      darkSquareMats: Array<{
+        map: Texture | null;
+        userData: {
+          boardPalette?: { tone?: string };
+          boardShaderParams?: { shaderId?: string; slice?: number };
+          boardTextureVariant?: number;
+        };
+      }>;
+      frameMats: Array<{
+        map: Texture | null;
+        userData: {
+          boardPalette?: { tone?: string };
+          boardShaderParams?: { shaderId?: string; slice?: number };
+          boardTextureVariant?: number;
+        };
+      }>;
+    };
+
+    await stage.init();
+
+    const lightMaterial = stageInternals.lightSquareMats[0];
+    const darkMaterial = stageInternals.darkSquareMats[0];
+    const frameMaterial = stageInternals.frameMats[0];
+    const lightTexture = lightMaterial.map?.image as HTMLCanvasElement | undefined;
+    const darkTexture = darkMaterial.map?.image as HTMLCanvasElement | undefined;
+
+    expect(lightMaterial.userData.boardPalette).toMatchObject({ tone: "light" });
+    expect(darkMaterial.userData.boardPalette).toMatchObject({ tone: "dark" });
+    expect(frameMaterial.userData.boardPalette).toMatchObject({ tone: "dark" });
+    expect(lightMaterial.userData.boardShaderParams).toMatchObject({
+      shaderId: "shadertoy-mdy3R1",
+      slice: 0,
+    });
+    expect(darkMaterial.userData.boardShaderParams).toMatchObject({
+      shaderId: "shadertoy-mdy3R1",
+      slice: 0,
+    });
+    expect(lightMaterial.userData.boardTextureVariant).toBe(0);
+    expect(darkMaterial.userData.boardTextureVariant).toBe(0);
+    expect(lightMaterial.map).not.toBe(darkMaterial.map);
+    expect(lightTexture?.width).toBe(208);
+    expect(darkTexture?.width).toBe(208);
   }, 15000);
 
   it("rebuilds materials and pipeline settings when switching quality tiers", async () => {
