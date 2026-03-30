@@ -19,3 +19,19 @@
 15. Performance & Efficiency: Prioritize efficient code. Consider algorithmic complexity, unnecessary renders/re-renders, and network/resource usage.
 16. Rationalization: Avoid over-engineering. Ensure technical decisions are rational, sustainable, and the simplest possible way to achieve the goal.
 17. Clean Code Architecture: Ensure meaningful naming, SRP (Single Responsibility), and DRY (Don't Repeat Yourself) are applied to every module.
+
+## Playwright CLI Rules
+
+You must ALWAYS use the Playwright CLI via terminal to interact with the browser, generate tests, or run tests.
+
+Preferred commands:
+- `npx playwright codegen https://site.com` → to record actions
+- `npx playwright test` → to run tests
+- `npx playwright test my-test.spec.ts --headed` → to see the browser
+- `npx playwright-cli open https://site.com --headed` → if using the specialized playwright-cli
+
+Never use Playwright MCP tools or other Browser subagents when CLI alternatives are available.
+Always prefer terminal-based commands with `npx playwright` or `npx playwright-cli`.
+This saves significant tokens by avoiding frequent full page snapshots.
+
+When generating tests, outline the flow first, then use the CLI to help create the implementation.

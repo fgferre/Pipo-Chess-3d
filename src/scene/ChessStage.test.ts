@@ -164,6 +164,28 @@ class ResizeObserverMock {
   disconnect(): void {}
 }
 
+function clampUnit(value: number): number {
+  return Math.min(1, Math.max(0, value));
+}
+
+function mixHexLocal(startHex: string, endHex: string, amount: number): string {
+  const color = new Color(startHex);
+  color.lerp(new Color(endHex), clampUnit(amount));
+  return `#${color.getHexString()}`;
+}
+
+function shiftHexLocal(hex: string, saturationDelta: number, lightnessDelta: number): string {
+  const color = new Color(hex);
+  const hsl = { h: 0, s: 0, l: 0 };
+  color.getHSL(hsl);
+  color.setHSL(
+    hsl.h,
+    clampUnit(hsl.s + saturationDelta),
+    clampUnit(hsl.l + lightnessDelta),
+  );
+  return `#${color.getHexString()}`;
+}
+
 function createCanvasContextMock(): CanvasRenderingContext2D {
   return {
     beginPath: vi.fn(),
@@ -1045,6 +1067,107 @@ describe("ChessStage", () => {
     expect(spots[2]).toMatchObject({ castShadow: false, intensity: 9 });
   });
 
+  it("configures distinct living palettes for the light and dark piece sets", async () => {
+    const { stage } = createStage();
+    const stageInternals = stage as unknown as {
+      lightPieceMat: MeshPhysicalMaterial | MeshStandardMaterial;
+      darkPieceMat: MeshPhysicalMaterial | MeshStandardMaterial;
+      pieceBySquare: Map<string, { traverse: (callback: (child: unknown) => void) => void }>;
+    };
+
+    await stage.init();
+    stage.update(
+      buildRenderState({
+        fen: "8/8/8/8/8/8/P7/7p w - - 0 1",
+        theme: themes[1],
+      }),
+    );
+
+    const lightConfig = stageInternals.lightPieceMat.userData.marbleShaderConfig as {
+      tone: string;
+      baseHex: string;
+      veinHex: string;
+      attenuationHex: string;
+    };
+    const darkConfig = stageInternals.darkPieceMat.userData.marbleShaderConfig as {
+      tone: string;
+      baseHex: string;
+      veinHex: string;
+      attenuationHex: string;
+    };
+    const whitePawn = findFirstMesh(stageInternals.pieceBySquare.get("a2")!);
+    const blackPawn = findFirstMesh(stageInternals.pieceBySquare.get("h1")!);
+
+    expect(stageInternals.lightPieceMat.color.getHexString()).toBe(
+      new Color(
+        shiftHexLocal(
+          mixHexLocal(
+            themes[1].whitePiece,
+            shiftHexLocal(mixHexLocal(themes[1].whitePiece, themes[1].canvasFog, 0.42), 0.04, -0.18),
+            0.3,
+          ),
+          0.02,
+          -0.04,
+        ),
+      ).getHexString(),
+    );
+    expect(stageInternals.darkPieceMat.color.getHexString()).toBe(
+      new Color(
+        shiftHexLocal(
+          mixHexLocal(
+            themes[1].blackPiece,
+            shiftHexLocal(mixHexLocal(themes[1].blackPiece, "#020406", 0.36), 0.04, -0.04),
+            0.2,
+          ),
+          0.06,
+          -0.04,
+        ),
+      ).getHexString(),
+    );
+    expect(lightConfig).toMatchObject({ tone: "light" });
+    expect(darkConfig).toMatchObject({ tone: "dark" });
+    expect(lightConfig.veinHex).not.toBe(darkConfig.veinHex);
+    expect(lightConfig.attenuationHex).not.toBe(darkConfig.attenuationHex);
+    expect(whitePawn.material).toBe(stageInternals.lightPieceMat);
+    expect(blackPawn.material).toBe(stageInternals.darkPieceMat);
+  });
+
+  it("keeps the procedural piece effect on opacity and selection clones", async () => {
+    const { stage } = createStage();
+    const stageInternals = stage as unknown as {
+      lightPieceMat: MeshPhysicalMaterial | MeshStandardMaterial;
+      pieceBySquare: Map<string, { traverse: (callback: (child: unknown) => void) => void }>;
+      setPieceOpacity: (piece: unknown, opacity: number) => void;
+      applySelectedPieceHighlight: (square: string, color: string) => void;
+    };
+
+    await stage.init();
+    stage.update(
+      buildRenderState({
+        fen: "8/8/8/8/8/8/4P3/8 w - - 0 1",
+        theme: themes[0],
+      }),
+    );
+
+    const pawn = stageInternals.pieceBySquare.get("e2")!;
+    stageInternals.setPieceOpacity(pawn, 0.45);
+
+    const fadedMaterial = findFirstMesh(pawn).material as MeshPhysicalMaterial | MeshStandardMaterial;
+    expect(fadedMaterial).not.toBe(stageInternals.lightPieceMat);
+    expect(fadedMaterial.userData.marbleShaderConfig).toMatchObject({ tone: "light" });
+
+    stageInternals.applySelectedPieceHighlight("e2", "#ffe28a");
+
+    const highlightedMaterial = findFirstMesh(pawn).material as
+      | MeshPhysicalMaterial
+      | MeshStandardMaterial;
+    expect(highlightedMaterial).not.toBe(stageInternals.lightPieceMat);
+    expect(highlightedMaterial.userData.marbleShaderConfig).toMatchObject({
+      tone: "light",
+    });
+    expect(highlightedMaterial.emissive.getHexString()).toBe(new Color("#ffe28a").getHexString());
+  });
+
   it("auto-detects a high-end GPU and starts in the premium tier", async () => {
     latestRendererProbe = {
       renderer: "NVIDIA GeForce RTX 4090",
@@ -1182,6 +1305,23 @@ describe("ChessStage", () => {
     };
 
     await stage.init();
+    stage.update(buildRenderState({ fen: createNewSession().snapshot.fen, theme: themes[0] }));
+
+    expect(stageInternals.lightPieceMat.userData.marbleShaderConfig).toMatchObject({
+      marchSteps: 64,
+      transmission: 0.85,
+      tone: "light",
+    });
+    expect(stageInternals.darkPieceMat.userData.marbleShaderConfig).toMatchObject({
+      marchSteps: 64,
+      transmission: 0.85,
+      tone: "dark",
+    });
+    expect((stageInternals.lightPieceMat as MeshPhysicalMaterial).transmission).toBeCloseTo(0.85);
+    expect((stageInternals.darkPieceMat as MeshPhysicalMaterial).transmission).toBeCloseTo(
+      0.85 * 0.3,
+    );
+
     stage.setQualityTier(2);
 
     expect(stageInternals.qualityTier).toBe(2);
@@ -1190,21 +1330,31 @@ describe("ChessStage", () => {
     expect(stageInternals.qualityProfile.shadowMapSize).toBe(2048);
     expect(stageInternals.qualityProfile.postProcessSamples).toBe(0);
     expect(stageInternals.qualityProfile.postProcessFxaa).toBe(true);
-    expect(stageInternals.lightPieceMat).toBeInstanceOf(MeshStandardMaterial);
-    expect(stageInternals.darkPieceMat).toBeInstanceOf(MeshStandardMaterial);
+    expect(stageInternals.lightPieceMat).toBeInstanceOf(MeshPhysicalMaterial);
+    expect(stageInternals.darkPieceMat).toBeInstanceOf(MeshPhysicalMaterial);
     expect(stageInternals.accentMat).toBeInstanceOf(MeshStandardMaterial);
     expect(stageInternals.pipeline?.setAntiAliasing).toHaveBeenLastCalledWith(0, true);
     expect(stageInternals.pipeline?.setEnabled).toHaveBeenLastCalledWith(true);
     expect(stageInternals.pipeline?.setBloomResolutionScale).toHaveBeenLastCalledWith(0.5);
     expect(stageInternals.lightSquareMats[0]?.map?.anisotropy).toBe(4);
+    expect(stageInternals.lightPieceMat.userData.marbleShaderConfig).toMatchObject({
+      marchSteps: 48,
+      transmission: 0.55,
+      tone: "light",
+    });
+    expect(stageInternals.darkPieceMat.userData.marbleShaderConfig).toMatchObject({
+      marchSteps: 48,
+      transmission: 0.55,
+      tone: "dark",
+    });
 
     stage.setQualityTier(1);
 
     expect(stageInternals.qualityTier).toBe(1);
     expect(stageInternals.qualityPreference.qualityMode).toBe("manual");
     expect(stageInternals.qualityPreference.manualQualityTier).toBe(1);
-    expect(stageInternals.lightPieceMat).toBeInstanceOf(MeshStandardMaterial);
-    expect(stageInternals.darkPieceMat).toBeInstanceOf(MeshStandardMaterial);
+    expect(stageInternals.lightPieceMat).toBeInstanceOf(MeshPhysicalMaterial);
+    expect(stageInternals.darkPieceMat).toBeInstanceOf(MeshPhysicalMaterial);
     expect(stageInternals.accentMat).toBeInstanceOf(MeshStandardMaterial);
     expect(stageInternals.renderer.shadowMap.enabled).toBe(false);
     expect(stageInternals.pipeline?.setAntiAliasing).toHaveBeenLastCalledWith(0, false);
@@ -1213,6 +1363,16 @@ describe("ChessStage", () => {
     expect(stageInternals.qualityProfile.pixelRatioCap).toBe(1);
     expect(stageInternals.qualityProfile.textureAnisotropy).toBe(1);
     expect(stageInternals.lightSquareMats[0]?.map?.anisotropy).toBe(1);
+    expect(stageInternals.lightPieceMat.userData.marbleShaderConfig).toMatchObject({
+      marchSteps: 24,
+      transmission: 0.2,
+      tone: "light",
+    });
+    expect(stageInternals.darkPieceMat.userData.marbleShaderConfig).toMatchObject({
+      marchSteps: 24,
+      transmission: 0.2,
+      tone: "dark",
+    });
   }, 15000);
 
   it("downgrades after sustained low FPS and respects the cooldown window", async () => {

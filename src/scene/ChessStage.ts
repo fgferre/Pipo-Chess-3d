@@ -37,7 +37,11 @@ import {
   Shape,
   CanvasTexture,
   RepeatWrapping,
+  ClampToEdgeWrapping,
   AdditiveBlending,
+  Data3DTexture,
+  RedFormat,
+  LinearFilter,
   MOUSE,
   TOUCH,
 } from "three";
@@ -113,6 +117,39 @@ type AnimationMode = AppSettings["animationMode"];
 type CameraPreset = "classic" | "side" | "topdown" | "2d";
 type ViewMode = "3d" | "topdown" | "2d";
 type QualityMaterial = MeshStandardMaterial | MeshPhysicalMaterial;
+type PieceMaterialSetTone = "light" | "dark";
+
+interface MarbleShaderProfile {
+  marchSteps: number;
+  marchDepth: number;
+  scale: number;
+  emissiveStrength: number;
+  // PBR overrides for the vitrified marble look
+  transmission: number;
+  thickness: number;
+  attenuationDistance: number;
+  clearcoat: number;
+  clearcoatRoughness: number;
+  ior: number;
+  reflectivity: number;
+  specularIntensity: number;
+  dispersion: number;
+}
+
+interface MarbleShaderConfig extends MarbleShaderProfile {
+  tone: PieceMaterialSetTone;
+  baseHex: string;
+  veinHex: string;
+  attenuationHex: string;
+  specularHex: string;
+}
+
+interface MarbleShaderRuntimeUniforms {
+  rootAxisX: { value: Vector3 };
+  rootAxisY: { value: Vector3 };
+  rootAxisZ: { value: Vector3 };
+  rootOriginWorld: { value: Vector3 };
+}
 
 interface TransitionComparableState {
   fen: string;
@@ -216,6 +253,58 @@ const ANIMATION_MODE_CONFIG: Record<
 const CAMERA_TRANSITION_DURATION_MS: Record<Exclude<AnimationMode, "off">, number> = {
   normal: 520,
   reduced: 220,
+};
+
+// Marble fractal bake constants — computed once at init into a 3D texture
+const MARBLE_BAKE_ITERATIONS = 10;
+const MARBLE_VOLUME_RESOLUTION = 128;
+
+const MARBLE_SHADER_PROFILES: Record<QualityTier, MarbleShaderProfile> = {
+  1: {
+    marchSteps: 24,
+    marchDepth: 1.2,
+    scale: 1.3,
+    emissiveStrength: 0.08,
+    transmission: 0.2,
+    thickness: 0.8,
+    attenuationDistance: 1.0,
+    clearcoat: 0.2,
+    clearcoatRoughness: 0.6,
+    ior: 1.28,
+    reflectivity: 0.74,
+    specularIntensity: 1,
+    dispersion: 0.02,
+  },
+  2: {
+    marchSteps: 48,
+    marchDepth: 1.6,
+    scale: 1.3,
+    emissiveStrength: 0.14,
+    transmission: 0.55,
+    thickness: 1.8,
+    attenuationDistance: 0.5,
+    clearcoat: 0.4,
+    clearcoatRoughness: 0.28,
+    ior: 1.38,
+    reflectivity: 0.96,
+    specularIntensity: 1,
+    dispersion: 0.08,
+  },
+  3: {
+    marchSteps: 64,
+    marchDepth: 2.0,
+    scale: 1.3,
+    emissiveStrength: 0.2,
+    transmission: 0.85,
+    thickness: 3.2,
+    attenuationDistance: 0.28,
+    clearcoat: 0.6,
+    clearcoatRoughness: 0.16,
+    ior: 1.46,
+    reflectivity: 1,
+    specularIntensity: 1,
+    dispersion: 0.2,
+  },
 };
 
 const CAMERA_PRESET_PROFILES: Record<CameraPreset, CameraPresetProfile> = {
@@ -843,6 +932,235 @@ function applyWoodMaterialTheme(
   material.needsUpdate = true;
 
   previousTextures.forEach((previousTexture) => previousTexture.dispose());
+}
+
+/**
+ * Pre-computes the "Playing marble" fractal field (S. Guillitte 2015, MtX3Ws)
+ * into a 3D texture. Hardware trilinear filtering then eliminates temporal
+ * aliasing when the camera moves — the pattern changes smoothly with viewing
+ * angle, like real translucent marble.
+ */
+function bakeMarbleVolume(resolution: number, iterations: number): Data3DTexture {
+  const size = resolution;
+  const data = new Uint8Array(size * size * size);
+  const invSizeM1 = 1 / (size - 1);
+
+  for (let iz = 0; iz < size; iz++) {
+    const fz = iz * invSizeM1 * 4.0 - 2.0;
+    for (let iy = 0; iy < size; iy++) {
+      const fy = iy * invSizeM1 * 4.0 - 2.0;
+      for (let ix = 0; ix < size; ix++) {
+        const fx = ix * invSizeM1 * 4.0 - 2.0;
+
+        // Fractal field evaluation (matches GLSL exactly)
+        let px = fx,
+          py = fy,
+          pz = fz;
+        const cx = fx,
+          cy = fy,
+          cz = fz;
+        let res = 0;
+
+        for (let i = 0; i < iterations; i++) {
+          const d = px * px + py * py + pz * pz;
+          if (d < 1e-10) break;
+          const s = 0.7 / d;
+          px = Math.abs(px) * s - 0.7;
+          py = Math.abs(py) * s - 0.7;
+          pz = Math.abs(pz) * s - 0.7;
+          // p.yz = csqr(p.yz)
+          const ny = py * py - pz * pz;
+          const nz = 2.0 * py * pz;
+          py = ny;
+          pz = nz;
+          // p = p.zxy
+          const tx = pz;
+          const ty = px;
+          const tz = py;
+          px = tx;
+          py = ty;
+          pz = tz;
+          res += Math.exp(-19.0 * Math.abs(px * cx + py * cy + pz * cz));
+        }
+
+        // Encode field value to [0,255] — scale chosen so that the useful
+        // range (~0..6 for 10 iterations) maps to most of the byte range.
+        data[iz * size * size + iy * size + ix] = Math.min(255, Math.round(res * 40));
+      }
+    }
+  }
+
+  const texture = new Data3DTexture(data, size, size, size);
+  texture.format = RedFormat;
+  texture.minFilter = LinearFilter;
+  texture.magFilter = LinearFilter;
+  texture.wrapS = ClampToEdgeWrapping;
+  texture.wrapT = ClampToEdgeWrapping;
+  texture.wrapR = ClampToEdgeWrapping;
+  texture.needsUpdate = true;
+  return texture;
+}
+
+function applyMarbleShader(
+  material: QualityMaterial,
+  config: MarbleShaderConfig,
+  volumeTexture: Data3DTexture,
+): void {
+  const runtimeUniforms: MarbleShaderRuntimeUniforms =
+    (material.userData.marbleShaderRuntimeUniforms as MarbleShaderRuntimeUniforms | undefined) ?? {
+      rootAxisX: { value: new Vector3(1, 0, 0) },
+      rootAxisY: { value: new Vector3(0, 1, 0) },
+      rootAxisZ: { value: new Vector3(0, 0, 1) },
+      rootOriginWorld: { value: new Vector3() },
+    };
+
+  // Spectrum tint: light pieces warm (c³,c²,c), dark pieces cool (c,c²,c³)
+  const spectrum =
+    config.tone === "light" ? "vec3( c * c * c, c * c, c )" : "vec3( c * c, c, c * c * c )";
+
+  material.userData.marbleShaderConfig = { ...config };
+  material.userData.marbleShaderRuntimeUniforms = runtimeUniforms;
+  material.customProgramCacheKey = () =>
+    [
+      "marble-v3",
+      config.tone,
+      config.marchSteps,
+      config.marchDepth.toFixed(2),
+      config.scale.toFixed(2),
+      config.emissiveStrength.toFixed(2),
+      config.baseHex,
+      config.veinHex,
+    ].join("|");
+
+  material.onBeforeCompile = (shader) => {
+    // --- Uniforms ---
+    shader.uniforms.uMarbleVolume = { value: volumeTexture };
+    shader.uniforms.uMarbleBaseColor = { value: new Color(config.baseHex) };
+    shader.uniforms.uMarbleVeinColor = { value: new Color(config.veinHex) };
+    shader.uniforms.uMarbleScale = { value: config.scale };
+    shader.uniforms.uMarbleMarchDepth = { value: config.marchDepth };
+    shader.uniforms.uMarbleEmissiveStrength = { value: config.emissiveStrength };
+    shader.uniforms.uMarbleRootAxisX = runtimeUniforms.rootAxisX;
+    shader.uniforms.uMarbleRootAxisY = runtimeUniforms.rootAxisY;
+    shader.uniforms.uMarbleRootAxisZ = runtimeUniforms.rootAxisZ;
+    shader.uniforms.uMarbleRootOrigin = runtimeUniforms.rootOriginWorld;
+
+    // --- Vertex shader: pass world position & normal ---
+    shader.vertexShader = shader.vertexShader
+      .replace(
+        "#include <common>",
+        /* glsl */ `
+        #include <common>
+        varying vec3 vMarbleWorldPos;
+        varying vec3 vMarbleWorldNormal;
+        `,
+      )
+      .replace(
+        "#include <begin_vertex>",
+        /* glsl */ `
+        #include <begin_vertex>
+        vMarbleWorldPos = ( modelMatrix * vec4( position, 1.0 ) ).xyz;
+        vMarbleWorldNormal = normalize( mat3( modelMatrix ) * normal );
+        `,
+      );
+
+    // --- Fragment shader: 3D texture lookup + normal-based raymarch ---
+    shader.fragmentShader = shader.fragmentShader
+      .replace(
+        "#include <common>",
+        /* glsl */ `
+        #include <common>
+        varying vec3 vMarbleWorldPos;
+        varying vec3 vMarbleWorldNormal;
+
+        uniform highp sampler3D uMarbleVolume;
+        uniform vec3 uMarbleBaseColor;
+        uniform vec3 uMarbleVeinColor;
+        uniform float uMarbleScale;
+        uniform float uMarbleMarchDepth;
+        uniform float uMarbleEmissiveStrength;
+        uniform vec3 uMarbleRootAxisX;
+        uniform vec3 uMarbleRootAxisY;
+        uniform vec3 uMarbleRootAxisZ;
+        uniform vec3 uMarbleRootOrigin;
+
+        // Sample the pre-baked fractal field from the 3D texture.
+        // Domain [-2,2] maps to UV [0,1]; decode byte→float.
+        float marbleField( vec3 domainPos ) {
+          vec3 uv = domainPos * 0.25 + 0.5;
+          return texture( uMarbleVolume, uv ).r * ( 255.0 / 40.0 );
+        }
+
+        // Raymarch along a FIXED direction (surface normal), accumulating
+        // colour exactly like the Shadertoy original (adaptive step).
+        // Because the direction is the surface normal (not the camera ray),
+        // the pattern is completely stable when the camera moves.
+        // The 3D texture's trilinear filtering eliminates aliasing.
+        vec3 marbleRaymarch( vec3 ro, vec3 rd, float maxDepth ) {
+          float t = 0.0;
+          float dt = 0.02;
+          vec3 col = vec3( 0.0 );
+          float c = 0.0;
+          for ( int i = 0; i < ${config.marchSteps}; i++ ) {
+            t += dt * exp( -2.0 * c );
+            if ( t > maxDepth ) break;
+            c = marbleField( ro + t * rd );
+            col = 0.99 * col + 0.08 * ${spectrum};
+          }
+          return col;
+        }
+        `,
+      )
+      .replace(
+        "#include <emissivemap_fragment>",
+        /* glsl */ `
+        #include <emissivemap_fragment>
+
+        // ── Object-space marble via pre-baked 3D volume ─────────
+        // Transform fragment to piece-local coordinates.
+        vec3 mRelWorld = vMarbleWorldPos - uMarbleRootOrigin;
+        vec3 mLocal = vec3(
+          dot( mRelWorld, uMarbleRootAxisX ),
+          dot( mRelWorld, uMarbleRootAxisY ),
+          dot( mRelWorld, uMarbleRootAxisZ )
+        );
+
+        // Center the piece vertically in the fractal domain and scale
+        mLocal.y -= 1.5;
+        vec3 mDomain = mLocal * uMarbleScale;
+
+        // Surface normal in piece-local space — march direction is
+        // FIXED per surface point (not camera-dependent), so the
+        // marble pattern never shifts when the camera moves.
+        vec3 mNormalWorld = normalize( vMarbleWorldNormal );
+        vec3 mNormalLocal = vec3(
+          dot( mNormalWorld, uMarbleRootAxisX ),
+          dot( mNormalWorld, uMarbleRootAxisY ),
+          dot( mNormalWorld, uMarbleRootAxisZ )
+        );
+        vec3 mDir = -normalize( mNormalLocal );
+
+        // Raymarch from surface inward along the normal
+        vec3 mCol = marbleRaymarch( mDomain, mDir, uMarbleMarchDepth );
+
+        // Tone-map (Shadertoy original: 0.5 * log(1 + col))
+        mCol = 0.5 * log( 1.0 + mCol );
+        mCol = clamp( mCol, 0.0, 1.0 );
+
+        // Tint the raw fractal toward theme colours
+        vec3 mTinted = mix( uMarbleVeinColor, uMarbleBaseColor, mCol );
+
+        // Feed into PBR as diffuseColor — Three.js MeshPhysicalMaterial
+        // handles clearcoat, reflections, Fresnel, transmission
+        diffuseColor.rgb = mTinted;
+
+        // Subtle emissive glow from bright marble veins
+        totalEmissiveRadiance += mCol * uMarbleEmissiveStrength;
+        `,
+      );
+  };
+
+  material.needsUpdate = true;
 }
 
 // ─── Piece Prototype Builders ──────────────────────────────────────────────
@@ -1546,6 +1864,7 @@ export class ChessStage implements SceneAdapter {
   private accentMat!: QualityMaterial;
   private groutMat!: MeshStandardMaterial;
   private environmentTarget: WebGLRenderTarget | null = null;
+  private marbleVolumeTexture: Data3DTexture | null = null;
   private pipeline: PostProcessingPipeline | null = null;
   private qualityPreference: QualityPreference = createDefaultQualityPreference();
   private qualityDetectedTier: QualityTier = 2;
@@ -1710,8 +2029,20 @@ export class ChessStage implements SceneAdapter {
         return;
       }
 
-      await this.reportInitProgress(onLoadStateChange, 82, "scene.loading.pieces");
+      await this.reportInitProgress(onLoadStateChange, 78, "scene.loading.pieces");
       if (this.disposed) {
+        return;
+      }
+
+      // Bake the fractal field into a 3D texture for smooth hardware-filtered
+      // marble rendering. This runs once; all subsequent shader lookups use
+      // trilinear-filtered texture reads instead of per-pixel fractal math.
+      this.marbleVolumeTexture = bakeMarbleVolume(MARBLE_VOLUME_RESOLUTION, MARBLE_BAKE_ITERATIONS);
+
+      await this.reportInitProgress(onLoadStateChange, 84, "scene.loading.pieces");
+      if (this.disposed) {
+        this.marbleVolumeTexture.dispose();
+        this.marbleVolumeTexture = null;
         return;
       }
 
@@ -2464,6 +2795,8 @@ export class ChessStage implements SceneAdapter {
     this.scene.environment = null;
     this.environmentTarget?.dispose();
     this.environmentTarget = null;
+    this.marbleVolumeTexture?.dispose();
+    this.marbleVolumeTexture = null;
 
     for (const burst of this.activeCaptureParticles) {
       this.root.remove(burst.points);
@@ -2564,16 +2897,22 @@ export class ChessStage implements SceneAdapter {
 
   private buildPiecePrototypes(): void {
     this.prototypes.clear();
-    this.lightPieceMat = createTieredMaterial(
-      this.qualityProfile.usePhysicalMaterials,
-      0x5a544d,
-      this.qualityProfile.pieceWhite,
-    );
-    this.darkPieceMat = createTieredMaterial(
-      this.qualityProfile.usePhysicalMaterials,
-      0x010101,
-      this.qualityProfile.pieceBlack,
-    );
+    this.lightPieceMat = new MeshPhysicalMaterial({
+      color: 0xe7eef1,
+      roughness: this.qualityProfile.pieceWhite.roughness,
+      metalness: this.qualityProfile.pieceWhite.metalness,
+      clearcoat: this.qualityProfile.pieceWhite.clearcoat,
+      clearcoatRoughness: this.qualityProfile.pieceWhite.clearcoatRoughness,
+      envMapIntensity: this.qualityProfile.pieceWhite.envMapIntensity,
+    });
+    this.darkPieceMat = new MeshPhysicalMaterial({
+      color: 0x0b0f13,
+      roughness: this.qualityProfile.pieceBlack.roughness,
+      metalness: this.qualityProfile.pieceBlack.metalness,
+      clearcoat: this.qualityProfile.pieceBlack.clearcoat,
+      clearcoatRoughness: this.qualityProfile.pieceBlack.clearcoatRoughness,
+      envMapIntensity: this.qualityProfile.pieceBlack.envMapIntensity,
+    });
 
     this.prototypes.set("p", createPawnPrototype(this.lightPieceMat));
     this.prototypes.set("r", createRookPrototype(this.lightPieceMat));
@@ -2581,6 +2920,84 @@ export class ChessStage implements SceneAdapter {
     this.prototypes.set("b", createBishopPrototype(this.lightPieceMat));
     this.prototypes.set("q", createQueenPrototype(this.lightPieceMat));
     this.prototypes.set("k", createKingPrototype(this.lightPieceMat));
+  }
+
+  private createMarbleShaderConfig(
+    tone: PieceMaterialSetTone,
+    theme: ThemeDefinition,
+  ): MarbleShaderConfig {
+    const profile = MARBLE_SHADER_PROFILES[this.qualityTier];
+    const baseHex = tone === "light" ? theme.whitePiece : theme.blackPiece;
+
+    return {
+      ...profile,
+      tone,
+      baseHex,
+      veinHex:
+        tone === "light"
+          ? shiftHex(mixHex(baseHex, theme.canvasFog, 0.42), 0.04, -0.18)
+          : shiftHex(mixHex(baseHex, "#020406", 0.36), 0.04, -0.04),
+      attenuationHex:
+        tone === "light"
+          ? shiftHex(mixHex("#d8fbff", theme.highlightSecondary, 0.18), 0.06, 0.12)
+          : shiftHex(mixHex(baseHex, theme.highlightSecondary, 0.16), 0.08, -0.02),
+      specularHex:
+        tone === "light"
+          ? shiftHex(mixHex("#ffffff", "#dff8ff", 0.26), 0.02, 0.06)
+          : shiftHex(mixHex(theme.highlightSecondary, "#ffffff", 0.22), 0.08, 0.04),
+    };
+  }
+
+  private applyPieceMaterialAppearance(
+    material: QualityMaterial,
+    tone: PieceMaterialSetTone,
+    theme: ThemeDefinition,
+  ): void {
+    const config = this.createMarbleShaderConfig(tone, theme);
+    const qp = tone === "light" ? this.qualityProfile.pieceWhite : this.qualityProfile.pieceBlack;
+
+    material.color.set(
+      tone === "light"
+        ? shiftHex(mixHex(theme.whitePiece, config.veinHex, 0.3), 0.02, -0.04)
+        : shiftHex(mixHex(theme.blackPiece, config.veinHex, 0.2), 0.06, -0.04),
+    );
+    material.roughness = Math.max(0.02, qp.roughness - 0.42);
+    material.metalness = tone === "light" ? 0.0 : 0.04;
+    material.envMapIntensity = qp.envMapIntensity + 0.8;
+    if ("emissive" in material) {
+      material.emissive.set(config.baseHex);
+      material.emissiveIntensity = 0.1;
+    }
+    if (material instanceof MeshPhysicalMaterial) {
+      material.clearcoat = config.clearcoat;
+      material.clearcoatRoughness = config.clearcoatRoughness;
+      material.ior = config.ior;
+      material.reflectivity = config.reflectivity;
+      material.specularIntensity = config.specularIntensity;
+      material.specularColor.set(config.specularHex);
+      material.transmission = tone === "light" ? config.transmission : config.transmission * 0.3;
+      material.thickness = config.thickness;
+      material.attenuationDistance =
+        tone === "light" ? config.attenuationDistance : config.attenuationDistance * 0.7;
+      material.attenuationColor.set(config.attenuationHex);
+      material.dispersion = tone === "light" ? config.dispersion : config.dispersion * 0.3;
+      material.opacity = 1;
+      material.transparent = false;
+    }
+    if (this.marbleVolumeTexture) {
+      applyMarbleShader(material, config, this.marbleVolumeTexture);
+    }
+  }
+
+  private clonePieceMaterial(material: QualityMaterial): QualityMaterial {
+    const clone = material.clone() as QualityMaterial;
+    const marbleConfig = material.userData.marbleShaderConfig as MarbleShaderConfig | undefined;
+
+    if (marbleConfig && this.marbleVolumeTexture) {
+      applyMarbleShader(clone, marbleConfig, this.marbleVolumeTexture);
+    }
+
+    return clone;
   }
 
   private async reportInitProgress(
@@ -2977,6 +3394,42 @@ export class ChessStage implements SceneAdapter {
     clone.scale.setScalar(PIECE_SCALE);
     clone.userData.effectOpacity = 1;
     clone.userData.spriteBaseScale = SPRITE_SCALE_BY_TYPE[piece.type];
+    clone.updateMatrixWorld(true);
+
+    // Scratch vectors for per-frame runtime uniform updates (no allocation in hot path)
+    const pieceRootOrigin = new Vector3();
+    const pieceRootAxisX = new Vector3();
+    const pieceRootAxisY = new Vector3();
+    const pieceRootAxisZ = new Vector3();
+
+    clone.traverse((child) => {
+      if (!(child instanceof Mesh) || child.name === "felt" || child.name === "eye") {
+        return;
+      }
+
+      child.onBeforeRender = (_renderer, _scene, _camera, _geometry, material) => {
+        if (Array.isArray(material)) {
+          return;
+        }
+
+        const runtime = material.userData
+          .marbleShaderRuntimeUniforms as MarbleShaderRuntimeUniforms | undefined;
+
+        if (!runtime) {
+          return;
+        }
+
+        // Extract piece group's world-space origin and axes
+        pieceRootOrigin.setFromMatrixPosition(clone.matrixWorld);
+        pieceRootAxisX.setFromMatrixColumn(clone.matrixWorld, 0).normalize();
+        pieceRootAxisY.setFromMatrixColumn(clone.matrixWorld, 1).normalize();
+        pieceRootAxisZ.setFromMatrixColumn(clone.matrixWorld, 2).normalize();
+        runtime.rootOriginWorld.value.copy(pieceRootOrigin);
+        runtime.rootAxisX.value.copy(pieceRootAxisX);
+        runtime.rootAxisY.value.copy(pieceRootAxisY);
+        runtime.rootAxisZ.value.copy(pieceRootAxisZ);
+      };
+    });
 
     const sprite = this.createPieceSprite(piece);
     clone.userData.sprite = sprite;
@@ -3356,7 +3809,7 @@ export class ChessStage implements SceneAdapter {
         !(fxMaterial instanceof MeshPhysicalMaterial) &&
         !(fxMaterial instanceof MeshStandardMaterial)
       ) {
-        fxMaterial = baseMaterial.clone();
+        fxMaterial = this.clonePieceMaterial(baseMaterial);
         child.userData.fxMaterial = fxMaterial;
       }
 
@@ -3549,10 +4002,10 @@ export class ChessStage implements SceneAdapter {
       this.feltMat.color.set(theme.canvasFelt);
     }
     if (this.lightPieceMat) {
-      this.lightPieceMat.color.set(theme.whitePiece);
+      this.applyPieceMaterialAppearance(this.lightPieceMat, "light", theme);
     }
     if (this.darkPieceMat) {
-      this.darkPieceMat.color.set(theme.blackPiece);
+      this.applyPieceMaterialAppearance(this.darkPieceMat, "dark", theme);
     }
     if (this.currentFen) {
       this.syncPiecesToCurrentState();
@@ -3663,7 +4116,7 @@ export class ChessStage implements SceneAdapter {
         return;
       }
 
-      const highlightMaterial = baseMaterial.clone() as MeshStandardMaterial | MeshPhysicalMaterial;
+      const highlightMaterial = this.clonePieceMaterial(baseMaterial);
       highlightMaterial.emissive = new Color(color);
       highlightMaterial.emissiveIntensity = 0.35;
       highlightMaterial.transparent = this.pieceRepresentationOpacity < 0.999;
