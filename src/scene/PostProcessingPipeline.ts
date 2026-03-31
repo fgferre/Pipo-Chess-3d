@@ -46,6 +46,21 @@ const VignetteShader = {
   `,
 };
 
+interface DisposableResource {
+  dispose: () => void;
+}
+
+type DisposableCandidate = DisposableResource | null | undefined;
+
+function isDisposableResource(value: unknown): value is DisposableResource {
+  if (typeof value !== "object" || value === null) {
+    return false;
+  }
+
+  const candidate = value as { dispose?: unknown };
+  return typeof candidate.dispose === "function";
+}
+
 export class PostProcessingPipeline {
   private readonly renderer: WebGLRenderer;
   private readonly scene: Scene;
@@ -128,28 +143,38 @@ export class PostProcessingPipeline {
     }
   }
 
-  private disposePassResources(pass: any): void {
-    if (!pass) return;
-
-    if (pass.material) {
-      if (Array.isArray(pass.material)) {
-        pass.material.forEach((m: any) => m.dispose());
-      } else {
-        pass.material.dispose();
-      }
+  private disposePassResources(pass: unknown): void {
+    if (typeof pass !== "object" || pass === null) {
+      return;
     }
 
-    if (pass.fsQuad && pass.fsQuad.material) {
-      pass.fsQuad.material.dispose();
+    const typedPass = pass as {
+      material?: DisposableCandidate | DisposableCandidate[];
+      fsQuad?: { material?: DisposableCandidate } | null;
+      dispose?: (() => void) | null;
+    };
+
+    if (Array.isArray(typedPass.material)) {
+      typedPass.material.forEach((material) => {
+        if (isDisposableResource(material)) {
+          material.dispose();
+        }
+      });
+    } else if (isDisposableResource(typedPass.material)) {
+      typedPass.material.dispose();
+    }
+
+    if (typedPass.fsQuad && isDisposableResource(typedPass.fsQuad.material)) {
+      typedPass.fsQuad.material.dispose();
     }
 
     if (pass instanceof UnrealBloomPass) {
-      pass.renderTargetsHorizontal.forEach((rt: any) => rt.dispose());
-      pass.renderTargetsVertical.forEach((rt: any) => rt.dispose());
+      pass.renderTargetsHorizontal.forEach((target) => target.dispose());
+      pass.renderTargetsVertical.forEach((target) => target.dispose());
     }
 
-    if (typeof pass.dispose === "function") {
-      pass.dispose();
+    if (typeof typedPass.dispose === "function") {
+      typedPass.dispose();
     }
   }
 
@@ -216,7 +241,7 @@ export class PostProcessingPipeline {
     this.bloomPass.enabled = this.enabled && this.bloomResolutionScale > 0;
     this.bloomPass.setSize(targetWidth, targetHeight);
     this.bloomPass.resolution.set(targetWidth, targetHeight);
-    
+
     if (this.fxaaPass) {
       this.fxaaPass.uniforms["resolution"].value.set(1 / width, 1 / height);
     }

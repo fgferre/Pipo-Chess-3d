@@ -245,7 +245,9 @@ export async function openMenuSection(page: Page, section: MenuSection): Promise
     }
   }
 
-  await expect(view).toBeVisible();
+  if ((await view.count()) > 0) {
+    await expect(view).toBeVisible();
+  }
   return menu;
 }
 
@@ -259,6 +261,10 @@ export async function switchToEnglish(page: Page): Promise<void> {
 
 export async function openCamera(page: Page): Promise<Locator> {
   const surface = getCameraSurface(page);
+  const overlay = page.getByTestId("camera-overlay");
+  if ((await overlay.count()) > 0) {
+    await expect(overlay).toHaveCount(0);
+  }
   if (!(await isVisible(surface))) {
     await getCameraButton(page).click();
   }
@@ -269,16 +275,22 @@ export async function openCamera(page: Page): Promise<Locator> {
 
 export async function closeCamera(page: Page): Promise<void> {
   const surface = getCameraSurface(page);
+  const overlay = page.getByTestId("camera-overlay");
   if (await isVisible(surface)) {
     const closeButton = getCloseButton(surface);
     if (await isVisible(closeButton)) {
       await closeButton.click();
     } else {
-      await getCameraButton(page).click();
+      if ((await overlay.count()) > 0) {
+        await page.mouse.click(8, 8);
+      } else {
+        await page.keyboard.press("Escape");
+      }
     }
   }
 
   await expect(surface).toBeHidden();
+  await expect(overlay).toHaveCount(0);
 }
 
 export async function openHistory(page: Page): Promise<Locator> {

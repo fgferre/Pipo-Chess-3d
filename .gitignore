@@ -19,6 +19,11 @@ tmp-sample-game.pgn
 output/
 progress.md
 pnpm-lock.yaml
+1)
+.mcp.json
+.claude/
+.claude-flow/
+.swarm/
 
 # Editor directories and files
 .vscode/*

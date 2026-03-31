@@ -11,7 +11,8 @@
     "preview": "vite preview",
     "test": "vitest run --coverage",
     "test:watch": "vitest",
-    "test:e2e": "playwright test"
+    "test:e2e": "node tools/run-e2e.mjs --project=chromium",
+    "test:e2e:smoke-cross": "node tools/run-e2e.mjs --project=firefox-smoke --project=webkit-smoke"
   },
   "dependencies": {
     "@fontsource/inter": "^5.2.8",
@@ -30,7 +31,6 @@
     "@playwright/test": "^1.58.2",
     "@testing-library/jest-dom": "^6.9.1",
     "@testing-library/react": "^16.3.2",
-    "@testing-library/user-event": "^14.6.1",
     "@types/node": "^24.12.0",
     "@types/react": "^19.2.14",
     "@types/react-dom": "^19.2.3",

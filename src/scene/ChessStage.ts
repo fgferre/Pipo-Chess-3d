@@ -258,52 +258,58 @@ const CAMERA_TRANSITION_DURATION_MS: Record<Exclude<AnimationMode, "off">, numbe
 // Marble fractal bake constants — computed once at init into a 3D texture
 const MARBLE_BAKE_ITERATIONS = 10;
 const MARBLE_VOLUME_RESOLUTION = 128;
+let sharedMarbleVolumeTexture: Data3DTexture | null = null;
+let sharedMarbleVolumeReferences = 0;
 
 const MARBLE_SHADER_PROFILES: Record<QualityTier, MarbleShaderProfile> = {
+  // Tier 1 — mobile low-end: minimal raymarch, low transmission (saves a render pass),
+  // some clearcoat for gloss.  Marble pattern is visible but not deep.
   1: {
     marchSteps: 24,
     marchDepth: 1.2,
     scale: 1.3,
     emissiveStrength: 0.08,
-    transmission: 0.2,
+    transmission: 0.22,
     thickness: 0.8,
-    attenuationDistance: 1.0,
-    clearcoat: 0.2,
-    clearcoatRoughness: 0.6,
-    ior: 1.28,
-    reflectivity: 0.74,
+    attenuationDistance: 0.9,
+    clearcoat: 0.25,
+    clearcoatRoughness: 0.55,
+    ior: 1.3,
+    reflectivity: 0.76,
     specularIntensity: 1,
     dispersion: 0.02,
   },
+  // Tier 2 — mid-range mobile/desktop: decent marble depth, visible glass effect.
   2: {
     marchSteps: 48,
     marchDepth: 1.6,
     scale: 1.3,
     emissiveStrength: 0.14,
-    transmission: 0.55,
-    thickness: 1.8,
-    attenuationDistance: 0.5,
-    clearcoat: 0.4,
-    clearcoatRoughness: 0.28,
-    ior: 1.38,
+    transmission: 0.6,
+    thickness: 2.0,
+    attenuationDistance: 0.42,
+    clearcoat: 0.45,
+    clearcoatRoughness: 0.24,
+    ior: 1.4,
     reflectivity: 0.96,
     specularIntensity: 1,
-    dispersion: 0.08,
+    dispersion: 0.1,
   },
+  // Tier 3 — high-end: full marble raymarch depth, rich glass lens effect.
   3: {
     marchSteps: 64,
     marchDepth: 2.0,
     scale: 1.3,
     emissiveStrength: 0.2,
-    transmission: 0.85,
-    thickness: 3.2,
-    attenuationDistance: 0.28,
-    clearcoat: 0.6,
-    clearcoatRoughness: 0.16,
-    ior: 1.46,
+    transmission: 0.88,
+    thickness: 3.4,
+    attenuationDistance: 0.24,
+    clearcoat: 0.65,
+    clearcoatRoughness: 0.12,
+    ior: 1.48,
     reflectivity: 1,
     specularIntensity: 1,
-    dispersion: 0.2,
+    dispersion: 0.22,
   },
 };
 
@@ -1001,22 +1007,47 @@ function bakeMarbleVolume(resolution: number, iterations: number): Data3DTexture
   return texture;
 }
 
+function acquireMarbleVolumeTexture(): Data3DTexture {
+  if (!sharedMarbleVolumeTexture) {
+    sharedMarbleVolumeTexture = bakeMarbleVolume(MARBLE_VOLUME_RESOLUTION, MARBLE_BAKE_ITERATIONS);
+  }
+  sharedMarbleVolumeReferences += 1;
+  return sharedMarbleVolumeTexture;
+}
+
+function releaseMarbleVolumeTexture(texture: Data3DTexture | null): void {
+  if (!texture || texture !== sharedMarbleVolumeTexture) {
+    return;
+  }
+
+  sharedMarbleVolumeReferences = Math.max(0, sharedMarbleVolumeReferences - 1);
+  if (sharedMarbleVolumeReferences === 0 && sharedMarbleVolumeTexture) {
+    sharedMarbleVolumeTexture.dispose();
+    sharedMarbleVolumeTexture = null;
+  }
+}
+
 function applyMarbleShader(
   material: QualityMaterial,
   config: MarbleShaderConfig,
   volumeTexture: Data3DTexture,
 ): void {
-  const runtimeUniforms: MarbleShaderRuntimeUniforms =
-    (material.userData.marbleShaderRuntimeUniforms as MarbleShaderRuntimeUniforms | undefined) ?? {
-      rootAxisX: { value: new Vector3(1, 0, 0) },
-      rootAxisY: { value: new Vector3(0, 1, 0) },
-      rootAxisZ: { value: new Vector3(0, 0, 1) },
-      rootOriginWorld: { value: new Vector3() },
-    };
+  // Always allocate fresh Vector3 instances — material.clone() uses JSON serialization
+  // which strips prototype methods from any existing runtimeUniforms in userData.
+  const runtimeUniforms: MarbleShaderRuntimeUniforms = {
+    rootAxisX: { value: new Vector3(1, 0, 0) },
+    rootAxisY: { value: new Vector3(0, 1, 0) },
+    rootAxisZ: { value: new Vector3(0, 0, 1) },
+    rootOriginWorld: { value: new Vector3() },
+  };
 
-  // Spectrum tint: light pieces warm (c³,c²,c), dark pieces cool (c,c²,c³)
+  // Spectrum tint: light pieces warm (c²,c³,c), dark pieces neutral grayscale (c³,c³,c³).
+  // Dark uses a single power curve across all channels → zero colour bias (no green cast).
+  // The c³ curve keeps the accumulation substantially darker than the light pieces' c/c²/c³.
   const spectrum =
-    config.tone === "light" ? "vec3( c * c * c, c * c, c )" : "vec3( c * c, c, c * c * c )";
+    config.tone === "light"
+      ? "vec3( c * c, c * c * c, c )"
+      : "vec3( c * c * c, c * c * c, c * c * c )";
 
   material.userData.marbleShaderConfig = { ...config };
   material.userData.marbleShaderRuntimeUniforms = runtimeUniforms;
@@ -1039,7 +1070,8 @@ function applyMarbleShader(
     shader.uniforms.uMarbleVeinColor = { value: new Color(config.veinHex) };
     shader.uniforms.uMarbleScale = { value: config.scale };
     shader.uniforms.uMarbleMarchDepth = { value: config.marchDepth };
-    shader.uniforms.uMarbleEmissiveStrength = { value: config.emissiveStrength };
+    // Dark pieces: lower emissive so the marble glow doesn't overpower the glass transparency
+    shader.uniforms.uMarbleEmissiveStrength = { value: config.tone === "dark" ? config.emissiveStrength * 0.15 : config.emissiveStrength };
     shader.uniforms.uMarbleRootAxisX = runtimeUniforms.rootAxisX;
     shader.uniforms.uMarbleRootAxisY = runtimeUniforms.rootAxisY;
     shader.uniforms.uMarbleRootAxisZ = runtimeUniforms.rootAxisZ;
@@ -1147,15 +1179,23 @@ function applyMarbleShader(
         mCol = 0.5 * log( 1.0 + mCol );
         mCol = clamp( mCol, 0.0, 1.0 );
 
-        // Tint the raw fractal toward theme colours
-        vec3 mTinted = mix( uMarbleVeinColor, uMarbleBaseColor, mCol );
+        // Per-channel tinting: preserves the rich colour variation of the original
+        // marble fractal.  Using three explicit scalar mix() calls instead of a single
+        // mix(vec3,vec3,vec3) — the latter forces the HLSL transpiler to create a
+        // dyn_index_vec3_int loop variable that triggers warning X4000 on Windows/DirectX.
+        // Three scalar mixes are native lerp() in HLSL and cause no such issue.
+        vec3 mTinted;
+        mTinted.r = mix( uMarbleVeinColor.r, uMarbleBaseColor.r, mCol.r );
+        mTinted.g = mix( uMarbleVeinColor.g, uMarbleBaseColor.g, mCol.g );
+        mTinted.b = mix( uMarbleVeinColor.b, uMarbleBaseColor.b, mCol.b );
 
         // Feed into PBR as diffuseColor — Three.js MeshPhysicalMaterial
         // handles clearcoat, reflections, Fresnel, transmission
         diffuseColor.rgb = mTinted;
 
-        // Subtle emissive glow from bright marble veins
-        totalEmissiveRadiance += mCol * uMarbleEmissiveStrength;
+        // Subtle emissive glow from bright marble veins (scalar to avoid vec3 multiply issues)
+        float mLuma = dot( mCol, vec3( 0.2126, 0.7152, 0.0722 ) );
+        totalEmissiveRadiance += mLuma * uMarbleEmissiveStrength;
         `,
       );
   };
@@ -2037,11 +2077,11 @@ export class ChessStage implements SceneAdapter {
       // Bake the fractal field into a 3D texture for smooth hardware-filtered
       // marble rendering. This runs once; all subsequent shader lookups use
       // trilinear-filtered texture reads instead of per-pixel fractal math.
-      this.marbleVolumeTexture = bakeMarbleVolume(MARBLE_VOLUME_RESOLUTION, MARBLE_BAKE_ITERATIONS);
+      this.marbleVolumeTexture = acquireMarbleVolumeTexture();
 
       await this.reportInitProgress(onLoadStateChange, 84, "scene.loading.pieces");
       if (this.disposed) {
-        this.marbleVolumeTexture.dispose();
+        releaseMarbleVolumeTexture(this.marbleVolumeTexture);
         this.marbleVolumeTexture = null;
         return;
       }
@@ -2795,7 +2835,7 @@ export class ChessStage implements SceneAdapter {
     this.scene.environment = null;
     this.environmentTarget?.dispose();
     this.environmentTarget = null;
-    this.marbleVolumeTexture?.dispose();
+    releaseMarbleVolumeTexture(this.marbleVolumeTexture);
     this.marbleVolumeTexture = null;
 
     for (const burst of this.activeCaptureParticles) {
@@ -2846,20 +2886,23 @@ export class ChessStage implements SceneAdapter {
 
   private setupLighting(): void {
     // Obsidian stage rig: warm key light, cool cyan rim, restrained fill.
-    this.keyLight = new SpotLight(0xf4eadc, 44);
-    this.keyLight.position.set(18, 26, 14);
-    this.keyLight.angle = Math.PI / 4.6;
-    this.keyLight.penumbra = 0.96;
-    this.keyLight.decay = 2.2;
+    // Key light: warm directional — lowered Y for longer piece shadows on the board.
+    // Angle widened slightly so the shadow frustum covers the full board surface.
+    this.keyLight = new SpotLight(0xf4eadc, 48);
+    this.keyLight.position.set(16, 20, 12);
+    this.keyLight.angle = Math.PI / 4.2;
+    this.keyLight.penumbra = 0.92;
+    this.keyLight.decay = 2.0;
     this.keyLight.distance = 165;
     this.keyLight.castShadow = true;
-    this.keyLight.shadow.camera.near = 10;
-    this.keyLight.shadow.camera.far = 40;
-    this.keyLight.shadow.bias = -0.0001;
-    this.keyLight.shadow.normalBias = 0.002;
+    this.keyLight.shadow.camera.near = 6;
+    this.keyLight.shadow.camera.far = 48;
+    this.keyLight.shadow.bias = -0.00015;
+    this.keyLight.shadow.normalBias = 0.003;
     this.scene.add(this.keyLight);
 
-    this.leftRimLight = new SpotLight(0x8de8ff, 18);
+    // Left rim: cool cyan back-light for depth separation and edge definition
+    this.leftRimLight = new SpotLight(0x8de8ff, 22);
     this.leftRimLight.position.set(-20, 14, -28);
     this.leftRimLight.angle = Math.PI / 3.15;
     this.leftRimLight.penumbra = 1.0;
@@ -2869,7 +2912,8 @@ export class ChessStage implements SceneAdapter {
     this.leftRimLight.shadow.bias = -0.0005;
     this.scene.add(this.leftRimLight);
 
-    this.rightRimLight = new SpotLight(0xffc585, 9);
+    // Right rim: warm accent fill — gentle contribution to break shadow monotony
+    this.rightRimLight = new SpotLight(0xffc585, 12);
     this.rightRimLight.position.set(24, 10, -18);
     this.rightRimLight.angle = Math.PI / 3.9;
     this.rightRimLight.penumbra = 1.0;
@@ -2878,7 +2922,9 @@ export class ChessStage implements SceneAdapter {
     this.rightRimLight.castShadow = false;
     this.scene.add(this.rightRimLight);
 
-    this.hemisphereLight = new HemisphereLight(0x182734, 0x020304, 0.58);
+    // Hemisphere: sky/ground ambient — ground raised from near-black for better
+    // shadow fill (prevents pure-black shadows that hide board detail)
+    this.hemisphereLight = new HemisphereLight(0x1e3040, 0x080c12, 0.62);
     this.scene.add(this.hemisphereLight);
 
     this.applyQualityRuntimeSettings();
@@ -2936,15 +2982,19 @@ export class ChessStage implements SceneAdapter {
       veinHex:
         tone === "light"
           ? shiftHex(mixHex(baseHex, theme.canvasFog, 0.42), 0.04, -0.18)
-          : shiftHex(mixHex(baseHex, "#020406", 0.36), 0.04, -0.04),
+          // Dark: subtle neutral gray veins — no colour bias, just lighter streaks in black stone
+          : shiftHex(mixHex(baseHex, "#808088", 0.25), 0.0, 0.0),
       attenuationHex:
         tone === "light"
           ? shiftHex(mixHex("#d8fbff", theme.highlightSecondary, 0.18), 0.06, 0.12)
-          : shiftHex(mixHex(baseHex, theme.highlightSecondary, 0.16), 0.08, -0.02),
+          // Dark: near-black attenuation tints transmitted light dark (like sunglasses)
+          // with a subtle cool-blue shift — no theme dependency to avoid colour bleed
+          : "#0a0c18",
       specularHex:
         tone === "light"
           ? shiftHex(mixHex("#ffffff", "#dff8ff", 0.26), 0.02, 0.06)
-          : shiftHex(mixHex(theme.highlightSecondary, "#ffffff", 0.22), 0.08, 0.04),
+          // Dark: neutral white specular — avoids tinted reflections
+          : "#e0e0e8",
     };
   }
 
@@ -2959,10 +3009,11 @@ export class ChessStage implements SceneAdapter {
     material.color.set(
       tone === "light"
         ? shiftHex(mixHex(theme.whitePiece, config.veinHex, 0.3), 0.02, -0.04)
-        : shiftHex(mixHex(theme.blackPiece, config.veinHex, 0.2), 0.06, -0.04),
+        // Dark: clean near-black without mixing in vein colour — avoids green bleed
+        : shiftHex(theme.blackPiece, 0.0, -0.02),
     );
     material.roughness = Math.max(0.02, qp.roughness - 0.42);
-    material.metalness = tone === "light" ? 0.0 : 0.04;
+    material.metalness = tone === "light" ? 0.0 : 0.02;
     material.envMapIntensity = qp.envMapIntensity + 0.8;
     if ("emissive" in material) {
       material.emissive.set(config.baseHex);
@@ -2975,12 +3026,16 @@ export class ChessStage implements SceneAdapter {
       material.reflectivity = config.reflectivity;
       material.specularIntensity = config.specularIntensity;
       material.specularColor.set(config.specularHex);
-      material.transmission = tone === "light" ? config.transmission : config.transmission * 0.3;
+      // Both light and dark pieces use the SAME transmission — the glass is equally
+      // transparent.  The dark appearance comes purely from attenuationColor: a near-black
+      // tint that darkens the transmitted image (like tinted glass / sunglasses).
+      // The attenuationDistance controls how quickly the tint takes effect.
+      material.transmission = config.transmission;
       material.thickness = config.thickness;
       material.attenuationDistance =
-        tone === "light" ? config.attenuationDistance : config.attenuationDistance * 0.7;
+        tone === "light" ? config.attenuationDistance : config.attenuationDistance * 1.8;
       material.attenuationColor.set(config.attenuationHex);
-      material.dispersion = tone === "light" ? config.dispersion : config.dispersion * 0.3;
+      material.dispersion = config.dispersion;
       material.opacity = 1;
       material.transparent = false;
     }
@@ -3384,8 +3439,9 @@ export class ChessStage implements SceneAdapter {
         child.material = this.eyeMat;
         child.userData.baseMaterial = this.eyeMat;
       } else {
-        child.material = pieceMat;
-        child.userData.baseMaterial = pieceMat;
+        const instanceMat = this.clonePieceMaterial(pieceMat);
+        child.material = instanceMat;
+        child.userData.baseMaterial = instanceMat;
       }
     });
 

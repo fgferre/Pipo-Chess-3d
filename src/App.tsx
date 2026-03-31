@@ -1,5 +1,7 @@
 import {
   type ComponentProps,
+  lazy,
+  Suspense,
   startTransition,
   useCallback,
   useDeferredValue,
@@ -23,7 +25,6 @@ import {
   type ClockSideState,
   MenuSection,
 } from "./components/AppShellPrimitives";
-import { ChessScene } from "./components/ChessScene";
 import { AnalysisSummaryView } from "./components/AnalysisSummaryView";
 import { CameraPickerPanel } from "./components/CameraPickerPanel";
 import { ReplaceGameDialog, ResultModalOverlay } from "./components/DecisionOverlays";
@@ -92,6 +93,10 @@ const INITIAL_SCENE_LOAD_STATE: SceneLoadState = {
   progress: 0,
   messageKey: "scene.loading.renderer",
 };
+const ChessScene = lazy(async () => {
+  const module = await import("./components/ChessScene");
+  return { default: module.ChessScene };
+});
 
 function getShellMode(): ShellMode {
   if (typeof window === "undefined") {
@@ -154,6 +159,7 @@ function BaseOverlay({
   testId?: string;
 }) {
   const isPresent = useIsPresent();
+  const usesBackdropPointerLayer = dismissibleBackdrop;
 
   return (
     <div
@@ -166,7 +172,11 @@ function BaseOverlay({
         position: "fixed",
         inset: 0,
         zIndex: 10,
-        pointerEvents: blockInteraction ? "auto" : "none",
+        pointerEvents: usesBackdropPointerLayer
+          ? "none"
+          : blockInteraction && isPresent
+            ? "auto"
+            : "none",
       }}
     >
       {dismissibleBackdrop ? (
@@ -1690,25 +1700,27 @@ function App() {
 
       <main className="stage-root">
         <div className="stage-playfield">
-          <ChessScene
-            session={boardSession}
-            theme={theme}
-            interactionEnabled={!analysisMode}
-            lastMove={boardLastMove}
-            promotionAnchorSquare={pendingPromotion?.anchorSquare ?? null}
-            selectedSquare={analysisMode ? null : selectedSquare}
-            legalTargets={analysisMode ? [] : legalTargets}
-            hintMove={analysisMode ? null : hintMove}
-            invalidMoveSquare={invalidMoveSquare}
-            checkSquare={invalidMoveSquare ? null : checkedKingSquare}
-            castlingTargets={analysisMode ? [] : castlingTargets}
-            onLoadStateChange={setSceneLoadState}
-            onSquareSelect={(square) => void handleBoardInteraction(square)}
-            onPromotionAnchorChange={setPromotionAnchor}
-            onInvalidMoveAnchorChange={setInvalidMoveAnchor}
-            onCheckAnchorChange={setCheckAnchor}
-            onCastlingAnchorChange={setCastlingAnchor}
-          />
+          <Suspense fallback={null}>
+            <ChessScene
+              session={boardSession}
+              theme={theme}
+              interactionEnabled={!analysisMode}
+              lastMove={boardLastMove}
+              promotionAnchorSquare={pendingPromotion?.anchorSquare ?? null}
+              selectedSquare={analysisMode ? null : selectedSquare}
+              legalTargets={analysisMode ? [] : legalTargets}
+              hintMove={analysisMode ? null : hintMove}
+              invalidMoveSquare={invalidMoveSquare}
+              checkSquare={invalidMoveSquare ? null : checkedKingSquare}
+              castlingTargets={analysisMode ? [] : castlingTargets}
+              onLoadStateChange={setSceneLoadState}
+              onSquareSelect={(square) => void handleBoardInteraction(square)}
+              onPromotionAnchorChange={setPromotionAnchor}
+              onInvalidMoveAnchorChange={setInvalidMoveAnchor}
+              onCheckAnchorChange={setCheckAnchor}
+              onCastlingAnchorChange={setCastlingAnchor}
+            />
+          </Suspense>
         </div>
         {analysisMode ? (
           <EvalBar evaluation={currentEvaluation} locale={locale} />

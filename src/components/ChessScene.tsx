@@ -191,6 +191,8 @@ export function ChessScene({
       stage.dispose();
       stageRef.current = null;
     };
+    // Stage lifecycle is mount-bound; runtime setting updates are handled by dedicated effects below.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   useEffect(() => {

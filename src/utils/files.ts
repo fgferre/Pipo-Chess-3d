@@ -1,6 +1,6 @@
 export type ExportTextResult = "shared" | "copied" | "downloaded" | "cancelled";
 
-export function downloadTextFile(filename: string, content: string): void {
+function downloadTextFile(filename: string, content: string): void {
   const blob = new Blob([content], { type: "text/plain;charset=utf-8" });
   const url = URL.createObjectURL(blob);
   const link = document.createElement("a");

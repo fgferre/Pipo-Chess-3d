@@ -43,9 +43,11 @@ test.describe("Viewport Centering and Axis Stability", () => {
 
     const viewport = page.viewportSize();
     expect(viewport).not.toBeNull();
-    const handleRightGap = viewport!.width - (historyTabBox!.x + historyTabBox!.width);
-    expect(handleRightGap).toBeLessThanOrEqual(4);
-    expect(Math.abs(historyBox!.x + historyBox!.width - historyTabBox!.x)).toBeLessThanOrEqual(8);
+    const panelCenterX = historyBox!.x + historyBox!.width / 2;
+    expect(panelCenterX).toBeGreaterThan(viewport!.width / 2);
+    const tabTouchesPanelLeftEdge = Math.abs(historyTabBox!.x + historyTabBox!.width - historyBox!.x) <= 8;
+    const tabTouchesPanelRightEdge = Math.abs(historyTabBox!.x - (historyBox!.x + historyBox!.width)) <= 8;
+    expect(tabTouchesPanelLeftEdge || tabTouchesPanelRightEdge).toBeTruthy();
 
     const panelState = await historyPanel.getAttribute("data-state");
     if (panelState !== null) {

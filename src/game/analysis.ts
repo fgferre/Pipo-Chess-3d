@@ -1,4 +1,3 @@
-import { Chess } from "chess.js";
 import type {
   AnalysisSummary,
   AnalysisWorkItem,
@@ -92,31 +91,6 @@ export function buildAnalysisSummary(
     tagsByPly,
     evaluationsByPly,
   };
-}
-
-export function buildAnalysisWorkloadFromPgn(pgn: string): AnalysisWorkItem[] {
-  const chess = new Chess();
-  chess.loadPgn(pgn);
-  const history = chess.history({ verbose: true });
-  const replay = new Chess();
-
-  return history.map((move, index) => {
-    const beforeFen = replay.fen();
-    replay.move({
-      from: move.from,
-      to: move.to,
-      promotion: move.promotion,
-    });
-
-    return {
-      ply: index + 1,
-      fenBefore: beforeFen,
-      fenAfter: replay.fen(),
-      playedMoveUci: `${move.from}${move.to}${move.promotion ?? ""}`,
-      san: move.san,
-      mover: move.color,
-    };
-  });
 }
 
 function classifyMove({

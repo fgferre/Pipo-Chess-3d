@@ -19,7 +19,7 @@ export { clampQualityTier, QUALITY_FPS_THRESHOLD };
 export type QualityTier = SharedQualityTier;
 export type QualityMode = SharedQualityMode;
 export type QualityMonitorState = SharedQualityMonitorState;
-export interface QualityPreference extends QualitySettings {}
+export type QualityPreference = QualitySettings;
 export interface QualityHardwareProbe extends QualityHardwareProfile {
   vendor: string | null;
   hardwareConcurrency: number | null;
@@ -124,9 +124,9 @@ const QUALITY_TIER_PROFILES: Record<QualityTier, QualityTierProfile> = {
     textureAnisotropy: 4,
     shadowMapEnabled: true,
     shadowMapSize: 2048,
-    shadowRadiusPrimary: 4,
-    shadowRadiusRim: 2,
-    hemisphereIntensity: 0.45,
+    shadowRadiusPrimary: 6,
+    shadowRadiusRim: 3,
+    hemisphereIntensity: 0.5,
     bloomEnabled: true,
     bloomResolutionScale: 0.5,
     postProcessSamples: 0,
@@ -186,9 +186,9 @@ const QUALITY_TIER_PROFILES: Record<QualityTier, QualityTierProfile> = {
     textureAnisotropy: 16,
     shadowMapEnabled: true,
     shadowMapSize: 4096,
-    shadowRadiusPrimary: 8,
-    shadowRadiusRim: 4,
-    hemisphereIntensity: 0.5,
+    shadowRadiusPrimary: 10,
+    shadowRadiusRim: 5,
+    hemisphereIntensity: 0.55,
     bloomEnabled: true,
     bloomResolutionScale: 1,
     postProcessSamples: 4,

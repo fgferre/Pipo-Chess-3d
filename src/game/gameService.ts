@@ -418,7 +418,7 @@ export function getCurrentRepetitionCount(session: GameSession): number {
   return positions.filter((position) => position === currentKey).length;
 }
 
-export function getHalfmoveClock(session: GameSession): number {
+function getHalfmoveClock(session: GameSession): number {
   return Number.parseInt(session.snapshot.fen.split(" ")[4] ?? "0", 10) || 0;
 }
 
@@ -889,7 +889,7 @@ function normalizeUci(uci: string): { from: Square; to: Square; promotion?: stri
   };
 }
 
-export function moveToUci(move: Move): string {
+function moveToUci(move: Move): string {
   return `${move.from}${move.to}${move.promotion ?? ""}`;
 }
 

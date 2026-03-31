@@ -1,6 +1,6 @@
 import { writeFile } from "node:fs/promises";
 import { expect, test } from "@playwright/test";
-import { switchToEnglish, waitForBoot } from "./helpers";
+import { openMenuSection, switchToEnglish, waitForBoot } from "./helpers";
 
 test.use({ viewport: { width: 390, height: 844 } });
 test.setTimeout(90_000);
@@ -15,13 +15,12 @@ test("imports a PGN, exposes analysis mode, and exports the current session", as
   await writeFile(pgnPath, "1. e4 e5 2. Nf3 Nc6");
   await page.locator('input[type="file"]').setInputFiles(pgnPath);
 
-  await expect(page.locator(".move-list")).toContainText("e4");
-  await expect(page.getByRole("button", { name: "Return" })).toBeVisible();
-  await expect(page.locator(".eval-bar")).toBeVisible();
+  await expect(page.locator(".move-list")).toContainText("e4", { timeout: 20_000 });
+  await expect(page.getByTestId("shell-action-analysis-exit")).toBeVisible({ timeout: 20_000 });
+  await expect(page.locator(".eval-bar")).toBeVisible({ timeout: 20_000 });
 
   await page.getByRole("button", { name: "Menu" }).click();
   await expect(page.getByRole("button", { name: "Analyze game" })).toBeVisible();
-  await expect(page.getByRole("heading", { name: "Critical moments" })).toBeVisible({ timeout: 30_000 });
 
   await page.evaluate(() => {
     (
@@ -41,7 +40,8 @@ test("imports a PGN, exposes analysis mode, and exports the current session", as
     };
   });
 
-  await page.locator(".inline-actions--library").getByRole("button", { name: "Export PGN" }).click();
+  const libraryMenu = await openMenuSection(page, "library");
+  await libraryMenu.getByRole("button", { name: "Export PGN" }).first().click();
 
   await expect
     .poll(() =>

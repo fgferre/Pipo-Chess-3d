@@ -1,6 +1,7 @@
 import { writeFile } from "node:fs/promises";
 import { expect, test } from "@playwright/test";
 import {
+  openMenuSection,
   switchToEnglish,
   waitForAutosaveMoveCount,
   waitForBoot,
@@ -29,8 +30,8 @@ test("restores the autosaved session after an offline reload", async ({ page, co
   await waitForBoot(page);
   await expect(page.getByRole("button", { name: "Undo" })).toBeEnabled();
 
-  await page.getByRole("button", { name: "Menu" }).click();
-  await expect(page.getByText("Recover autosave")).toBeVisible();
+  const libraryMenu = await openMenuSection(page, "library");
+  await expect(libraryMenu.getByText("Recover autosave")).toBeVisible();
   await page.getByRole("button", { name: /Resume autosave/ }).click();
   await page.getByRole("button", { name: "Open history" }).click();
   await expect(page.locator(".move-list")).toContainText("e4");

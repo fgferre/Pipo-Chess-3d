@@ -523,7 +523,7 @@ describe("ChessStage", () => {
       type: "p",
       square: "d5",
     });
-  });
+  }, 15000);
 
   it("reports staged loading progress before marking the scene as ready", async () => {
     const { stage } = createStage();
@@ -1060,11 +1060,11 @@ describe("ChessStage", () => {
     const spots = stageInternals.scene.children.filter((child) => child instanceof SpotLight);
 
     expect(stageInternals.renderer.toneMappingExposure).toBeCloseTo(0.96);
-    expect(hemi).toMatchObject({ intensity: 0.45 });
+    expect(hemi).toMatchObject({ intensity: 0.5 });
     expect(spots).toHaveLength(3);
-    expect(spots[0]).toMatchObject({ castShadow: true, intensity: 44 });
-    expect(spots[1]).toMatchObject({ castShadow: true, intensity: 18 });
-    expect(spots[2]).toMatchObject({ castShadow: false, intensity: 9 });
+    expect(spots[0]).toMatchObject({ castShadow: true, intensity: 48 });
+    expect(spots[1]).toMatchObject({ castShadow: true, intensity: 22 });
+    expect(spots[2]).toMatchObject({ castShadow: false, intensity: 12 });
   });
 
   it("configures distinct living palettes for the light and dark piece sets", async () => {
@@ -1128,8 +1128,14 @@ describe("ChessStage", () => {
     expect(darkConfig).toMatchObject({ tone: "dark" });
     expect(lightConfig.veinHex).not.toBe(darkConfig.veinHex);
     expect(lightConfig.attenuationHex).not.toBe(darkConfig.attenuationHex);
-    expect(whitePawn.material).toBe(stageInternals.lightPieceMat);
-    expect(blackPawn.material).toBe(stageInternals.darkPieceMat);
+    expect(whitePawn.material).not.toBe(stageInternals.lightPieceMat);
+    expect(blackPawn.material).not.toBe(stageInternals.darkPieceMat);
+    expect((whitePawn.material as MeshPhysicalMaterial).userData.marbleShaderConfig).toMatchObject({
+      tone: "light",
+    });
+    expect((blackPawn.material as MeshPhysicalMaterial).userData.marbleShaderConfig).toMatchObject({
+      tone: "dark",
+    });
   });
 
   it("keeps the procedural piece effect on opacity and selection clones", async () => {
@@ -1309,17 +1315,17 @@ describe("ChessStage", () => {
 
     expect(stageInternals.lightPieceMat.userData.marbleShaderConfig).toMatchObject({
       marchSteps: 64,
-      transmission: 0.85,
+      transmission: 0.88,
       tone: "light",
     });
     expect(stageInternals.darkPieceMat.userData.marbleShaderConfig).toMatchObject({
       marchSteps: 64,
-      transmission: 0.85,
+      transmission: 0.88,
       tone: "dark",
     });
-    expect((stageInternals.lightPieceMat as MeshPhysicalMaterial).transmission).toBeCloseTo(0.85);
+    expect((stageInternals.lightPieceMat as MeshPhysicalMaterial).transmission).toBeCloseTo(0.88);
     expect((stageInternals.darkPieceMat as MeshPhysicalMaterial).transmission).toBeCloseTo(
-      0.85 * 0.3,
+      0.88,
     );
 
     stage.setQualityTier(2);
@@ -1339,12 +1345,12 @@ describe("ChessStage", () => {
     expect(stageInternals.lightSquareMats[0]?.map?.anisotropy).toBe(4);
     expect(stageInternals.lightPieceMat.userData.marbleShaderConfig).toMatchObject({
       marchSteps: 48,
-      transmission: 0.55,
+      transmission: 0.6,
       tone: "light",
     });
     expect(stageInternals.darkPieceMat.userData.marbleShaderConfig).toMatchObject({
       marchSteps: 48,
-      transmission: 0.55,
+      transmission: 0.6,
       tone: "dark",
     });
 
@@ -1365,12 +1371,12 @@ describe("ChessStage", () => {
     expect(stageInternals.lightSquareMats[0]?.map?.anisotropy).toBe(1);
     expect(stageInternals.lightPieceMat.userData.marbleShaderConfig).toMatchObject({
       marchSteps: 24,
-      transmission: 0.2,
+      transmission: 0.22,
       tone: "light",
     });
     expect(stageInternals.darkPieceMat.userData.marbleShaderConfig).toMatchObject({
       marchSteps: 24,
-      transmission: 0.2,
+      transmission: 0.22,
       tone: "dark",
     });
   }, 15000);

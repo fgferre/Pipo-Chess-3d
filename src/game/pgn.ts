@@ -5,7 +5,7 @@ import { normalizeQualitySettings } from "../quality/qualityPolicy";
 
 const VERSION = "0.1.0";
 
-export function applyPipoHeaders(
+function applyPipoHeaders(
   chess: Chess,
   settings: AppSettings,
   playerColor: Color = "w",
@@ -98,7 +98,7 @@ export function extractSettingsFromHeaders(
   };
 }
 
-export function inferPgnResult(chess: Chess): string {
+function inferPgnResult(chess: Chess): string {
   if (chess.isCheckmate()) {
     return chess.turn() === "w" ? "0-1" : "1-0";
   }

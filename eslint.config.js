@@ -6,7 +6,17 @@ import tseslint from "typescript-eslint";
 import { defineConfig, globalIgnores } from "eslint/config";
 
 export default defineConfig([
-  globalIgnores(["dist", "coverage", "playwright-report", "test-results"]),
+  globalIgnores([
+    "dist",
+    "coverage",
+    "playwright-report",
+    "test-results",
+    ".claude/**",
+    ".claude-flow/**",
+    ".swarm/**",
+    ".mcp.json",
+    "Docs/**",
+  ]),
   {
     files: ["**/*.{ts,tsx}"],
     extends: [
@@ -21,6 +31,12 @@ export default defineConfig([
         ...globals.browser,
         ...globals.node,
       },
+    },
+  },
+  {
+    files: ["**/*.test.{ts,tsx}", "e2e/**/*.ts"],
+    rules: {
+      "@typescript-eslint/no-explicit-any": "off",
     },
   },
 ]);
