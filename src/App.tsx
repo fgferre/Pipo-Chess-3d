@@ -16,6 +16,8 @@ import {
 } from "react";
 import { AnimatePresence, motion, useIsPresent, useReducedMotion } from "framer-motion";
 import { type Color, type PieceSymbol, type Square } from "chess.js";
+import { useRegisterSW } from "virtual:pwa-register/react";
+import { useShallow } from "zustand/shallow";
 import { soundService } from "./audio/soundService";
 import { haptics } from "./hooks/useHaptics";
 import {
@@ -59,6 +61,13 @@ type ShellMode = "desktop" | "mobile";
 type MenuView = "root" | "analysis" | "visual" | "library";
 type OverlayMotionMode = "normal" | "reduced" | "off";
 type TransientToastTone = "notice" | "error" | "passive" | "checkmate";
+type AppToast = {
+  actionLabel?: string;
+  icon: string;
+  message: string;
+  onAction?: () => void;
+  tone: TransientToastTone;
+};
 type BoardCueTone = "invalid" | "blocked" | "castling-blocked";
 type ShellActionSpec = Omit<ComponentProps<typeof ActionButton>, "compact" | "labelVisibility"> & {
   desktopCompact?: boolean;
@@ -108,6 +117,250 @@ function getShellMode(): ShellMode {
   }
 
   return window.innerWidth < 900 ? "mobile" : "desktop";
+}
+
+function useAppStoreState() {
+  return useGameStore(
+    useShallow((state) => ({
+      booted: state.booted,
+      enginePhase: state.enginePhase,
+      engineMessage: state.engineMessage,
+      session: state.session,
+      autosave: state.autosave,
+      saveSlots: state.saveSlots,
+      selectedSquare: state.selectedSquare,
+      legalTargets: state.legalTargets,
+      castlingTargets: state.castlingTargets,
+      hintMove: state.hintMove,
+      pendingPromotion: state.pendingPromotion,
+      currentRepetitionCount: state.currentRepetitionCount,
+      fiftyMoveRulePressure: state.fiftyMoveRulePressure,
+      lowTimeState: state.lowTimeState,
+      analysisCursor: state.analysisCursor,
+      analysisAutoplay: state.analysisAutoplay,
+      analysisProgress: state.analysisProgress,
+      cameraPreset: state.cameraPreset,
+      restoreNotice: state.restoreNotice,
+      lastError: state.lastError,
+    })),
+  );
+}
+
+function useAppStoreActions() {
+  return useGameStore(
+    useShallow((state) => ({
+      bootstrap: state.bootstrap,
+      selectSquare: state.selectSquare,
+      confirmPromotion: state.confirmPromotion,
+      requestHint: state.requestHint,
+      undo: state.undo,
+      redo: state.redo,
+      newGame: state.newGame,
+      setTheme: state.setTheme,
+      setLocale: state.setLocale,
+      toggleOrientation: state.toggleOrientation,
+      setShowCoordinates: state.setShowCoordinates,
+      setAnimationMode: state.setAnimationMode,
+      setDefaultViewMode: state.setDefaultViewMode,
+      setCameraSensitivity: state.setCameraSensitivity,
+      setQualityMode: state.setQualityMode,
+      setQualityTier: state.setQualityTier,
+      setSoundEnabled: state.setSoundEnabled,
+      setSoundVolume: state.setSoundVolume,
+      setHapticsEnabled: state.setHapticsEnabled,
+      setCameraPreset: state.setCameraPreset,
+      setAnalysisCursor: state.setAnalysisCursor,
+      setAnalysisAutoplay: state.setAnalysisAutoplay,
+      clearRestoreNotice: state.clearRestoreNotice,
+      createManualSave: state.createManualSave,
+      loadManualSave: state.loadManualSave,
+      restoreAutosave: state.restoreAutosave,
+      deleteManualSave: state.deleteManualSave,
+      importPgnText: state.importPgnText,
+      runAnalysis: state.runAnalysis,
+      persistCurrentAutosave: state.persistCurrentAutosave,
+      tickLiveClock: state.tickLiveClock,
+    })),
+  );
+}
+
+function useAppShellController({
+  clockConfig,
+  difficultyId,
+}: {
+  clockConfig: ClockConfig;
+  difficultyId: string;
+}) {
+  const [shellMode, setShellMode] = useState<ShellMode>(() => getShellMode());
+  const [topBarExpanded, setTopBarExpanded] = useState(false);
+  const [bottomBarExpanded, setBottomBarExpanded] = useState(false);
+  const [historyOpen, setHistoryOpen] = useState(false);
+  const [menuOpen, setMenuOpen] = useState(false);
+  const [menuView, setMenuView] = useState<MenuView>("root");
+  const [newGameOpen, setNewGameOpen] = useState(false);
+  const [cameraPickerOpen, setCameraPickerOpen] = useState(false);
+  const [replacePromptOpen, setReplacePromptOpen] = useState(false);
+  const [resultModalOpen, setResultModalOpen] = useState(false);
+  const [newGameColor, setNewGameColor] = useState<NewGameColorChoice>("white");
+  const [newGameDifficultyId, setNewGameDifficultyId] = useState(difficultyPresets[0].id);
+  const [selectedClockKey, setSelectedClockKey] = useState("custom");
+  const [customMinutes, setCustomMinutes] = useState("10");
+  const [customIncrement, setCustomIncrement] = useState("0");
+  const [isZenMode, setIsZenMode] = useState(false);
+  const isMobileShell = shellMode === "mobile";
+
+  useEffect(() => {
+    if (typeof window === "undefined") {
+      return;
+    }
+
+    if (typeof window.matchMedia === "function") {
+      const mediaQuery = window.matchMedia(SHELL_MEDIA_QUERY);
+      const syncShellMode = (matches: boolean) => {
+        setShellMode(matches ? "mobile" : "desktop");
+        if (matches) {
+          setTopBarExpanded(false);
+          setBottomBarExpanded(false);
+        }
+      };
+      const handleChange = (event: MediaQueryListEvent) => {
+        syncShellMode(event.matches);
+      };
+
+      syncShellMode(mediaQuery.matches);
+
+      if (typeof mediaQuery.addEventListener === "function") {
+        mediaQuery.addEventListener("change", handleChange);
+        return () => mediaQuery.removeEventListener("change", handleChange);
+      }
+
+      mediaQuery.addListener(handleChange);
+      return () => mediaQuery.removeListener(handleChange);
+    }
+
+    const syncShellMode = () => {
+      const nextMode = getShellMode();
+      setShellMode(nextMode);
+      if (nextMode === "mobile") {
+        setTopBarExpanded(false);
+        setBottomBarExpanded(false);
+      }
+    };
+    syncShellMode();
+    window.addEventListener("resize", syncShellMode);
+    return () => window.removeEventListener("resize", syncShellMode);
+  }, []);
+
+  useEffect(() => {
+    syncNewGameForm(
+      clockConfig,
+      difficultyId,
+      setNewGameDifficultyId,
+      setSelectedClockKey,
+      setCustomMinutes,
+      setCustomIncrement,
+    );
+  }, [clockConfig, difficultyId]);
+
+  const closeMenu = useCallback(() => {
+    startTransition(() => {
+      setMenuOpen(false);
+      setMenuView("root");
+    });
+  }, []);
+
+  const toggleMenu = useCallback(() => {
+    startTransition(() => {
+      setMenuOpen((value) => {
+        const nextOpen = !value;
+        if (nextOpen) {
+          setCameraPickerOpen(false);
+          setHistoryOpen(false);
+          setNewGameOpen(false);
+        }
+        setMenuView("root");
+        return nextOpen;
+      });
+    });
+  }, []);
+
+  const toggleCameraPicker = useCallback(() => {
+    startTransition(() => {
+      setCameraPickerOpen((value) => {
+        const nextOpen = !value;
+        if (nextOpen) {
+          setMenuOpen(false);
+          setMenuView("root");
+          setHistoryOpen(false);
+          setNewGameOpen(false);
+        }
+        return nextOpen;
+      });
+    });
+  }, []);
+
+  const closeCameraPicker = useCallback(() => {
+    startTransition(() => {
+      setCameraPickerOpen(false);
+    });
+  }, []);
+
+  const toggleHistory = useCallback(() => {
+    startTransition(() => {
+      setHistoryOpen((value) => {
+        const willOpen = !value;
+        if (willOpen) {
+          setMenuOpen(false);
+          setMenuView("root");
+          setCameraPickerOpen(false);
+          if (isMobileShell) {
+            setBottomBarExpanded(false);
+          }
+        }
+        return willOpen;
+      });
+    });
+  }, [isMobileShell]);
+
+  return {
+    shellMode,
+    isMobileShell,
+    topBarExpanded,
+    setTopBarExpanded,
+    bottomBarExpanded,
+    setBottomBarExpanded,
+    historyOpen,
+    setHistoryOpen,
+    menuOpen,
+    setMenuOpen,
+    menuView,
+    setMenuView,
+    newGameOpen,
+    setNewGameOpen,
+    cameraPickerOpen,
+    setCameraPickerOpen,
+    replacePromptOpen,
+    setReplacePromptOpen,
+    resultModalOpen,
+    setResultModalOpen,
+    newGameColor,
+    setNewGameColor,
+    newGameDifficultyId,
+    setNewGameDifficultyId,
+    selectedClockKey,
+    setSelectedClockKey,
+    customMinutes,
+    setCustomMinutes,
+    customIncrement,
+    setCustomIncrement,
+    isZenMode,
+    setIsZenMode,
+    closeMenu,
+    toggleMenu,
+    toggleCameraPicker,
+    closeCameraPicker,
+    toggleHistory,
+  };
 }
 
 function PresenceAwareOverlayBackdrop({
@@ -243,6 +496,8 @@ function App() {
     cameraPreset,
     restoreNotice,
     lastError,
+  } = useAppStoreState();
+  const {
     bootstrap,
     selectSquare,
     confirmPromotion,
@@ -274,28 +529,50 @@ function App() {
     runAnalysis,
     persistCurrentAutosave,
     tickLiveClock,
-  } = useGameStore();
-  const [shellMode, setShellMode] = useState<ShellMode>(() => getShellMode());
-  const [topBarExpanded, setTopBarExpanded] = useState(false);
-  const [bottomBarExpanded, setBottomBarExpanded] = useState(false);
-  const [historyOpen, setHistoryOpen] = useState(false);
-  const [menuOpen, setMenuOpen] = useState(false);
-  const [menuView, setMenuView] = useState<MenuView>("root");
-  const [newGameOpen, setNewGameOpen] = useState(false);
-  const [cameraPickerOpen, setCameraPickerOpen] = useState(false);
-  const [replacePromptOpen, setReplacePromptOpen] = useState(false);
-  const [resultModalOpen, setResultModalOpen] = useState(false);
-  const [newGameColor, setNewGameColor] = useState<NewGameColorChoice>("white");
-  const [newGameDifficultyId, setNewGameDifficultyId] = useState(difficultyPresets[0].id);
-  const [selectedClockKey, setSelectedClockKey] = useState("custom");
-  const [customMinutes, setCustomMinutes] = useState("10");
-  const [customIncrement, setCustomIncrement] = useState("0");
-  const [isZenMode, setIsZenMode] = useState(false);
-  const [transientToast, setTransientToast] = useState<{
-    icon: string;
-    message: string;
-    tone: TransientToastTone;
-  } | null>(null);
+  } = useAppStoreActions();
+  const {
+    shellMode,
+    isMobileShell,
+    topBarExpanded,
+    setTopBarExpanded,
+    bottomBarExpanded,
+    setBottomBarExpanded,
+    historyOpen,
+    setHistoryOpen,
+    menuOpen,
+    setMenuOpen,
+    menuView,
+    setMenuView,
+    newGameOpen,
+    setNewGameOpen,
+    cameraPickerOpen,
+    setCameraPickerOpen,
+    replacePromptOpen,
+    setReplacePromptOpen,
+    resultModalOpen,
+    setResultModalOpen,
+    newGameColor,
+    setNewGameColor,
+    newGameDifficultyId,
+    setNewGameDifficultyId,
+    selectedClockKey,
+    setSelectedClockKey,
+    customMinutes,
+    setCustomMinutes,
+    customIncrement,
+    setCustomIncrement,
+    isZenMode,
+    setIsZenMode,
+    closeMenu,
+    toggleMenu,
+    toggleCameraPicker,
+    closeCameraPicker,
+    toggleHistory,
+  } = useAppShellController({
+    clockConfig: session.settings.clockConfig,
+    difficultyId: session.settings.difficultyId,
+  });
+  const [transientToast, setTransientToast] = useState<AppToast | null>(null);
   const [promotionAnchor, setPromotionAnchor] = useState<{ x: number; y: number } | null>(null);
   const [promotionSelection, setPromotionSelection] = useState<(typeof PROMOTION_CHOICES)[number] | null>(null);
   const [invalidMoveSquare, setInvalidMoveSquare] = useState<Square | null>(null);
@@ -308,6 +585,11 @@ function App() {
   const [checkAnchor, setCheckAnchor] = useState<{ x: number; y: number } | null>(null);
   const [castlingAnchor, setCastlingAnchor] = useState<{ x: number; y: number } | null>(null);
   const [sceneLoadState, setSceneLoadState] = useState<SceneLoadState>(INITIAL_SCENE_LOAD_STATE);
+  const {
+    needRefresh: [needRefresh, setNeedRefresh],
+    offlineReady: [offlineReady],
+    updateServiceWorker,
+  } = useRegisterSW();
   const appShellRef = useRef<HTMLDivElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const lastFinishedGameRef = useRef<string | null>(null);
@@ -324,10 +606,23 @@ function App() {
   const boardSession = analysisCursor === null ? session : deriveSessionAtPly(session, analysisCursor);
   const analysisMode = analysisCursor !== null;
   const motionMode = resolveOverlayMotionMode(session.settings.animationMode, !!systemPrefersReducedMotion);
+  const handleApplyPwaUpdate = useCallback(() => {
+    setNeedRefresh(false);
+    void updateServiceWorker(true);
+  }, [setNeedRefresh, updateServiceWorker]);
+  const updateReadyToast: AppToast | null = needRefresh
+    ? {
+        icon: "↻",
+        message: t(locale, "pwa.updateReady"),
+        tone: "notice",
+        actionLabel: t(locale, "pwa.reload"),
+        onAction: handleApplyPwaUpdate,
+      }
+    : null;
   const activeToast = restoreNotice
     ? { icon: "↺", message: restoreNotice, tone: "notice" as const }
     : transientToast ??
-      (lastError ? { icon: "!", message: lastError, tone: "error" as const } : null);
+      (lastError ? { icon: "!", message: lastError, tone: "error" as const } : updateReadyToast);
   const currentPly = analysisCursor ?? session.moveEntries.length;
   const currentEvaluation = getEvaluationForPly(session.analysisSummary?.evaluationsByPly, currentPly);
   const checkedKingSquare = getCheckedKingSquare(boardSession);
@@ -388,10 +683,10 @@ function App() {
   });
   const historySummary = buildMoveHistorySummary(session, locale);
   const historyProgress = getHistoryProgress(session.moveEntries.length, currentPly, analysisMode);
-  const isMobileShell = shellMode === "mobile";
   const topBarCollapsed = isMobileShell || !topBarExpanded;
   const bottomBarCompact = isMobileShell || !bottomBarExpanded;
   const bottomBarLabelVisibility = isMobileShell ? "hidden" : "adaptive";
+  const showOfflineReadyPill = offlineReady && !needRefresh;
   const cameraPresentation = isMobileShell ? "mobile-sheet" : "desktop-popover";
   const newGamePresentation = isMobileShell ? "mobile-sheet" : "desktop-modal";
   const clearDecisionCue = useCallback(() => {
@@ -488,63 +783,10 @@ function App() {
   }, [bootstrap]);
 
   useEffect(() => {
-    if (typeof window === "undefined") {
-      return;
-    }
-
-    if (typeof window.matchMedia === "function") {
-      const mediaQuery = window.matchMedia(SHELL_MEDIA_QUERY);
-      const syncShellMode = (matches: boolean) => {
-        setShellMode(matches ? "mobile" : "desktop");
-      };
-      const handleChange = (event: MediaQueryListEvent) => {
-        syncShellMode(event.matches);
-      };
-
-      syncShellMode(mediaQuery.matches);
-
-      if (typeof mediaQuery.addEventListener === "function") {
-        mediaQuery.addEventListener("change", handleChange);
-        return () => mediaQuery.removeEventListener("change", handleChange);
-      }
-
-      mediaQuery.addListener(handleChange);
-      return () => mediaQuery.removeListener(handleChange);
-    }
-
-    const syncShellMode = () => {
-      setShellMode(getShellMode());
-    };
-    syncShellMode();
-    window.addEventListener("resize", syncShellMode);
-    return () => window.removeEventListener("resize", syncShellMode);
-  }, []);
-
-  useEffect(() => {
-    if (!isMobileShell) {
-      return;
-    }
-
-    setTopBarExpanded(false);
-    setBottomBarExpanded(false);
-  }, [isMobileShell]);
-
-  useEffect(() => {
     if (!pendingPromotion) {
       setPromotionSelection(null);
     }
   }, [pendingPromotion]);
-
-  useEffect(() => {
-    syncNewGameForm(
-      session.settings.clockConfig,
-      session.settings.difficultyId,
-      setNewGameDifficultyId,
-      setSelectedClockKey,
-      setCustomMinutes,
-      setCustomIncrement,
-    );
-  }, [session.settings.clockConfig, session.settings.difficultyId]);
 
   useEffect(() => {
     const preferences = {
@@ -579,7 +821,7 @@ function App() {
 
     setResultModalOpen(false);
     lastFinishedGameRef.current = null;
-  }, [session.snapshot.pgn, session.snapshot.status]);
+  }, [session.snapshot.pgn, session.snapshot.status, setResultModalOpen]);
 
   const prevMoveLengthRef = useRef(0);
   useEffect(() => {
@@ -806,51 +1048,6 @@ function App() {
     };
   }, []);
 
-  const closeMenu = () => {
-    startTransition(() => {
-      setMenuOpen(false);
-      setMenuView("root");
-    });
-  };
-
-  const toggleMenu = () => {
-    startTransition(() => {
-      setMenuOpen((value) => {
-        const nextOpen = !value;
-        if (nextOpen) {
-          setCameraPickerOpen(false);
-          setHistoryOpen(false);
-          setNewGameOpen(false);
-          setMenuView("root");
-        } else {
-          setMenuView("root");
-        }
-        return nextOpen;
-      });
-    });
-  };
-
-  const toggleCameraPicker = () => {
-    startTransition(() => {
-      setCameraPickerOpen((value) => {
-        const nextOpen = !value;
-        if (nextOpen) {
-          setMenuOpen(false);
-          setMenuView("root");
-          setHistoryOpen(false);
-          setNewGameOpen(false);
-        }
-        return nextOpen;
-      });
-    });
-  };
-
-  const closeCameraPicker = () => {
-    startTransition(() => {
-      setCameraPickerOpen(false);
-    });
-  };
-
   const handleImport = async (event: ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
     if (!file) {
@@ -980,23 +1177,6 @@ function App() {
     if (!session.analysisSummary && !analysisProgress && session.moveEntries.length > 0) {
       await runAnalysis();
     }
-  };
-
-  const toggleHistory = () => {
-    startTransition(() => {
-      setHistoryOpen((value) => {
-        const willOpen = !value;
-        if (willOpen) {
-          setMenuOpen(false);
-          setMenuView("root");
-          setCameraPickerOpen(false);
-          if (isMobileShell) {
-            setBottomBarExpanded(false);
-          }
-        }
-        return willOpen;
-      });
-    });
   };
 
   const primaryShellActionSpecs: ShellActionSpec[] = analysisMode
@@ -1782,6 +1962,9 @@ function App() {
           <div className="top-bar__island top-bar__island--engine">
             <div className="top-bar__engine">
               <span className={`status-pill status-pill--${enginePhase}`}>{t(locale, getStatusKey(enginePhase))}</span>
+              {showOfflineReadyPill ? (
+                <span className="status-pill status-pill--offline">{t(locale, "hud.offline")}</span>
+              ) : null}
               <div className="top-bar__engine-copy">
                 <strong>{activeDifficulty.label}</strong>
                 {!isMobileShell ? <small>{engineMessage || t(locale, getStatusKey(enginePhase))}</small> : null}
@@ -2329,7 +2512,14 @@ function App() {
             <span className="toast__icon" aria-hidden="true">
               {activeToast.icon}
             </span>
-            <span className="toast__message">{activeToast.message}</span>
+            <div className="toast__body">
+              <span className="toast__message">{activeToast.message}</span>
+              {activeToast.actionLabel && activeToast.onAction ? (
+                <button className="ghost-button toast__action" type="button" onClick={activeToast.onAction}>
+                  {activeToast.actionLabel}
+                </button>
+              ) : null}
+            </div>
           </motion.div>
         ) : null}
       </AnimatePresence>

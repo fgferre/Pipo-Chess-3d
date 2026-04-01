@@ -2,9 +2,9 @@ import { MoveList } from "./MoveList";
 import { t } from "../i18n";
 import type { AnalysisSummary, EnginePhase, GameSession, SerializableMove } from "../types/game";
 
-export type HistoryPanelPresentation = "desktop-side" | "mobile-sheet";
+type HistoryPanelPresentation = "desktop-side" | "mobile-sheet";
 
-export interface HistoryPanelProps {
+interface HistoryPanelProps {
   open: boolean;
   hidden?: boolean;
   presentation?: HistoryPanelPresentation;

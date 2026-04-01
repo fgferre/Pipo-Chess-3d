@@ -859,6 +859,11 @@ button {
   color: var(--signal-danger);
 }
 
+.status-pill--offline {
+  background: color-mix(in srgb, var(--focus-primary) 14%, transparent);
+  color: color-mix(in srgb, var(--focus-primary) 84%, white 16%);
+}
+
 .action-pill {
   display: inline-flex;
   align-items: center;
@@ -921,13 +926,6 @@ button {
 
 .action-pill.is-loading .action-pill__icon {
   color: var(--signal-active);
-}
-
-.action-pill--secondary {
-  border-color: color-mix(in srgb, var(--signal-active) 30%, var(--glass-border-soft));
-  background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.08), transparent),
-    color-mix(in srgb, var(--signal-active) 10%, var(--glass-panel-soft));
 }
 
 .action-pill--primary {
@@ -1461,10 +1459,6 @@ input:focus-visible,
 
 .chip-row--three > * {
   flex: 1 1 0;
-}
-
-.chip-row--wrap {
-  align-items: stretch;
 }
 
 .chip-row--clock {
@@ -3200,8 +3194,21 @@ input[type="range"]::-moz-range-track {
   flex-shrink: 0;
 }
 
+.toast__body {
+  display: grid;
+  gap: 0.6rem;
+  min-width: 0;
+}
+
 .toast__message {
   line-height: 1.45;
+}
+
+.toast__action {
+  min-height: 2.3rem;
+  padding: 0.5rem 0.8rem;
+  font-size: 0.76rem;
+  justify-self: start;
 }
 
 .toast.is-notice .toast__icon {

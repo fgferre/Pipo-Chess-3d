@@ -17,6 +17,7 @@ test("restores the autosaved session after an offline reload", async ({ page, co
   await switchToEnglish(page);
   await page.getByRole("button", { name: "Close" }).click();
   await waitForServiceWorker(page);
+  await expect(page.getByText("Offline ready")).toBeVisible();
 
   const pgnPath = testInfo.outputPath("offline-session.pgn");
   await writeFile(pgnPath, "1. e4 e5 2. Nf3 Nc6");

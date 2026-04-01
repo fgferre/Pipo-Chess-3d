@@ -189,7 +189,7 @@ export async function waitForServiceWorker(page: Page): Promise<void> {
   });
 }
 
-export async function waitForStableBoundingBox(locator: Locator, timeout = 3_000): Promise<void> {
+async function waitForStableBoundingBox(locator: Locator, timeout = 3_000): Promise<void> {
   let previous: string | null = null;
 
   await expect(locator).toBeVisible();
@@ -211,7 +211,7 @@ export async function waitForStableBoundingBox(locator: Locator, timeout = 3_000
     .not.toBeNull();
 }
 
-export async function openMenu(page: Page): Promise<Locator> {
+async function openMenu(page: Page): Promise<Locator> {
   const menu = getMenuSurface(page);
   if (!(await isVisible(menu))) {
     await getMenuButton(page).click();

@@ -1,5 +1,4 @@
 import { useEffect, useEffectEvent, useRef, type CSSProperties } from "react";
-import { flushSync } from "react-dom";
 import type { Square } from "chess.js";
 import { createSceneAdapter, type SceneAdapter, type SceneLoadState } from "../scene/SceneAdapter";
 import { useGameStore } from "../state/gameStore";
@@ -8,6 +7,63 @@ import type { GameSession, ThemeDefinition } from "../types/game";
 interface AnchorProjection {
   square: Square | null;
   yOffset: number;
+}
+
+interface ViewportAnchor {
+  x: number;
+  y: number;
+}
+
+interface ProjectedAnchors {
+  promotion: ViewportAnchor | null;
+  invalidMove: ViewportAnchor | null;
+  check: ViewportAnchor | null;
+  castling: ViewportAnchor | null;
+}
+
+const PROJECTED_ANCHOR_EPSILON_PX = 0.5;
+const EMPTY_PROJECTED_ANCHORS: ProjectedAnchors = {
+  promotion: null,
+  invalidMove: null,
+  check: null,
+  castling: null,
+};
+
+function projectAnchor(
+  stage: SceneAdapter | null,
+  anchor: AnchorProjection,
+): ViewportAnchor | null {
+  return anchor.square ? stage?.projectSquareToViewport(anchor.square, anchor.yOffset) ?? null : null;
+}
+
+function areViewportAnchorsEqual(
+  previous: ViewportAnchor | null,
+  next: ViewportAnchor | null,
+): boolean {
+  if (previous === next) {
+    return true;
+  }
+
+  if (!previous || !next) {
+    return previous === next;
+  }
+
+  return (
+    Math.abs(previous.x - next.x) < PROJECTED_ANCHOR_EPSILON_PX &&
+    Math.abs(previous.y - next.y) < PROJECTED_ANCHOR_EPSILON_PX
+  );
+}
+
+function areProjectedAnchorsEqual(
+  previous: ProjectedAnchors,
+  next: ProjectedAnchors,
+): boolean {
+  return (
+    areViewportAnchorsEqual(previous.promotion, next.promotion) &&
+    areViewportAnchorsEqual(previous.invalidMove, next.invalidMove) &&
+    areViewportAnchorsEqual(previous.check, next.check) &&
+    areViewportAnchorsEqual(previous.castling, next.castling)
+  );
 }
 
 interface ChessSceneProps {
@@ -60,58 +116,83 @@ export function ChessScene({
     onLoadStateChange ?? (() => undefined),
   );
   const cameraPreset = useGameStore((state) => state.cameraPreset);
+  const anchorProjectionFrameRef = useRef<number | null>(null);
+  const queuedAnchorsRef = useRef<ProjectedAnchors>(EMPTY_PROJECTED_ANCHORS);
+  const publishedAnchorsRef = useRef<ProjectedAnchors>(EMPTY_PROJECTED_ANCHORS);
 
-  // Anchor projection refs — updated on prop change and before every stage render.
+  // Anchor projection refs — updated on prop change and sampled from the stage render loop.
   const promotionAnchorRef = useRef<AnchorProjection>({ square: null, yOffset: 1.15 });
   const invalidMoveAnchorRef = useRef<AnchorProjection>({ square: null, yOffset: 0.6 });
   const checkAnchorRef = useRef<AnchorProjection>({ square: null, yOffset: 0.9 });
   const castlingAnchorRef = useRef<AnchorProjection>({ square: null, yOffset: 0.7 });
 
-  // Project anchors when props change — single shot, no RAF loop
+  const publishProjectedAnchors = useEffectEvent((anchors: ProjectedAnchors) => {
+    queuedAnchorsRef.current = anchors;
+    if (areProjectedAnchorsEqual(publishedAnchorsRef.current, anchors)) {
+      return;
+    }
+
+    publishedAnchorsRef.current = anchors;
+    handlePromotionAnchorChange(anchors.promotion);
+    handleInvalidMoveAnchorChange(anchors.invalidMove);
+    handleCheckAnchorChange(anchors.check);
+    handleCastlingAnchorChange(anchors.castling);
+  });
+
+  const readProjectedAnchors = useEffectEvent((): ProjectedAnchors => ({
+    promotion: projectAnchor(stageRef.current, promotionAnchorRef.current),
+    invalidMove: projectAnchor(stageRef.current, invalidMoveAnchorRef.current),
+    check: projectAnchor(stageRef.current, checkAnchorRef.current),
+    castling: projectAnchor(stageRef.current, castlingAnchorRef.current),
+  }));
+
+  const syncProjectedAnchors = useEffectEvent(() => {
+    const anchors = readProjectedAnchors();
+    if (anchorProjectionFrameRef.current !== null) {
+      window.cancelAnimationFrame(anchorProjectionFrameRef.current);
+      anchorProjectionFrameRef.current = null;
+    }
+
+    publishProjectedAnchors(anchors);
+  });
+
+  const scheduleProjectedAnchors = useEffectEvent(() => {
+    const anchors = readProjectedAnchors();
+    if (areProjectedAnchorsEqual(queuedAnchorsRef.current, anchors)) {
+      return;
+    }
+
+    queuedAnchorsRef.current = anchors;
+    if (anchorProjectionFrameRef.current !== null) {
+      return;
+    }
+
+    anchorProjectionFrameRef.current = window.requestAnimationFrame(() => {
+      anchorProjectionFrameRef.current = null;
+      publishProjectedAnchors(queuedAnchorsRef.current);
+    });
+  });
+
   useEffect(() => {
     promotionAnchorRef.current = { square: promotionAnchorSquare, yOffset: 1.15 };
-    if (!promotionAnchorSquare) {
-      handlePromotionAnchorChange(null);
-    } else {
-      handlePromotionAnchorChange(
-        stageRef.current?.projectSquareToViewport(promotionAnchorSquare, 1.15) ?? null,
-      );
-    }
+    syncProjectedAnchors();
   }, [promotionAnchorSquare]);
 
   useEffect(() => {
     invalidMoveAnchorRef.current = { square: invalidMoveSquare, yOffset: 0.6 };
-    if (!invalidMoveSquare) {
-      handleInvalidMoveAnchorChange(null);
-    } else {
-      handleInvalidMoveAnchorChange(
-        stageRef.current?.projectSquareToViewport(invalidMoveSquare, 0.6) ?? null,
-      );
-    }
+    syncProjectedAnchors();
   }, [invalidMoveSquare]);
 
   useEffect(() => {
     const square = checkSquare ?? null;
     checkAnchorRef.current = { square, yOffset: 0.9 };
-    if (!square) {
-      handleCheckAnchorChange(null);
-    } else {
-      handleCheckAnchorChange(
-        stageRef.current?.projectSquareToViewport(square, 0.9) ?? null,
-      );
-    }
+    syncProjectedAnchors();
   }, [checkSquare]);
 
   useEffect(() => {
     const square = castlingTargets.length > 0 ? castlingTargets[0] : null;
     castlingAnchorRef.current = { square, yOffset: 0.7 };
-    if (!square) {
-      handleCastlingAnchorChange(null);
-    } else {
-      handleCastlingAnchorChange(
-        stageRef.current?.projectSquareToViewport(square, 0.7) ?? null,
-      );
-    }
+    syncProjectedAnchors();
   }, [castlingTargets]);
 
   useEffect(() => {
@@ -141,42 +222,8 @@ export function ChessScene({
       }
     });
 
-    // Re-project anchors immediately before each 3D render so overlays stay in step.
-    stage.setOnBeforeRender(() => {
-      const promo = promotionAnchorRef.current;
-      const invalid = invalidMoveAnchorRef.current;
-      const check = checkAnchorRef.current;
-      const castling = castlingAnchorRef.current;
-      if (!promo.square && !invalid.square && !check.square && !castling.square) {
-        return;
-      }
-
-      flushSync(() => {
-        if (promo.square) {
-          handlePromotionAnchorChange(
-            stageRef.current?.projectSquareToViewport(promo.square, promo.yOffset) ?? null,
-          );
-        }
-
-        if (invalid.square) {
-          handleInvalidMoveAnchorChange(
-            stageRef.current?.projectSquareToViewport(invalid.square, invalid.yOffset) ?? null,
-          );
-        }
-
-        if (check.square) {
-          handleCheckAnchorChange(
-            stageRef.current?.projectSquareToViewport(check.square, check.yOffset) ?? null,
-          );
-        }
-
-        if (castling.square) {
-          handleCastlingAnchorChange(
-            stageRef.current?.projectSquareToViewport(castling.square, castling.yOffset) ?? null,
-          );
-        }
-      });
-    });
+    // Sample anchor positions from the stage loop, but publish them back to React on the next frame.
+    stage.setOnBeforeRender(scheduleProjectedAnchors);
 
     const visibilityHandler = () => {
       stage.setPaused(document.hidden);
@@ -187,6 +234,10 @@ export function ChessScene({
     return () => {
       disposed = true;
       document.removeEventListener("visibilitychange", visibilityHandler);
+      if (anchorProjectionFrameRef.current !== null) {
+        window.cancelAnimationFrame(anchorProjectionFrameRef.current);
+        anchorProjectionFrameRef.current = null;
+      }
       stage.setOnBeforeRender(null);
       stage.dispose();
       stageRef.current = null;

@@ -51,6 +51,16 @@ vi.mock("../scene/SceneAdapter", () => ({
   },
 }));
 
+function flushScheduledProjectionFrame() {
+  const requestAnimationFrameMock = globalThis.requestAnimationFrame as unknown as ReturnType<typeof vi.fn>;
+  const callback = requestAnimationFrameMock.mock.calls.at(-1)?.[0];
+  if (typeof callback !== "function") {
+    throw new Error("Expected an anchor projection frame to be scheduled.");
+  }
+
+  callback(performance.now());
+}
+
 function renderScene({
   session = createNewSession(),
   theme = themes[0],
@@ -107,10 +117,16 @@ describe("ChessScene", () => {
     stageInstances.length = 0;
     useGameStore.setState({ cameraPreset: "classic" });
     vi.restoreAllMocks();
+    vi.stubGlobal(
+      "requestAnimationFrame",
+      vi.fn(() => 1),
+    );
+    vi.stubGlobal("cancelAnimationFrame", vi.fn());
   });
 
   afterEach(() => {
     cleanup();
+    vi.unstubAllGlobals();
   });
 
   it("maps the store camera preset to the stage with minimal wiring", async () => {
@@ -237,7 +253,11 @@ describe("ChessScene", () => {
       expect(stageInstances[0]?.setOnBeforeRender).toHaveBeenCalledWith(expect.any(Function));
     });
 
+    onPromotionAnchorChange.mockClear();
     stageInstances[0]?.triggerBeforeRender();
+    expect(onPromotionAnchorChange).not.toHaveBeenCalled();
+    flushScheduledProjectionFrame();
+
     await waitFor(() => {
       expect(stageInstances[0]?.projectSquareToViewport).toHaveBeenCalledWith("e8", 1.15);
       expect(onPromotionAnchorChange).toHaveBeenCalledWith({ x: 120, y: 140 });
@@ -305,7 +325,13 @@ describe("ChessScene", () => {
       expect(stageInstances[0]?.setOnBeforeRender).toHaveBeenCalledWith(expect.any(Function));
     });
 
+    onInvalidMoveAnchorChange.mockClear();
+    onCastlingAnchorChange.mockClear();
     stageInstances[0]?.triggerBeforeRender();
+    expect(onInvalidMoveAnchorChange).not.toHaveBeenCalled();
+    expect(onCastlingAnchorChange).not.toHaveBeenCalled();
+    flushScheduledProjectionFrame();
+
     await waitFor(() => {
       expect(stageInstances[0]?.projectSquareToViewport).toHaveBeenCalledWith("e5", 0.6);
       expect(stageInstances[0]?.projectSquareToViewport).toHaveBeenCalledWith("g1", 0.7);

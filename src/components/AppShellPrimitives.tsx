@@ -48,7 +48,7 @@ export function ActionButton({
   labelVisibility?: "adaptive" | "always" | "hidden";
   disabled?: boolean;
   loading?: boolean;
-  tone?: "default" | "primary" | "secondary";
+  tone?: "default" | "primary";
   actionId?: string;
   testId?: string;
   onClick: () => void;

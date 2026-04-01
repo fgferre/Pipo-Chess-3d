@@ -4,6 +4,11 @@ import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testi
 
 const subscribers = new Set<(event: unknown) => void>();
 let autoReportSceneReady = true;
+const pwaRegisterState = {
+  needRefresh: false,
+  offlineReady: false,
+};
+const updateServiceWorkerMock = vi.fn().mockResolvedValue(undefined);
 
 const engineClientMock = {
   init: vi.fn().mockResolvedValue(undefined),
@@ -92,6 +97,14 @@ vi.mock("./hooks/useHaptics", () => ({
   haptics: hapticsMock,
 }));
 
+vi.mock("virtual:pwa-register/react", () => ({
+  useRegisterSW: () => ({
+    needRefresh: [pwaRegisterState.needRefresh, vi.fn()],
+    offlineReady: [pwaRegisterState.offlineReady, vi.fn()],
+    updateServiceWorker: updateServiceWorkerMock,
+  }),
+}));
+
 vi.mock("./components/ChessScene", () => ({
   ChessScene: ({
     checkSquare,
@@ -134,6 +147,9 @@ async function resetHarness() {
   subscribers.clear();
   vi.resetModules();
   autoReportSceneReady = true;
+  pwaRegisterState.needRefresh = false;
+  pwaRegisterState.offlineReady = false;
+  updateServiceWorkerMock.mockReset().mockResolvedValue(undefined);
 
   Object.defineProperty(window, "matchMedia", {
     configurable: true,
@@ -225,6 +241,34 @@ describe("App feedback integration", () => {
 
     const topBar = screen.getByTestId("shell-top-bar");
     expect(within(topBar).getByText("Stockfish local pronto")).toBeInTheDocument();
+  });
+
+  it("shows an explicit offline-ready pill once the service worker is ready", async () => {
+    pwaRegisterState.offlineReady = true;
+
+    const { default: App } = await import("./App");
+    render(<App />);
+
+    await screen.findByText("Pipo Chess 3D");
+
+    const topBar = screen.getByTestId("shell-top-bar");
+    expect(within(topBar).getByText("Offline pronto")).toBeInTheDocument();
+  });
+
+  it("offers a reload action when a PWA update is waiting", async () => {
+    pwaRegisterState.needRefresh = true;
+
+    const { default: App } = await import("./App");
+    render(<App />);
+
+    await screen.findByText("Pipo Chess 3D");
+
+    const reloadButton = screen.getByRole("button", { name: "Atualizar app" });
+    expect(screen.getByText("Atualização pronta")).toBeInTheDocument();
+
+    fireEvent.click(reloadButton);
+
+    expect(updateServiceWorkerMock).toHaveBeenCalledWith(true);
   });
 
   it("persists sound and haptic preferences from the settings drawer", async () => {

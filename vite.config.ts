@@ -6,8 +6,8 @@ export default defineConfig({
   plugins: [
     react(),
     VitePWA({
-      registerType: "autoUpdate",
-      injectRegister: "auto",
+      registerType: "prompt",
+      injectRegister: false,
       includeAssets: ["favicon.svg", "icons.svg", "pipo-icon.svg", "pipo-touch-icon.png"],
       manifest: {
         name: "Pipo Chess 3D",
@@ -46,6 +46,41 @@ export default defineConfig({
       },
     }),
   ],
+  build: {
+    rollupOptions: {
+      output: {
+        manualChunks(id) {
+          const normalizedId = id.replaceAll("\\", "/");
+
+          if (!normalizedId.includes("node_modules")) {
+            return undefined;
+          }
+
+          if (normalizedId.includes("/three/examples/jsm/")) {
+            return "three-extras";
+          }
+
+          if (normalizedId.includes("/three/")) {
+            return "three-core";
+          }
+
+          if (normalizedId.includes("/framer-motion/")) {
+            return "motion";
+          }
+
+          if (
+            normalizedId.includes("/chess.js/") ||
+            normalizedId.includes("/dexie/") ||
+            normalizedId.includes("/zustand/")
+          ) {
+            return "app-vendor";
+          }
+
+          return undefined;
+        },
+      },
+    },
+  },
   test: {
     globals: true,
     environment: "jsdom",

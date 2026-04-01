@@ -1,15 +1,15 @@
 import { motion, type Transition } from "framer-motion";
 import type { CameraPreset } from "../types/game";
 
-export type CameraPickerPresentation = "desktop-popover" | "mobile-sheet";
+type CameraPickerPresentation = "desktop-popover" | "mobile-sheet";
 
-export interface CameraPresetOption {
+interface CameraPresetOption {
   id: CameraPreset;
   icon: string;
   label: string;
 }
 
-export interface CameraPickerPanelProps {
+interface CameraPickerPanelProps {
   cameraPreset: CameraPreset;
   presentation?: CameraPickerPresentation;
   presets: CameraPresetOption[];

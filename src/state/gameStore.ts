@@ -5,185 +5,49 @@ import { buildAnalysisPayload } from "../game/analysis";
 import {
   applyEngineMove,
   applyPlayerMove,
-  createDefaultSettings,
-  createNewSession,
   getCastlingTargetsForSquare,
-  getCurrentRepetitionCount,
-  getFiftyMoveRulePressure,
   getLegalMovesForSquare,
-  getLowTimeState,
-  hydrateSession,
-  pauseClock,
-  resumeClock,
   resolveSquareInteraction,
-  sessionFromPgn,
-  setSessionSettings,
+  redoTurn,
   tickClock,
   undoTurn,
-  redoTurn,
   withAnalysis,
   withClockState,
 } from "../game/gameService";
 import { t } from "../i18n";
-import {
-  clearAutosave,
-  createSaveSlot as persistSaveSlot,
-  deleteSaveSlot as removeSaveSlot,
-  listSaveSlots,
-  loadBootstrapData,
-  loadSaveSlot,
-  persistAnalysis,
-  persistAutosave,
-  persistSettings,
-} from "../persistence/db";
-import type {
-  AutosaveRecord,
-  CameraPreset,
-  EnginePhase,
-  FiftyMoveRulePressure,
-  GameSession,
-  InteractionOutcome,
-  Locale,
-  LowTimeState,
-  NewGameOptions,
-  PendingPromotion,
-  SaveSlotRecord,
-} from "../types/game";
-import {
-  normalizeQualitySettings,
-  type QualityMode,
-  type QualityTier,
-} from "../quality/qualityPolicy";
+import { persistAnalysis } from "../persistence/db";
 import { engineClient } from "../engine/EngineClient";
+import type { InteractionOutcome } from "../types/game";
+import {
+  clearTrackedAnalysis,
+  ensureEngineSubscription,
+  interruptEngineWork,
+  isTrackedAnalysisSession,
+  startTrackedAnalysis,
+} from "./gameStoreRuntime";
+import {
+  createPersistenceActions,
+  loadGameStoreBootstrapState,
+  persistAutosaveSnapshot,
+  persistSessionSettings,
+  scheduleDeferredPersistence,
+} from "./gameStorePersistence";
+import {
+  buildSelectionResetPatch,
+  buildSessionPatch,
+  buildSessionResetPatch,
+  createQualitySession,
+  createSettingsActions,
+  getDefaultCameraPreset,
+  getPositionSignature,
+  normalizeErrorMessage,
+  resolveNewGamePlayerColor,
+  setStoreError,
+} from "./gameStoreSession";
+import type { GameStore, GameStoreGet, GameStoreSet } from "./gameStoreTypes";
 
-interface HintMove {
-  from: Square;
-  to: Square;
-  pv: string[];
-}
-
-type QualitySettings = GameSession["settings"];
-type QualitySession = GameSession;
-
-interface GameStore {
-  booted: boolean;
-  enginePhase: EnginePhase;
-  engineMessage: string;
-  session: QualitySession;
-  autosave: AutosaveRecord | null;
-  saveSlots: SaveSlotRecord[];
-  selectedSquare: Square | null;
-  legalTargets: Square[];
-  castlingTargets: Square[];
-  hintMove: HintMove | null;
-  pendingPromotion: PendingPromotion | null;
-  currentRepetitionCount: number;
-  fiftyMoveRulePressure: FiftyMoveRulePressure;
-  lowTimeState: LowTimeState;
-  analysisCursor: number | null;
-  analysisAutoplay: boolean;
-  analysisProgress: { completed: number; total: number; currentPly: number } | null;
-  cameraPreset: CameraPreset;
-  restoreNotice: string | null;
-  lastError: string | null;
-  bootstrap: () => Promise<void>;
-  selectSquare: (square: Square) => Promise<InteractionOutcome>;
-  confirmPromotion: (piece: PieceSymbol) => Promise<void>;
-  requestHint: () => Promise<void>;
-  undo: () => Promise<void>;
-  redo: () => Promise<void>;
-  newGame: (options?: NewGameOptions) => Promise<void>;
-  setTheme: (themeId: string) => Promise<void>;
-  setLocale: (locale: Locale) => Promise<void>;
-  toggleOrientation: () => Promise<void>;
-  setShowCoordinates: (show: boolean) => Promise<void>;
-  setAnimationMode: (mode: GameSession["settings"]["animationMode"]) => Promise<void>;
-  setDefaultViewMode: (mode: GameSession["settings"]["defaultViewMode"]) => Promise<void>;
-  setCameraSensitivity: (cameraSensitivity: GameSession["settings"]["cameraSensitivity"]) => Promise<void>;
-  setQualityMode: (mode: QualityMode) => Promise<void>;
-  setQualityTier: (tier: QualityTier) => Promise<void>;
-  setSoundEnabled: (enabled: boolean) => Promise<void>;
-  setSoundVolume: (volume: number) => Promise<void>;
-  setHapticsEnabled: (enabled: boolean) => Promise<void>;
-  setCameraPreset: (preset: CameraPreset) => void;
-  setAnalysisCursor: (cursor: number | null) => void;
-  setAnalysisAutoplay: (enabled: boolean) => void;
-  clearRestoreNotice: () => void;
-  createManualSave: () => Promise<void>;
-  loadManualSave: (id: number) => Promise<void>;
-  restoreAutosave: () => Promise<void>;
-  deleteManualSave: (id: number) => Promise<void>;
-  importPgnText: (pgn: string) => Promise<void>;
-  runAnalysis: () => Promise<void>;
-  persistCurrentAutosave: () => Promise<void>;
-  tickLiveClock: () => void;
-}
-
-let subscribedToEngine = false;
 let bootstrapPromise: Promise<void> | null = null;
-let activeAnalysisSignature: string | null = null;
-let cameraSensitivityPersistTimeout: number | null = null;
-
-function normalizeSessionSettings(settings: Partial<QualitySettings>): QualitySettings {
-  const defaults = createDefaultSettings();
-  const qualitySettings = normalizeQualitySettings(settings);
-
-  return {
-    ...defaults,
-    ...settings,
-    qualityMode: qualitySettings.qualityMode,
-    manualQualityTier: qualitySettings.manualQualityTier,
-  };
-}
-
-function createQualitySession(
-  settings: Partial<QualitySettings>,
-  options: { playerColor?: "w" | "b" } = {},
-): QualitySession {
-  const normalized = normalizeSessionSettings(settings);
-  return createNewSession(normalized, options);
-}
-
-function hydrateQualitySession(session: GameSession, fallbackSettings: Partial<QualitySettings>): QualitySession {
-  const normalizedFallback = normalizeSessionSettings(fallbackSettings);
-  return hydrateSession(session, normalizedFallback);
-}
-
-function updateSessionSettings(
-  get: () => GameStore,
-  patch: Partial<QualitySettings>,
-): QualitySession {
-  const currentSession = get().session;
-  const nextSettings: QualitySettings = {
-    ...currentSession.settings,
-    ...patch,
-  };
-
-  return setSessionSettings(currentSession, nextSettings);
-}
-
-function buildSessionIndicators(session: QualitySession): Pick<
-  GameStore,
-  "currentRepetitionCount" | "fiftyMoveRulePressure" | "lowTimeState"
-> {
-  return {
-    currentRepetitionCount: getCurrentRepetitionCount(session),
-    fiftyMoveRulePressure: getFiftyMoveRulePressure(session),
-    lowTimeState: getLowTimeState(session),
-  };
-}
-
-function buildSessionPatch(session: QualitySession): Pick<
-  GameStore,
-  "session" | "currentRepetitionCount" | "fiftyMoveRulePressure" | "lowTimeState"
-> {
-  return {
-    session,
-    ...buildSessionIndicators(session),
-  };
-}
-
-const initialSession = createQualitySession(createDefaultSettings());
+const initialSession = createQualitySession({});
 
 export const useGameStore = create<GameStore>((set, get) => ({
   booted: false,
@@ -215,91 +79,20 @@ export const useGameStore = create<GameStore>((set, get) => ({
     }
 
     bootstrapPromise = (async () => {
-      if (!subscribedToEngine) {
-        engineClient.subscribe((event) => {
-          if (event.type === "status") {
-            const phaseMap: Record<typeof event.phase, EnginePhase> = {
-              loading: "booting",
-              ready: "ready",
-              thinking: "thinking",
-              analyzing: "analyzing",
-              error: "error",
-            };
-
-            set({
-              enginePhase: phaseMap[event.phase],
-              engineMessage: event.message ?? "",
-            });
-          }
-
-          if (event.type === "analysisProgress") {
-            if (activeAnalysisSignature !== getAnalysisSignature(get().session)) {
-              return;
-            }
-
-            set({
-              analysisProgress: {
-                completed: event.completed,
-                total: event.total,
-                currentPly: event.currentPly,
-              },
-            });
-          }
-        });
-        subscribedToEngine = true;
-      }
-
-      const defaults = createDefaultSettings();
-      let liveSession = createQualitySession(defaults);
-      let autosave: AutosaveRecord | null = null;
-      let saveSlots: SaveSlotRecord[] = [];
-      let lastError: string | null = null;
-      let restoreNotice: string | null = null;
-
-      try {
-        const bootstrapData = await loadBootstrapData();
-        const settings = bootstrapData.settings ?? defaults;
-        autosave = bootstrapData.autosave;
-        saveSlots = bootstrapData.saves;
-
-        if (autosave) {
-          try {
-            liveSession = resumePersistedSession(hydrateQualitySession(autosave.session, settings));
-            restoreNotice = t(liveSession.settings.locale, "toast.autosaveRestored");
-          } catch (error) {
-            autosave = null;
-            liveSession = createQualitySession(settings);
-            lastError = normalizeErrorMessage(error, t(settings.locale, "save.restoreError"));
-            await clearAutosave().catch(() => undefined);
-          }
-        } else {
-          liveSession = createQualitySession(settings);
-        }
-      } catch (error) {
-        liveSession = createQualitySession(defaults);
-        autosave = null;
-        saveSlots = [];
-        lastError = normalizeErrorMessage(error, t(defaults.locale, "save.restoreError"));
-      }
+      ensureEngineSubscription(set, get);
+      const { liveSession, autosave, saveSlots, restoreNotice, lastError } = await loadGameStoreBootstrapState();
 
       set({
         booted: true,
-        ...buildSessionPatch(liveSession),
-        autosave,
-        saveSlots,
-        selectedSquare: null,
-        legalTargets: [],
-        castlingTargets: [],
-        hintMove: null,
-        pendingPromotion: null,
-        analysisCursor: null,
-        analysisAutoplay: false,
-        analysisProgress: null,
-        cameraPreset: getDefaultCameraPreset(liveSession),
-        restoreNotice,
+        ...buildSessionResetPatch(liveSession, {
+          autosave,
+          saveSlots,
+          cameraPreset: getDefaultCameraPreset(liveSession),
+          restoreNotice,
+          lastError,
+        }),
         enginePhase: "booting",
         engineMessage: t(liveSession.settings.locale, "engine.prewarm"),
-        lastError,
       });
 
       await persistLiveSettings(get, set);
@@ -506,51 +299,27 @@ export const useGameStore = create<GameStore>((set, get) => ({
 
   undo: async () => {
     await interruptEngineWork();
-    activeAnalysisSignature = null;
+    clearTrackedAnalysis();
     const currentSession = get().session;
     const appliedSession = undoTurn(currentSession);
     if (appliedSession === currentSession) {
       return;
     }
     const nextSession = appliedSession;
-    set({
-      ...buildSessionPatch(nextSession),
-      selectedSquare: null,
-      legalTargets: [],
-      castlingTargets: [],
-      hintMove: null,
-      pendingPromotion: null,
-      analysisCursor: null,
-      analysisAutoplay: false,
-      analysisProgress: null,
-      restoreNotice: null,
-      lastError: null,
-    });
+    set({ ...buildSessionResetPatch(nextSession) });
     await persistLiveAutosave(get, set);
   },
 
   redo: async () => {
     await interruptEngineWork();
-    activeAnalysisSignature = null;
+    clearTrackedAnalysis();
     const currentSession = get().session;
     const appliedSession = redoTurn(currentSession);
     if (appliedSession === currentSession) {
       return;
     }
     const nextSession = appliedSession;
-    set({
-      ...buildSessionPatch(nextSession),
-      selectedSquare: null,
-      legalTargets: [],
-      castlingTargets: [],
-      hintMove: null,
-      pendingPromotion: null,
-      analysisCursor: null,
-      analysisAutoplay: false,
-      analysisProgress: null,
-      restoreNotice: null,
-      lastError: null,
-    });
+    set({ ...buildSessionResetPatch(nextSession) });
     await persistLiveAutosave(get, set);
 
     if (
@@ -563,30 +332,21 @@ export const useGameStore = create<GameStore>((set, get) => ({
 
   newGame: async (options) => {
     await interruptEngineWork();
-    activeAnalysisSignature = null;
+    clearTrackedAnalysis();
     const currentSession = get().session;
     const playerColor = resolveNewGamePlayerColor(options?.playerColor ?? "white");
-    const nextSettings: Partial<QualitySettings> = {
+    const nextSettings = {
       ...currentSession.settings,
       difficultyId: options?.difficultyId ?? currentSession.settings.difficultyId,
       clockConfig: options?.clockConfig ?? currentSession.settings.clockConfig,
       orientation: playerColor === "b" ? "black" : "white",
-    };
+    } satisfies Partial<GameStore["session"]["settings"]>;
     const nextSession = createQualitySession(nextSettings, { playerColor });
 
     set({
-      ...buildSessionPatch(nextSession),
-      selectedSquare: null,
-      legalTargets: [],
-      castlingTargets: [],
-      hintMove: null,
-      pendingPromotion: null,
-      analysisCursor: null,
-      analysisAutoplay: false,
-      analysisProgress: null,
-      cameraPreset: getDefaultCameraPreset(nextSession),
-      restoreNotice: null,
-      lastError: null,
+      ...buildSessionResetPatch(nextSession, {
+        cameraPreset: getDefaultCameraPreset(nextSession),
+      }),
     });
 
     try {
@@ -608,98 +368,13 @@ export const useGameStore = create<GameStore>((set, get) => ({
     await persistLiveAutosave(get, set);
   },
 
-  setTheme: async (themeId) => {
-    const nextSession = updateSessionSettings(get, { themeId });
-    set({ ...buildSessionPatch(nextSession), lastError: null });
-    await persistLiveSettings(get, set);
-    await persistLiveAutosave(get, set);
-  },
-
-  setLocale: async (locale) => {
-    const nextSession = updateSessionSettings(get, { locale });
-    set({ ...buildSessionPatch(nextSession), lastError: null });
-    await persistLiveSettings(get, set);
-    await persistLiveAutosave(get, set);
-  },
-
-  toggleOrientation: async () => {
-    const orientation = get().session.settings.orientation === "white" ? "black" : "white";
-    const nextSession = updateSessionSettings(get, { orientation });
-    set({ ...buildSessionPatch(nextSession), lastError: null });
-    await persistLiveSettings(get, set);
-    await persistLiveAutosave(get, set);
-  },
-
-  setShowCoordinates: async (show) => {
-    const nextSession = updateSessionSettings(get, { showCoordinates: show });
-    set({ ...buildSessionPatch(nextSession), lastError: null });
-    await persistLiveSettings(get, set);
-    await persistLiveAutosave(get, set);
-  },
-
-  setAnimationMode: async (mode) => {
-    const nextSession = updateSessionSettings(get, { animationMode: mode });
-    set({ ...buildSessionPatch(nextSession), lastError: null });
-    await persistLiveSettings(get, set);
-    await persistLiveAutosave(get, set);
-  },
-
-  setDefaultViewMode: async (mode) => {
-    const nextSession = updateSessionSettings(get, { defaultViewMode: mode });
-    set({
-      ...buildSessionPatch(nextSession),
-      cameraPreset: mode === "2d" ? "2d" : "classic",
-      lastError: null,
-    });
-    await persistLiveSettings(get, set);
-    await persistLiveAutosave(get, set);
-  },
-
-  setCameraSensitivity: async (cameraSensitivity) => {
-    const nextSession = updateSessionSettings(get, { cameraSensitivity });
-    set({ ...buildSessionPatch(nextSession), lastError: null });
-    scheduleCameraSensitivityPersistence(get, set);
-  },
-
-  setQualityMode: async (mode) => {
-    const nextSession = updateSessionSettings(get, {
-      qualityMode: mode,
-    });
-    set({ ...buildSessionPatch(nextSession), lastError: null });
-    await persistLiveSettings(get, set);
-    await persistLiveAutosave(get, set);
-  },
-
-  setQualityTier: async (tier) => {
-    const nextSession = updateSessionSettings(get, {
-      qualityMode: "manual",
-      manualQualityTier: tier,
-    });
-    set({ ...buildSessionPatch(nextSession), lastError: null });
-    await persistLiveSettings(get, set);
-    await persistLiveAutosave(get, set);
-  },
-
-  setSoundEnabled: async (enabled) => {
-    const nextSession = updateSessionSettings(get, { soundEnabled: enabled });
-    set({ ...buildSessionPatch(nextSession), lastError: null });
-    await persistLiveSettings(get, set);
-    await persistLiveAutosave(get, set);
-  },
-
-  setSoundVolume: async (volume) => {
-    const nextSession = updateSessionSettings(get, { soundVolume: volume });
-    set({ ...buildSessionPatch(nextSession), lastError: null });
-    await persistLiveSettings(get, set);
-    await persistLiveAutosave(get, set);
-  },
-
-  setHapticsEnabled: async (enabled) => {
-    const nextSession = updateSessionSettings(get, { hapticsEnabled: enabled });
-    set({ ...buildSessionPatch(nextSession), lastError: null });
-    await persistLiveSettings(get, set);
-    await persistLiveAutosave(get, set);
-  },
+  ...createSettingsActions({
+    get,
+    set,
+    persistLiveSettings: () => persistLiveSettings(get, set),
+    persistLiveAutosave: () => persistLiveAutosave(get, set),
+    scheduleCameraSensitivityPersistence: () => scheduleCameraSensitivityPersistence(get, set),
+  }),
 
   setCameraPreset: (preset) => {
     set({ cameraPreset: preset });
@@ -752,121 +427,15 @@ export const useGameStore = create<GameStore>((set, get) => ({
     set({ restoreNotice: null });
   },
 
-  createManualSave: async () => {
-    const state = get();
-    const label = `${t(state.session.settings.locale, "save.labelPrefix")} ${String(
-      state.saveSlots.length + 1,
-    ).padStart(2, "0")}`;
-
-    try {
-      await persistSaveSlot(createPersistedSessionSnapshot(state.session), label);
-      const saves = await listSaveSlots();
-      set({ saveSlots: saves, lastError: null });
-    } catch (error) {
-      setStoreError(set, state.session.settings.locale, error, "save.persistError");
-    }
-
-    await persistLiveAutosave(get, set);
-  },
-
-  loadManualSave: async (id) => {
-    await interruptEngineWork();
-
-    try {
-      const record = await loadSaveSlot(id);
-      if (!record) {
-        return;
-      }
-
-      activeAnalysisSignature = null;
-      const nextSession = resumePersistedSession(hydrateQualitySession(record.session, get().session.settings));
-      set({
-        ...buildSessionPatch(nextSession),
-        selectedSquare: null,
-        legalTargets: [],
-        castlingTargets: [],
-        hintMove: null,
-        pendingPromotion: null,
-        analysisCursor: null,
-        analysisAutoplay: false,
-        analysisProgress: null,
-        cameraPreset: getDefaultCameraPreset(nextSession),
-        restoreNotice: null,
-        lastError: null,
-      });
-      await persistLiveAutosave(get, set);
-    } catch (error) {
-      setStoreError(set, get().session.settings.locale, error, "save.restoreError");
-    }
-  },
-
-  restoreAutosave: async () => {
-    const autosave = get().autosave;
-    if (!autosave) {
-      return;
-    }
-
-    await interruptEngineWork();
-
-    try {
-      activeAnalysisSignature = null;
-      const nextSession = resumePersistedSession(hydrateQualitySession(autosave.session, get().session.settings));
-      set({
-        ...buildSessionPatch(nextSession),
-        selectedSquare: null,
-        legalTargets: [],
-        castlingTargets: [],
-        hintMove: null,
-        pendingPromotion: null,
-        analysisCursor: null,
-        analysisAutoplay: false,
-        analysisProgress: null,
-        cameraPreset: getDefaultCameraPreset(nextSession),
-        restoreNotice: t(nextSession.settings.locale, "toast.autosaveRestored"),
-        lastError: null,
-      });
-      await persistLiveAutosave(get, set);
-    } catch (error) {
-      setStoreError(set, get().session.settings.locale, error, "save.restoreError");
-    }
-  },
-
-  deleteManualSave: async (id) => {
-    try {
-      await removeSaveSlot(id);
-      const saves = await listSaveSlots();
-      set({ saveSlots: saves, lastError: null });
-    } catch (error) {
-      setStoreError(set, get().session.settings.locale, error, "save.persistError");
-    }
-  },
-
-  importPgnText: async (pgn) => {
-    await interruptEngineWork();
-
-    const nextSession = sessionFromPgn(pgn, get().session.settings);
-    activeAnalysisSignature = null;
-    set({
-      ...buildSessionPatch(nextSession),
-      selectedSquare: null,
-      legalTargets: [],
-      castlingTargets: [],
-      hintMove: null,
-      pendingPromotion: null,
-      analysisCursor: nextSession.moveEntries.length,
-      analysisAutoplay: false,
-      analysisProgress: null,
-      cameraPreset: getDefaultCameraPreset(nextSession),
-      restoreNotice: null,
-      lastError: null,
-    });
-    await persistLiveAutosave(get, set);
-    await persistLiveSettings(get, set);
-
-    if (nextSession.moveEntries.length > 0) {
-      void get().runAnalysis();
-    }
-  },
+  ...createPersistenceActions({
+    get,
+    set,
+    interruptEngineWork,
+    clearTrackedAnalysis: () => clearTrackedAnalysis(),
+    runAnalysis: () => get().runAnalysis(),
+    persistLiveAutosave: () => persistLiveAutosave(get, set),
+    persistLiveSettings: () => persistLiveSettings(get, set),
+  }),
 
   runAnalysis: async () => {
     const session = get().session;
@@ -874,8 +443,7 @@ export const useGameStore = create<GameStore>((set, get) => ({
       return;
     }
 
-    const signature = getAnalysisSignature(session);
-    activeAnalysisSignature = signature;
+    const signature = startTrackedAnalysis(session);
     set({
       analysisProgress: {
         completed: 0,
@@ -887,7 +455,7 @@ export const useGameStore = create<GameStore>((set, get) => ({
 
     try {
       const summary = await engineClient.analyzeGame(buildAnalysisPayload(session));
-      if (activeAnalysisSignature !== signature || getAnalysisSignature(get().session) !== signature) {
+      if (!isTrackedAnalysisSession(get().session)) {
         return;
       }
 
@@ -920,14 +488,8 @@ export const useGameStore = create<GameStore>((set, get) => ({
       });
       setStoreError(set, get().session.settings.locale, error, "engine.error");
     } finally {
-      if (activeAnalysisSignature === signature) {
-        activeAnalysisSignature = null;
-      }
+      clearTrackedAnalysis(signature);
     }
-  },
-
-  persistCurrentAutosave: async () => {
-    await persistLiveAutosave(get, set);
   },
 
   tickLiveClock: () => {
@@ -952,8 +514,8 @@ export const useGameStore = create<GameStore>((set, get) => ({
 }));
 
 async function commitPlayerMove(
-  set: (partial: Partial<GameStore>) => void,
-  get: () => GameStore,
+  set: GameStoreSet,
+  get: GameStoreGet,
   from: Square,
   to: Square,
   promotion?: PieceSymbol,
@@ -967,20 +529,8 @@ async function commitPlayerMove(
   const nextSession = appliedSession;
 
   await interruptEngineWork();
-  activeAnalysisSignature = null;
-  set({
-    ...buildSessionPatch(nextSession),
-    selectedSquare: null,
-    legalTargets: [],
-    castlingTargets: [],
-    hintMove: null,
-    pendingPromotion: null,
-    analysisCursor: null,
-    analysisAutoplay: false,
-    analysisProgress: null,
-    restoreNotice: null,
-    lastError: null,
-  });
+  clearTrackedAnalysis();
+  set({ ...buildSessionResetPatch(nextSession) });
 
   if (
     nextSession.snapshot.sideToMove !== nextSession.playerColor &&
@@ -994,8 +544,8 @@ async function commitPlayerMove(
 }
 
 async function runEngineMove(
-  set: (partial: Partial<GameStore>) => void,
-  get: () => GameStore,
+  set: GameStoreSet,
+  get: GameStoreGet,
 ): Promise<void> {
   const state = get();
   if (
@@ -1028,10 +578,7 @@ async function runEngineMove(
 
     set({
       ...buildSessionPatch(nextSession),
-      hintMove: null,
-      selectedSquare: null,
-      legalTargets: [],
-      castlingTargets: [],
+      ...buildSelectionResetPatch(),
       pendingPromotion: null,
       lastError: null,
     });
@@ -1043,11 +590,11 @@ async function runEngineMove(
 }
 
 async function persistLiveAutosave(
-  get: () => GameStore,
-  set: (partial: Partial<GameStore>) => void,
+  get: GameStoreGet,
+  set: GameStoreSet,
 ): Promise<void> {
   try {
-    const autosave = await persistAutosave(createPersistedSessionSnapshot(get().session));
+    const autosave = await persistAutosaveSnapshot(get().session);
     set({ autosave });
   } catch (error) {
     setStoreError(set, get().session.settings.locale, error, "save.persistError");
@@ -1055,88 +602,22 @@ async function persistLiveAutosave(
 }
 
 async function persistLiveSettings(
-  get: () => GameStore,
-  set: (partial: Partial<GameStore>) => void,
+  get: GameStoreGet,
+  set: GameStoreSet,
 ): Promise<void> {
   try {
-    await persistSettings(get().session.settings);
+    await persistSessionSettings(get().session.settings);
   } catch (error) {
     setStoreError(set, get().session.settings.locale, error, "save.persistError");
   }
 }
 
 function scheduleCameraSensitivityPersistence(
-  get: () => GameStore,
-  set: (partial: Partial<GameStore>) => void,
+  get: GameStoreGet,
+  set: GameStoreSet,
 ): void {
-  if (cameraSensitivityPersistTimeout !== null) {
-    window.clearTimeout(cameraSensitivityPersistTimeout);
-  }
-
-  cameraSensitivityPersistTimeout = window.setTimeout(() => {
-    cameraSensitivityPersistTimeout = null;
+  scheduleDeferredPersistence(() => {
     void persistLiveSettings(get, set);
     void persistLiveAutosave(get, set);
-  }, 180);
-}
-
-async function interruptEngineWork(): Promise<void> {
-  try {
-    await engineClient.stop();
-  } catch {
-    // Ignore stop failures and let the caller continue with local state updates.
-  }
-}
-
-function createPersistedSessionSnapshot(session: QualitySession): QualitySession {
-  return withClockState(session, pauseClock(session.snapshot.clockState));
-}
-
-function resumePersistedSession(session: QualitySession): QualitySession {
-  const clockState = {
-    ...session.snapshot.clockState,
-    running: false,
-    lastTickAt: null,
-  };
-
-  return withClockState(session, resumeClock(clockState));
-}
-
-function getPositionSignature(session: QualitySession): string {
-  return `${session.snapshot.fen}|${session.moveEntries.length}|${session.settings.difficultyId}|${session.snapshot.status}`;
-}
-
-function getAnalysisSignature(session: QualitySession): string {
-  return session.snapshot.pgn;
-}
-
-function getDefaultCameraPreset(session: QualitySession): CameraPreset {
-  return session.settings.defaultViewMode === "2d" ? "2d" : "classic";
-}
-
-function resolveNewGamePlayerColor(choice: NewGameOptions["playerColor"]): "w" | "b" {
-  if (choice === "black") {
-    return "b";
-  }
-
-  if (choice === "random") {
-    return Math.random() < 0.5 ? "w" : "b";
-  }
-
-  return "w";
-}
-
-function normalizeErrorMessage(error: unknown, fallback: string): string {
-  return error instanceof Error && error.message ? error.message : fallback;
-}
-
-function setStoreError(
-  set: (partial: Partial<GameStore>) => void,
-  locale: Locale,
-  error: unknown,
-  fallbackKey: Parameters<typeof t>[1],
-): void {
-  set({
-    lastError: normalizeErrorMessage(error, t(locale, fallbackKey)),
   });
 }
