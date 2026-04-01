@@ -4,6 +4,7 @@ let latestComposer: any = null;
 let latestRenderTargetOptions: Record<string, unknown> | null = null;
 let latestBloomPass: any = null;
 let latestFxaaPass: any = null;
+let latestFxaaShader: any = null;
 
 vi.mock("three", () => {
   class Vector2 {
@@ -107,14 +108,6 @@ vi.mock("three/examples/jsm/postprocessing/UnrealBloomPass.js", async () => {
   };
 });
 
-vi.mock("three/examples/jsm/shaders/FXAAShader.js", () => ({
-  FXAAShader: {
-    uniforms: {
-      resolution: { value: { set: vi.fn() } },
-    },
-  },
-}));
-
 vi.mock("three/examples/jsm/postprocessing/OutputPass.js", () => ({
   OutputPass: class {},
 }));
@@ -128,6 +121,7 @@ vi.mock("three/examples/jsm/postprocessing/ShaderPass.js", () => ({
       if (this.uniforms.resolution) {
         this.uniforms.resolution.value = { set: vi.fn() };
         latestFxaaPass = this as any;
+        latestFxaaShader = shader;
       }
     }
   },
@@ -142,6 +136,7 @@ describe("PostProcessingPipeline", () => {
     latestRenderTargetOptions = null;
     latestBloomPass = null;
     latestFxaaPass = null;
+    latestFxaaShader = null;
   });
 
   it("bypasses the composer and renders directly when disabled", () => {
@@ -220,6 +215,8 @@ describe("PostProcessingPipeline", () => {
 
     expect(latestRenderTargetOptions?.samples).toBe(0);
     expect(latestFxaaPass?.uniforms.resolution.value.set).toHaveBeenLastCalledWith(1 / 960, 1 / 540);
+    expect(latestFxaaShader?.fragmentShader).not.toContain("for ( int i = 1;");
+    expect(latestFxaaShader?.fragmentShader).not.toContain("edgeSteps[");
   });
 
   it("disposes of existing passes and the composer when rebuilding", () => {

@@ -43,6 +43,7 @@ import {
   RedFormat,
   LinearFilter,
   MOUSE,
+  ShaderChunk,
   TOUCH,
 } from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
@@ -94,6 +95,80 @@ const DEFAULT_BOARD_PALETTE = {
   frame: { tone: "dark", baseHex: "#361a0d", veinHex: "#0a0402", isKnotty: true },
   groutHex: "#050505",
 } satisfies BoardMaterialPalette;
+
+let stableThreeShaderPatchesInstalled = false;
+
+export function installStableThreeShaderPatches(): void {
+  if (stableThreeShaderPatchesInstalled) {
+    return;
+  }
+
+  ShaderChunk.transmission_pars_fragment = ShaderChunk.transmission_pars_fragment.replace(
+    /#ifdef USE_DISPERSION[\s\S]*?#else[\s\S]*?#endif/,
+    /* glsl */ `
+		#ifdef USE_DISPERSION
+
+			float halfSpread = ( ior - 1.0 ) * 0.025 * dispersion;
+			float iorR = ior - halfSpread;
+			float iorG = ior;
+			float iorB = ior + halfSpread;
+
+			vec3 transmissionRayR = getVolumeTransmissionRay( n, v, thickness, iorR, modelMatrix );
+			vec3 refractedRayExitR = position + transmissionRayR;
+			vec4 ndcPosR = projMatrix * viewMatrix * vec4( refractedRayExitR, 1.0 );
+			vec2 refractionCoordsR = ndcPosR.xy / ndcPosR.w;
+			refractionCoordsR += 1.0;
+			refractionCoordsR /= 2.0;
+			vec4 transmissionSampleR = getTransmissionSample( refractionCoordsR, roughness, iorR );
+			vec3 attenuationR = volumeAttenuation( length( transmissionRayR ), attenuationColor, attenuationDistance );
+
+			vec3 transmissionRayG = getVolumeTransmissionRay( n, v, thickness, iorG, modelMatrix );
+			vec3 refractedRayExitG = position + transmissionRayG;
+			vec4 ndcPosG = projMatrix * viewMatrix * vec4( refractedRayExitG, 1.0 );
+			vec2 refractionCoordsG = ndcPosG.xy / ndcPosG.w;
+			refractionCoordsG += 1.0;
+			refractionCoordsG /= 2.0;
+			vec4 transmissionSampleG = getTransmissionSample( refractionCoordsG, roughness, iorG );
+			vec3 attenuationG = volumeAttenuation( length( transmissionRayG ), attenuationColor, attenuationDistance );
+
+			vec3 transmissionRayB = getVolumeTransmissionRay( n, v, thickness, iorB, modelMatrix );
+			vec3 refractedRayExitB = position + transmissionRayB;
+			vec4 ndcPosB = projMatrix * viewMatrix * vec4( refractedRayExitB, 1.0 );
+			vec2 refractionCoordsB = ndcPosB.xy / ndcPosB.w;
+			refractionCoordsB += 1.0;
+			refractionCoordsB /= 2.0;
+			vec4 transmissionSampleB = getTransmissionSample( refractionCoordsB, roughness, iorB );
+			vec3 attenuationB = volumeAttenuation( length( transmissionRayB ), attenuationColor, attenuationDistance );
+
+			transmittedLight.r = transmissionSampleR.r;
+			transmittedLight.g = transmissionSampleG.g;
+			transmittedLight.b = transmissionSampleB.b;
+			transmittedLight.a = ( transmissionSampleR.a + transmissionSampleG.a + transmissionSampleB.a ) / 3.0;
+
+			transmittance.r = diffuseColor.r * attenuationR.r;
+			transmittance.g = diffuseColor.g * attenuationG.g;
+			transmittance.b = diffuseColor.b * attenuationB.b;
+
+		#else
+
+			vec3 transmissionRay = getVolumeTransmissionRay( n, v, thickness, ior, modelMatrix );
+			vec3 refractedRayExit = position + transmissionRay;
+
+			// Project refracted vector on the framebuffer, while mapping to normalized device coordinates.
+			vec4 ndcPos = projMatrix * viewMatrix * vec4( refractedRayExit, 1.0 );
+			vec2 refractionCoords = ndcPos.xy / ndcPos.w;
+			refractionCoords += 1.0;
+			refractionCoords /= 2.0;
+
+			// Sample framebuffer to get pixel the refracted ray hits.
+			transmittedLight = getTransmissionSample( refractionCoords, roughness, ior );
+			transmittance = diffuseColor * volumeAttenuation( length( transmissionRay ), attenuationColor, attenuationDistance );
+
+		#endif`,
+  );
+
+  stableThreeShaderPatchesInstalled = true;
+}
 
 interface HighlightState {
   selectedSquare: Square | null;
@@ -1044,16 +1119,16 @@ function applyMarbleShader(
   // Spectrum tint: light pieces warm (c²,c³,c), dark pieces neutral grayscale (c³,c³,c³).
   // Dark uses a single power curve across all channels → zero colour bias (no green cast).
   // The c³ curve keeps the accumulation substantially darker than the light pieces' c/c²/c³.
-  const spectrum =
+  const spectrumChannels =
     config.tone === "light"
-      ? "vec3( c * c, c * c * c, c )"
-      : "vec3( c * c * c, c * c * c, c * c * c )";
+      ? { r: "c * c", g: "c * c * c", b: "c" }
+      : { r: "c * c * c", g: "c * c * c", b: "c * c * c" };
 
   material.userData.marbleShaderConfig = { ...config };
   material.userData.marbleShaderRuntimeUniforms = runtimeUniforms;
   material.customProgramCacheKey = () =>
     [
-      "marble-v3",
+      "marble-v4",
       config.tone,
       config.marchSteps,
       config.marchDepth.toFixed(2),
@@ -1128,18 +1203,28 @@ function applyMarbleShader(
         // Because the direction is the surface normal (not the camera ray),
         // the pattern is completely stable when the camera moves.
         // The 3D texture's trilinear filtering eliminates aliasing.
-        vec3 marbleRaymarch( vec3 ro, vec3 rd, float maxDepth ) {
+        void marbleRaymarch(
+          vec3 ro,
+          vec3 rd,
+          float maxDepth,
+          out float colR,
+          out float colG,
+          out float colB
+        ) {
           float t = 0.0;
           float dt = 0.02;
-          vec3 col = vec3( 0.0 );
+          colR = 0.0;
+          colG = 0.0;
+          colB = 0.0;
           float c = 0.0;
           for ( int i = 0; i < ${config.marchSteps}; i++ ) {
             t += dt * exp( -2.0 * c );
             if ( t > maxDepth ) break;
             c = marbleField( ro + t * rd );
-            col = 0.99 * col + 0.08 * ${spectrum};
+            colR = 0.99 * colR + 0.08 * ${spectrumChannels.r};
+            colG = 0.99 * colG + 0.08 * ${spectrumChannels.g};
+            colB = 0.99 * colB + 0.08 * ${spectrumChannels.b};
           }
-          return col;
         }
         `,
       )
@@ -1173,29 +1258,37 @@ function applyMarbleShader(
         vec3 mDir = -normalize( mNormalLocal );
 
         // Raymarch from surface inward along the normal
-        vec3 mCol = marbleRaymarch( mDomain, mDir, uMarbleMarchDepth );
+        float mColR;
+        float mColG;
+        float mColB;
+        marbleRaymarch( mDomain, mDir, uMarbleMarchDepth, mColR, mColG, mColB );
 
         // Tone-map (Shadertoy original: 0.5 * log(1 + col))
-        mCol = 0.5 * log( 1.0 + mCol );
-        mCol = clamp( mCol, 0.0, 1.0 );
+        mColR = clamp( 0.5 * log( 1.0 + mColR ), 0.0, 1.0 );
+        mColG = clamp( 0.5 * log( 1.0 + mColG ), 0.0, 1.0 );
+        mColB = clamp( 0.5 * log( 1.0 + mColB ), 0.0, 1.0 );
 
         // Per-channel tinting: preserves the rich colour variation of the original
         // marble fractal.  Using three explicit scalar mix() calls instead of a single
         // mix(vec3,vec3,vec3) — the latter forces the HLSL transpiler to create a
         // dyn_index_vec3_int loop variable that triggers warning X4000 on Windows/DirectX.
         // Three scalar mixes are native lerp() in HLSL and cause no such issue.
-        vec3 mTinted;
-        mTinted.r = mix( uMarbleVeinColor.r, uMarbleBaseColor.r, mCol.r );
-        mTinted.g = mix( uMarbleVeinColor.g, uMarbleBaseColor.g, mCol.g );
-        mTinted.b = mix( uMarbleVeinColor.b, uMarbleBaseColor.b, mCol.b );
+        float mTintedR = mix( uMarbleVeinColor.r, uMarbleBaseColor.r, mColR );
+        float mTintedG = mix( uMarbleVeinColor.g, uMarbleBaseColor.g, mColG );
+        float mTintedB = mix( uMarbleVeinColor.b, uMarbleBaseColor.b, mColB );
 
         // Feed into PBR as diffuseColor — Three.js MeshPhysicalMaterial
         // handles clearcoat, reflections, Fresnel, transmission
-        diffuseColor.rgb = mTinted;
+        diffuseColor.r = mTintedR;
+        diffuseColor.g = mTintedG;
+        diffuseColor.b = mTintedB;
 
         // Subtle emissive glow from bright marble veins (scalar to avoid vec3 multiply issues)
-        float mLuma = dot( mCol, vec3( 0.2126, 0.7152, 0.0722 ) );
-        totalEmissiveRadiance += mLuma * uMarbleEmissiveStrength;
+        float mLuma = mColR * 0.2126 + mColG * 0.7152 + mColB * 0.0722;
+        float mGlow = mLuma * uMarbleEmissiveStrength;
+        totalEmissiveRadiance.r += mGlow;
+        totalEmissiveRadiance.g += mGlow;
+        totalEmissiveRadiance.b += mGlow;
         `,
       );
   };
@@ -1959,6 +2052,7 @@ export class ChessStage implements SceneAdapter {
   private onBeforeRender: (() => void) | null = null;
 
   constructor(container: HTMLDivElement, onSquareSelect: (square: Square) => void) {
+    installStableThreeShaderPatches();
     this.container = container;
     this.onSquareSelect = onSquareSelect;
 
