@@ -97,19 +97,24 @@ export const useGameStore = create<GameStore>((set, get) => ({
 
       await persistLiveSettings(get, set);
 
-      try {
-        await engineClient.init();
-        set({
-          enginePhase: "ready",
-          engineMessage: t(get().session.settings.locale, "engine.ready"),
-        });
-      } catch (error) {
-        set({
-          enginePhase: "error",
-          engineMessage: t(get().session.settings.locale, "engine.error"),
-          lastError: normalizeErrorMessage(error, t(get().session.settings.locale, "engine.error")),
-        });
-      }
+      // Defer engine init — the 7 MB WASM download runs in the background so the
+      // 3D scene can finish loading without waiting for Stockfish.  The first
+      // actual engine call (hint / move) is always user-initiated.
+      void (async () => {
+        try {
+          await engineClient.init();
+          set({
+            enginePhase: "ready",
+            engineMessage: t(get().session.settings.locale, "engine.ready"),
+          });
+        } catch (error) {
+          set({
+            enginePhase: "error",
+            engineMessage: t(get().session.settings.locale, "engine.error"),
+            lastError: normalizeErrorMessage(error, t(get().session.settings.locale, "engine.error")),
+          });
+        }
+      })();
     })();
 
     try {

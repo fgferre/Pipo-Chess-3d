@@ -332,8 +332,14 @@ const CAMERA_TRANSITION_DURATION_MS: Record<Exclude<AnimationMode, "off">, numbe
 
 // Marble fractal bake constants — computed once at init into a 3D texture
 const MARBLE_BAKE_ITERATIONS = 10;
-const MARBLE_VOLUME_RESOLUTION = 128;
+const MARBLE_VOLUME_RESOLUTION: Record<QualityTier, number> = {
+  1: 64,   // 64³ = 262K iterations — fast on low-end
+  2: 96,   // 96³ = 884K iterations
+  3: 128,  // 128³ = 2.1M iterations — full quality
+};
 let sharedMarbleVolumeTexture: Data3DTexture | null = null;
+let sharedMarbleVolumeResolution = 0;
+let sharedMarbleVolumePromise: Promise<Data3DTexture> | null = null;
 let sharedMarbleVolumeReferences = 0;
 
 const MARBLE_SHADER_PROFILES: Record<QualityTier, MarbleShaderProfile> = {
@@ -1021,12 +1027,13 @@ function applyWoodMaterialTheme(
  * aliasing when the camera moves — the pattern changes smoothly with viewing
  * angle, like real translucent marble.
  */
-function bakeMarbleVolume(resolution: number, iterations: number): Data3DTexture {
+async function bakeMarbleVolume(resolution: number, iterations: number): Promise<Data3DTexture> {
   const size = resolution;
   const data = new Uint8Array(size * size * size);
   const invSizeM1 = 1 / (size - 1);
 
   for (let iz = 0; iz < size; iz++) {
+    if (iz % 8 === 0 && iz > 0) await yieldToMainThread();
     const fz = iz * invSizeM1 * 4.0 - 2.0;
     for (let iy = 0; iy < size; iy++) {
       const fy = iy * invSizeM1 * 4.0 - 2.0;
@@ -1082,12 +1089,28 @@ function bakeMarbleVolume(resolution: number, iterations: number): Data3DTexture
   return texture;
 }
 
-function acquireMarbleVolumeTexture(): Data3DTexture {
-  if (!sharedMarbleVolumeTexture) {
-    sharedMarbleVolumeTexture = bakeMarbleVolume(MARBLE_VOLUME_RESOLUTION, MARBLE_BAKE_ITERATIONS);
+async function acquireMarbleVolumeTexture(resolution: number): Promise<Data3DTexture> {
+  if (sharedMarbleVolumeTexture && sharedMarbleVolumeResolution === resolution) {
+    sharedMarbleVolumeReferences += 1;
+    return sharedMarbleVolumeTexture;
   }
+  if (sharedMarbleVolumePromise && sharedMarbleVolumeResolution === resolution) {
+    const texture = await sharedMarbleVolumePromise;
+    sharedMarbleVolumeReferences += 1;
+    return texture;
+  }
+  // Resolution changed or first call — bake a new texture
+  if (sharedMarbleVolumeTexture) {
+    sharedMarbleVolumeTexture.dispose();
+    sharedMarbleVolumeTexture = null;
+  }
+  sharedMarbleVolumeResolution = resolution;
+  sharedMarbleVolumePromise = bakeMarbleVolume(resolution, MARBLE_BAKE_ITERATIONS);
+  const texture = await sharedMarbleVolumePromise;
+  sharedMarbleVolumeTexture = texture;
+  sharedMarbleVolumePromise = null;
   sharedMarbleVolumeReferences += 1;
-  return sharedMarbleVolumeTexture;
+  return texture;
 }
 
 function releaseMarbleVolumeTexture(texture: Data3DTexture | null): void {
@@ -2171,7 +2194,9 @@ export class ChessStage implements SceneAdapter {
       // Bake the fractal field into a 3D texture for smooth hardware-filtered
       // marble rendering. This runs once; all subsequent shader lookups use
       // trilinear-filtered texture reads instead of per-pixel fractal math.
-      this.marbleVolumeTexture = acquireMarbleVolumeTexture();
+      this.marbleVolumeTexture = await acquireMarbleVolumeTexture(
+        MARBLE_VOLUME_RESOLUTION[this.qualityTier],
+      );
 
       await this.reportInitProgress(onLoadStateChange, 84, "scene.loading.pieces");
       if (this.disposed) {

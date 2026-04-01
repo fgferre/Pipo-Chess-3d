@@ -37,8 +37,8 @@ export interface QualityMonitorUpdate {
 
 export const QUALITY_DEFAULT_TIER: QualityTier = 2;
 export const QUALITY_FPS_THRESHOLD = 45;
-export const QUALITY_LOW_FPS_DURATION_MS = 3000;
-export const QUALITY_AUTO_DOWNGRADE_COOLDOWN_MS = 60_000;
+export const QUALITY_LOW_FPS_DURATION_MS = 1500;
+export const QUALITY_AUTO_DOWNGRADE_COOLDOWN_MS = 15_000;
 
 export function clampQualityTier(tier: number | null | undefined): QualityTier {
   if (tier === 3) {
