@@ -37,3 +37,9 @@ npm run test:e2e
 ## Observações
 
 - O projeto já possui base funcional para o MVP.
+
+## Publicação
+
+- Produção via GitHub Pages com GitHub Actions.
+- O workflow de deploy publica `main` automaticamente em Pages.
+- O build de produção para Pages usa a base `"/Pipo-Chess-3d/"`.
