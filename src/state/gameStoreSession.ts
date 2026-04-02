@@ -126,6 +126,18 @@ export function normalizeErrorMessage(error: unknown, fallback: string): string 
   return error instanceof Error && error.message ? error.message : fallback;
 }
 
+function resolveStoreErrorMessage(
+  locale: Locale,
+  error: unknown,
+  fallbackKey: Parameters<typeof t>[1],
+): string {
+  if (fallbackKey === "engine.error" && error instanceof Error && error.message === "Engine response timed out") {
+    return t(locale, "engine.timeout");
+  }
+
+  return normalizeErrorMessage(error, t(locale, fallbackKey));
+}
+
 export function setStoreError(
   set: GameStoreSet,
   locale: Locale,
@@ -133,7 +145,7 @@ export function setStoreError(
   fallbackKey: Parameters<typeof t>[1],
 ): void {
   set({
-    lastError: normalizeErrorMessage(error, t(locale, fallbackKey)),
+    lastError: resolveStoreErrorMessage(locale, error, fallbackKey),
   });
 }
 

@@ -152,6 +152,7 @@ function useAppStoreActions() {
       bootstrap: state.bootstrap,
       selectSquare: state.selectSquare,
       confirmPromotion: state.confirmPromotion,
+      retryEngine: state.retryEngine,
       requestHint: state.requestHint,
       undo: state.undo,
       redo: state.redo,
@@ -501,6 +502,7 @@ function App() {
     bootstrap,
     selectSquare,
     confirmPromotion,
+    retryEngine,
     requestHint,
     undo,
     redo,
@@ -610,6 +612,9 @@ function App() {
     setNeedRefresh(false);
     void updateServiceWorker(true);
   }, [setNeedRefresh, updateServiceWorker]);
+  const handleRetryEngine = useCallback(() => {
+    void retryEngine();
+  }, [retryEngine]);
   const updateReadyToast: AppToast | null = needRefresh
     ? {
         icon: "↻",
@@ -619,10 +624,20 @@ function App() {
         onAction: handleApplyPwaUpdate,
       }
     : null;
+  const engineErrorToast: AppToast | null =
+    enginePhase === "error" && lastError
+      ? {
+          icon: "!",
+          message: lastError,
+          tone: "error",
+          actionLabel: t(locale, "engine.retry"),
+          onAction: handleRetryEngine,
+        }
+      : null;
   const activeToast = restoreNotice
     ? { icon: "↺", message: restoreNotice, tone: "notice" as const }
     : transientToast ??
-      (lastError ? { icon: "!", message: lastError, tone: "error" as const } : updateReadyToast);
+      (engineErrorToast ?? (lastError ? { icon: "!", message: lastError, tone: "error" as const } : updateReadyToast));
   const currentPly = analysisCursor ?? session.moveEntries.length;
   const currentEvaluation = getEvaluationForPly(session.analysisSummary?.evaluationsByPly, currentPly);
   const checkedKingSquare = getCheckedKingSquare(boardSession);

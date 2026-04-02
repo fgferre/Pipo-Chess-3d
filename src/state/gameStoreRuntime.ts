@@ -1,4 +1,5 @@
 import { engineClient } from "../engine/EngineClient";
+import { t } from "../i18n";
 import type { EnginePhase, GameSession } from "../types/game";
 import type { GameStoreGet, GameStoreSet, QualitySession } from "./gameStoreTypes";
 
@@ -62,6 +63,16 @@ export function ensureEngineSubscription(set: GameStoreSet, get: GameStoreGet): 
   });
 
   subscribedToEngine = true;
+}
+
+export async function ensureEngineReady(set: GameStoreSet, get: GameStoreGet): Promise<void> {
+  await engineClient.init();
+  const locale = get().session.settings.locale;
+  set({
+    enginePhase: "ready",
+    engineMessage: t(locale, "engine.ready"),
+    lastError: null,
+  });
 }
 
 export async function interruptEngineWork(): Promise<void> {

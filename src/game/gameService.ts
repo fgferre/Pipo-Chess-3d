@@ -484,7 +484,7 @@ export function applyPlayerMove(
   const nextClockState = commitMoveOnClock(clockState, result.color, session.settings.clockConfig, timestamp);
   const finalizedClockState = finalizeClockForPosition(chess, nextClockState);
   const nextMoveEntries = [
-    ...cloneMoveEntries(session.moveEntries),
+    ...session.moveEntries,
     createMoveEntry(result, beforeFen, chess.fen(), session.moveEntries.length + 1, finalizedClockState),
   ];
 
@@ -526,7 +526,7 @@ export function applyEngineMove(
   const nextClockState = commitMoveOnClock(clockState, mover, session.settings.clockConfig, timestamp);
   const finalizedClockState = finalizeClockForPosition(chess, nextClockState);
   const nextMoveEntries = [
-    ...cloneMoveEntries(session.moveEntries),
+    ...session.moveEntries,
     createMoveEntry(result, beforeFen, chess.fen(), session.moveEntries.length + 1, finalizedClockState),
   ];
   return buildSessionFromChess(

@@ -150,6 +150,39 @@ async function resetHarness() {
   pwaRegisterState.needRefresh = false;
   pwaRegisterState.offlineReady = false;
   updateServiceWorkerMock.mockReset().mockResolvedValue(undefined);
+  engineClientMock.init.mockReset().mockResolvedValue(undefined);
+  engineClientMock.newGame.mockReset().mockResolvedValue(undefined);
+  engineClientMock.setPosition.mockReset().mockResolvedValue(undefined);
+  engineClientMock.search.mockReset().mockResolvedValue({
+    bestMove: "e7e5",
+    pv: ["e7e5"],
+    scoreCp: 12,
+    mate: null,
+    depth: 12,
+  });
+  engineClientMock.hint.mockReset().mockResolvedValue({
+    bestMove: "g1f3",
+    pv: ["g1f3", "d7d5"],
+    scoreCp: 24,
+    mate: null,
+    depth: 12,
+  });
+  engineClientMock.analyzeGame.mockReset().mockResolvedValue({
+    result: "active",
+    centipawnLossBySide: { w: 22, b: 13 },
+    tagsByPly: { 1: "good" },
+    evaluationsByPly: {
+      0: { scoreCp: 12, scoreMate: null },
+      1: { scoreCp: 24, scoreMate: null },
+    },
+    criticalMoments: [],
+  });
+  engineClientMock.subscribe.mockReset().mockImplementation((listener: (event: unknown) => void) => {
+    subscribers.add(listener);
+    return () => subscribers.delete(listener);
+  });
+  engineClientMock.stop.mockReset().mockResolvedValue(undefined);
+  engineClientMock.terminate.mockReset();
 
   Object.defineProperty(window, "matchMedia", {
     configurable: true,
@@ -172,7 +205,7 @@ async function resetHarness() {
   await db.open();
 }
 
-describe("App feedback integration", () => {
+describe("App feedback integration", { timeout: 10000 }, () => {
   beforeEach(async () => {
     await resetHarness();
   });
@@ -269,6 +302,62 @@ describe("App feedback integration", () => {
     fireEvent.click(reloadButton);
 
     expect(updateServiceWorkerMock).toHaveBeenCalledWith(true);
+  });
+
+  it("offers an engine retry action after bootstrap fails", async () => {
+    engineClientMock.init.mockReset();
+    engineClientMock.init
+      .mockRejectedValueOnce(new Error("Engine boot failed"))
+      .mockResolvedValue(undefined);
+
+    const { default: App } = await import("./App");
+    render(<App />);
+
+    await screen.findByText("Pipo Chess 3D");
+    expect(await screen.findByText("Engine boot failed")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Tentar novamente" }));
+
+    await waitFor(() => {
+      expect(engineClientMock.init).toHaveBeenCalledTimes(2);
+    });
+  });
+
+  it("starts the engine move immediately when a new game begins with the player as black", async () => {
+    const { default: App } = await import("./App");
+    const { useGameStore } = await import("./state/gameStore");
+    render(<App />);
+
+    await screen.findByText("Pipo Chess 3D");
+
+    const { session, newGame } = useGameStore.getState();
+    await act(async () => {
+      await newGame({
+        playerColor: "black",
+        difficultyId: session.settings.difficultyId,
+        clockConfig: session.settings.clockConfig,
+      });
+    });
+
+    await waitFor(() => {
+      expect(engineClientMock.search).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  it("shows the localized timeout message when the engine stops responding", async () => {
+    engineClientMock.search.mockRejectedValueOnce(new Error("Engine response timed out"));
+
+    const { default: App } = await import("./App");
+    render(<App />);
+
+    await screen.findByText("Pipo Chess 3D");
+
+    await act(async () => {
+      fireEvent.click(screen.getByText("Square e2"));
+      fireEvent.click(screen.getByText("Square e4"));
+    });
+
+    expect(await screen.findByText("A engine não respondeu a tempo.")).toBeInTheDocument();
   });
 
   it("persists sound and haptic preferences from the settings drawer", async () => {

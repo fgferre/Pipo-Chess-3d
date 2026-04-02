@@ -47,6 +47,7 @@ export interface GameStore {
   bootstrap: () => Promise<void>;
   selectSquare: (square: Square) => Promise<InteractionOutcome>;
   confirmPromotion: (piece: PieceSymbol) => Promise<void>;
+  retryEngine: () => Promise<void>;
   requestHint: () => Promise<void>;
   undo: () => Promise<void>;
   redo: () => Promise<void>;

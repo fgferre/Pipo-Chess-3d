@@ -16,6 +16,8 @@ export class EngineClient {
   private worker: Worker | null = null;
   private listeners = new Set<EventListener>();
   private initialized = false;
+  private initPromise: Promise<void> | null = null;
+  private workerDead = false;
   private engineName = "Stockfish";
   private currentAbortController: AbortController | null = null;
   private transitionQueue = Promise.resolve();
@@ -33,6 +35,8 @@ export class EngineClient {
   private readyResolver: (() => void) | null = null;
   private readyRejector: ((error: Error) => void) | null = null;
   private analysisToken = 0;
+  private static readonly SEARCH_TIMEOUT_MS = 30_000;
+  private static readonly ANALYSIS_STEP_TIMEOUT_MS = 60_000;
 
   subscribe(listener: EventListener): () => void {
     this.listeners.add(listener);
@@ -40,44 +44,73 @@ export class EngineClient {
   }
 
   async init(): Promise<void> {
-    if (this.initialized) {
+    if (this.initialized && !this.workerDead && this.worker) {
       return;
     }
 
+    if (this.initPromise) {
+      return this.initPromise;
+    }
+
     this.emitStatus("loading", "init", "Loading Stockfish");
-    this.worker?.terminate();
-    const scriptUrl = new URL(engineAssetUrls.scriptUrl, window.location.href);
-    const wasmUrl = new URL(engineAssetUrls.wasmUrl, window.location.href);
-    this.worker = new Worker(`${scriptUrl.toString()}#${encodeURIComponent(wasmUrl.toString())}`);
-    this.worker.onmessage = (event: MessageEvent<string>) => {
-      this.handleWorkerMessage(event.data);
-    };
-    this.worker.onerror = () => {
-      const error = new Error("Engine boot failed");
-      this.readyRejector?.(error);
-      this.rejectActiveSearch(error);
-      this.emitStatus("error", "init", "Engine boot failed");
-    };
+    const initPromise = (async () => {
+      this.disposeWorker();
+      this.workerDead = false;
+      this.initialized = false;
 
-    await new Promise<void>((resolve, reject) => {
-      this.readyResolver = resolve;
-      this.readyRejector = reject;
-      this.send("uci");
-    });
+      try {
+        const scriptUrl = new URL(engineAssetUrls.scriptUrl, window.location.href);
+        const wasmUrl = new URL(engineAssetUrls.wasmUrl, window.location.href);
+        const worker = new Worker(`${scriptUrl.toString()}#${encodeURIComponent(wasmUrl.toString())}`);
+        this.worker = worker;
+        worker.onmessage = (event: MessageEvent<string>) => {
+          this.handleWorkerMessage(event.data);
+        };
+        worker.onerror = () => {
+          this.failEngine(
+            new Error(this.initialized ? "Engine worker crashed" : "Engine boot failed"),
+            this.initialized ? "runtime" : "init",
+          );
+        };
+      } catch (error) {
+        const bootError = error instanceof Error ? error : new Error("Engine boot failed");
+        this.failEngine(bootError, "init");
+        throw bootError;
+      }
 
-    this.initialized = true;
+      await new Promise<void>((resolve, reject) => {
+        this.readyResolver = resolve;
+        this.readyRejector = reject;
+        this.send("uci");
+      });
+
+      this.initialized = true;
+    })();
+
+    this.initPromise = initPromise;
+
+    try {
+      await initPromise;
+    } finally {
+      if (this.initPromise === initPromise) {
+        this.initPromise = null;
+      }
+    }
   }
 
   async newGame(): Promise<void> {
+    await this.init();
     this.send("ucinewgame");
     this.send("isready");
   }
 
   async setPosition(fen: string): Promise<void> {
+    await this.init();
     this.send(`position fen ${fen}`);
   }
 
   async search(fen: string, difficulty: DifficultyPreset) {
+    await this.init();
     let pendingSearch: Promise<EngineEvaluation> | null = null;
 
     await this.withTransitionLock(async () => {
@@ -87,7 +120,10 @@ export class EngineClient {
 
       this.configureDifficulty(difficulty);
       this.emitStatus("thinking", "search", "Thinking");
-      pendingSearch = this.evaluatePosition(fen, difficulty.moveTimeMs, id, this.currentAbortController.signal);
+      pendingSearch = this.evaluatePosition(
+        fen, difficulty.moveTimeMs, id, this.currentAbortController.signal,
+        EngineClient.SEARCH_TIMEOUT_MS,
+      );
     });
 
     const result = await pendingSearch!;
@@ -96,6 +132,7 @@ export class EngineClient {
   }
 
   async hint(fen: string, difficulty: DifficultyPreset) {
+    await this.init();
     let pendingSearch: Promise<EngineEvaluation> | null = null;
 
     await this.withTransitionLock(async () => {
@@ -105,7 +142,10 @@ export class EngineClient {
 
       this.configureDifficulty(difficulty);
       this.emitStatus("thinking", "hint", "Thinking");
-      pendingSearch = this.evaluatePosition(fen, difficulty.hintTimeMs, id, this.currentAbortController.signal);
+      pendingSearch = this.evaluatePosition(
+        fen, difficulty.hintTimeMs, id, this.currentAbortController.signal,
+        EngineClient.SEARCH_TIMEOUT_MS,
+      );
     });
 
     const result = await pendingSearch!;
@@ -114,6 +154,7 @@ export class EngineClient {
   }
 
   async analyzeGame(payload: EngineAnalysisPayload, moveTimeMs = 180): Promise<AnalysisSummary> {
+    await this.init();
     await this.withTransitionLock(async () => {
       await this.abortActiveSearch();
       this.currentAbortController = new AbortController();
@@ -144,8 +185,14 @@ export class EngineClient {
       const beforeId = `analysis-${item.ply}-before`;
       const afterId = `analysis-${item.ply}-after`;
 
-      const before = await this.evaluatePosition(item.fenBefore, moveTimeMs, beforeId, signal);
-      const after = await this.evaluatePosition(item.fenAfter, moveTimeMs, afterId, signal);
+      const before = await this.evaluatePosition(
+        item.fenBefore, moveTimeMs, beforeId, signal,
+        EngineClient.ANALYSIS_STEP_TIMEOUT_MS,
+      );
+      const after = await this.evaluatePosition(
+        item.fenAfter, moveTimeMs, afterId, signal,
+        EngineClient.ANALYSIS_STEP_TIMEOUT_MS,
+      );
       evaluations.push({ item, before, after });
       this.listeners.forEach((listener) =>
         listener({
@@ -168,15 +215,26 @@ export class EngineClient {
     await this.withTransitionLock(async () => {
       await this.abortActiveSearch();
     });
+
+    if (this.workerDead || !this.worker || !this.initialized) {
+      return;
+    }
+
     this.emitStatus("ready", "stop", "Ready");
   }
 
   terminate(): void {
+    const error = new Error("Engine terminated");
     this.currentAbortController?.abort();
     this.currentAbortController = null;
-    this.activeSearch?.settle();
-    this.activeSearch = null;
-    this.worker?.terminate();
+    this.rejectActiveSearch(error);
+    this.readyRejector?.(error);
+    this.readyResolver = null;
+    this.readyRejector = null;
+    this.initPromise = null;
+    this.disposeWorker();
+    this.workerDead = true;
+    this.initialized = false;
   }
 
   private async evaluatePosition(
@@ -184,6 +242,7 @@ export class EngineClient {
     moveTimeMs: number,
     id: string,
     signal: AbortSignal,
+    timeoutMs?: number,
   ): Promise<EngineEvaluation> {
     this.send(`position fen ${fen}`);
 
@@ -198,18 +257,28 @@ export class EngineClient {
         settleSearch = settle;
       });
 
+      let timeoutHandle: ReturnType<typeof setTimeout> | null = null;
+
+      const cleanup = () => {
+        signal.removeEventListener("abort", onAbort);
+        if (timeoutHandle !== null) {
+          clearTimeout(timeoutHandle);
+          timeoutHandle = null;
+        }
+      };
+
       const searchState = {
         id,
         ignoreBestMove: false,
         resolve: (val: EngineEvaluation) => {
-          signal.removeEventListener("abort", onAbort);
+          cleanup();
           if (this.currentAbortController?.signal === signal) {
             this.currentAbortController = null;
           }
           resolve(val);
         },
         reject: (err: unknown) => {
-          signal.removeEventListener("abort", onAbort);
+          cleanup();
           if (this.currentAbortController?.signal === signal) {
             this.currentAbortController = null;
           }
@@ -232,6 +301,13 @@ export class EngineClient {
         searchState.reject(new Error("Analysis interrupted"));
       };
       signal.addEventListener("abort", onAbort, { once: true });
+
+      if (timeoutMs !== undefined) {
+        timeoutHandle = setTimeout(() => {
+          searchState.ignoreBestMove = true;
+          this.failEngine(new Error("Engine response timed out"), id);
+        }, moveTimeMs + timeoutMs);
+      }
 
       this.activeSearch = searchState;
 
@@ -361,6 +437,17 @@ export class EngineClient {
     this.worker?.postMessage(command);
   }
 
+  private disposeWorker(): void {
+    if (!this.worker) {
+      return;
+    }
+
+    this.worker.onmessage = null;
+    this.worker.onerror = null;
+    this.worker.terminate();
+    this.worker = null;
+  }
+
   private async withTransitionLock<T>(callback: () => Promise<T>): Promise<T> {
     const previousTransition = this.transitionQueue;
     let releaseTransition: () => void = () => {};
@@ -405,6 +492,18 @@ export class EngineClient {
     this.activeSearch = null;
     activeSearch.reject(error);
     activeSearch.settle();
+  }
+
+  private failEngine(error: Error, requestId: string): void {
+    this.workerDead = true;
+    this.initialized = false;
+    const rejectReady = this.readyRejector;
+    this.readyResolver = null;
+    this.readyRejector = null;
+    this.disposeWorker();
+    rejectReady?.(error);
+    this.rejectActiveSearch(error);
+    this.emitStatus("error", requestId, error.message);
   }
 
   private matchNumber(line: string, pattern: RegExp): number | null {

@@ -20,6 +20,7 @@ import { engineClient } from "../engine/EngineClient";
 import type { InteractionOutcome } from "../types/game";
 import {
   clearTrackedAnalysis,
+  ensureEngineReady,
   ensureEngineSubscription,
   interruptEngineWork,
   isTrackedAnalysisSession,
@@ -100,21 +101,13 @@ export const useGameStore = create<GameStore>((set, get) => ({
       // Defer engine init — the 7 MB WASM download runs in the background so the
       // 3D scene can finish loading without waiting for Stockfish.  The first
       // actual engine call (hint / move) is always user-initiated.
-      void (async () => {
-        try {
-          await engineClient.init();
-          set({
-            enginePhase: "ready",
-            engineMessage: t(get().session.settings.locale, "engine.ready"),
-          });
-        } catch (error) {
-          set({
-            enginePhase: "error",
-            engineMessage: t(get().session.settings.locale, "engine.error"),
-            lastError: normalizeErrorMessage(error, t(get().session.settings.locale, "engine.error")),
-          });
-        }
-      })();
+      void ensureEngineReady(set, get).catch((error) => {
+        set({
+          enginePhase: "error",
+          engineMessage: t(get().session.settings.locale, "engine.error"),
+          lastError: normalizeErrorMessage(error, t(get().session.settings.locale, "engine.error")),
+        });
+      });
     })();
 
     try {
@@ -264,6 +257,14 @@ export const useGameStore = create<GameStore>((set, get) => ({
     await commitPlayerMove(set, get, pendingPromotion.from, pendingPromotion.to, piece);
   },
 
+  retryEngine: async () => {
+    try {
+      await ensureEngineReady(set, get);
+    } catch (error) {
+      setStoreError(set, get().session.settings.locale, error, "engine.error");
+    }
+  },
+
   requestHint: async () => {
     const { session, analysisCursor, pendingPromotion } = get();
 
@@ -281,6 +282,7 @@ export const useGameStore = create<GameStore>((set, get) => ({
     set({ lastError: null });
 
     try {
+      await ensureEngineReady(set, get);
       const result = await engineClient.hint(session.snapshot.fen, difficulty);
       const currentSession = get().session;
       if (getPositionSignature(currentSession) !== signature) {
@@ -354,8 +356,12 @@ export const useGameStore = create<GameStore>((set, get) => ({
       }),
     });
 
+    let enginePrepared = false;
+
     try {
+      await ensureEngineReady(set, get);
       await engineClient.newGame();
+      enginePrepared = true;
     } catch (error) {
       setStoreError(set, nextSession.settings.locale, error, "engine.error");
     }
@@ -363,6 +369,7 @@ export const useGameStore = create<GameStore>((set, get) => ({
     await persistLiveSettings(get, set);
 
     if (
+      enginePrepared &&
       nextSession.snapshot.sideToMove !== nextSession.playerColor &&
       (nextSession.snapshot.status === "active" || nextSession.snapshot.status === "idle")
     ) {
@@ -459,6 +466,7 @@ export const useGameStore = create<GameStore>((set, get) => ({
     });
 
     try {
+      await ensureEngineReady(set, get);
       const summary = await engineClient.analyzeGame(buildAnalysisPayload(session));
       if (!isTrackedAnalysisSession(get().session)) {
         return;
@@ -553,9 +561,11 @@ async function runEngineMove(
   get: GameStoreGet,
 ): Promise<void> {
   const state = get();
+  const hasPlayableStatus =
+    state.session.snapshot.status === "active" || state.session.snapshot.status === "idle";
   if (
     state.session.snapshot.sideToMove === state.session.playerColor ||
-    state.session.snapshot.status !== "active"
+    !hasPlayableStatus
   ) {
     return;
   }
@@ -564,12 +574,13 @@ async function runEngineMove(
   const signature = getPositionSignature(state.session);
 
   try {
+    await ensureEngineReady(set, get);
     const result = await engineClient.search(state.session.snapshot.fen, difficulty);
     const currentSession = get().session;
     if (
       getPositionSignature(currentSession) !== signature ||
       currentSession.snapshot.sideToMove === currentSession.playerColor ||
-      currentSession.snapshot.status !== "active" ||
+      (currentSession.snapshot.status !== "active" && currentSession.snapshot.status !== "idle") ||
       currentSession.snapshot.clockState.expiredColor
     ) {
       return;
